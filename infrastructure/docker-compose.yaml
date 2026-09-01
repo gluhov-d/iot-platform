@@ -1,0 +1,509 @@
+name: ${COMPOSE_PROJECT_NAME:-iot-platform}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — состояние устройств, команды, БД для Keycloak и Camunda
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:${POSTGRES_VERSION}
+    container_name: iot-postgres
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_EXTRA_DBS: ${POSTGRES_EXTRA_DBS}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Redis — кэширование
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:${REDIS_VERSION}
+    container_name: iot-redis
+    <<: *default-restart
+    logging: *default-logging
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse — хранение телеметрии
+  # ---------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}
+    container_name: iot-clickhouse
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT}:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Kafka (KRaft, без ZooKeeper) — шина событий
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:${CONFLUENT_VERSION}
+    container_name: iot-kafka
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:${KAFKA_CONTROLLER_PORT}"
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:${KAFKA_INTERNAL_PORT},EXTERNAL://0.0.0.0:${KAFKA_EXTERNAL_PORT},CONTROLLER://0.0.0.0:${KAFKA_CONTROLLER_PORT}"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:${KAFKA_INTERNAL_PORT},EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT}"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+    ports:
+      - "${KAFKA_EXTERNAL_PORT}:${KAFKA_EXTERNAL_PORT}"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:${KAFKA_INTERNAL_PORT} >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 45s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Инициализация топиков — одноразовая задача
+  # ---------------------------------------------------------------------------
+  kafka-init:
+    image: confluentinc/cp-kafka:${CONFLUENT_VERSION}
+    container_name: iot-kafka-init
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_TOPICS: ${KAFKA_TOPICS}
+      BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        IFS=',' read -ra TOPICS <<< "$${KAFKA_TOPICS}"
+        for t in "$${TOPICS[@]}"; do
+          name=$$(echo "$$t" | cut -d: -f1)
+          parts=$$(echo "$$t" | cut -d: -f2)
+          repl=$$(echo "$$t" | cut -d: -f3)
+          echo "==> creating topic $$name (partitions=$$parts, rf=$$repl)"
+          kafka-topics --bootstrap-server "$${BOOTSTRAP}" --create --if-not-exists \
+            --topic "$$name" --partitions "$$parts" --replication-factor "$$repl"
+        done
+        echo "==> topics:"
+        kafka-topics --bootstrap-server "$${BOOTSTRAP}" --list
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Schema Registry — контракты Avro
+  # ---------------------------------------------------------------------------
+  schema-registry:
+    image: confluentinc/cp-schema-registry:${CONFLUENT_VERSION}
+    container_name: iot-schema-registry
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:${SCHEMA_REGISTRY_PORT}"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      - "${SCHEMA_REGISTRY_PORT}:${SCHEMA_REGISTRY_PORT}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${SCHEMA_REGISTRY_PORT}/subjects || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # MinIO — объектное хранилище (DLT + вложения)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:${MINIO_VERSION}
+    container_name: iot-minio
+    <<: *default-restart
+    logging: *default-logging
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Создание бакетов — одноразовая задача
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: iot-minio-init
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_BUCKETS: ${MINIO_BUCKETS}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"
+        for b in $$(echo "$${MINIO_BUCKETS}" | tr ',' ' '); do
+          echo "==> creating bucket $$b"
+          mc mb --ignore-existing "local/$$b"
+        done
+        mc ls local
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Keycloak — аутентификация и авторизация
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}
+    platform: ${KEYCLOAK_PLATFORM}
+    container_name: iot-keycloak
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["start-dev", "--http-port=8080", "--health-enabled=true", "--metrics-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: "jdbc:postgresql://postgres:5432/${KEYCLOAK_DB}"
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      JAVA_OPTS_APPEND: "-Xms256m -Xmx768m"
+    ports:
+      - "${KEYCLOAK_PORT}:8080"
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+    healthcheck:
+      # В образе нет curl — используем /dev/tcp из bash
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\": \"UP\"' <&3"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Camunda — оркестрация бизнес-процессов
+  # ---------------------------------------------------------------------------
+  camunda:
+    image: camunda/camunda-bpm-platform:${CAMUNDA_VERSION}
+    container_name: iot-camunda
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: org.postgresql.Driver
+      DB_URL: "jdbc:postgresql://postgres:5432/${CAMUNDA_DB}"
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_VALIDATE_ON_BORROW: "true"
+      WAIT_FOR: "postgres:5432"
+      JAVA_OPTS: "-Xms256m -Xmx768m"
+    ports:
+      - "${CAMUNDA_PORT}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/engine-rest/engine || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # postgres-exporter — метрики PostgreSQL для Prometheus
+  # ---------------------------------------------------------------------------
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:${POSTGRES_EXPORTER_VERSION}
+    container_name: iot-postgres-exporter
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+    ports:
+      - "${POSTGRES_EXPORTER_PORT}:9187"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9187/metrics || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # kafka-exporter — метрики Kafka для Prometheus
+  # ---------------------------------------------------------------------------
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:${KAFKA_EXPORTER_VERSION}
+    container_name: iot-kafka-exporter
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["--kafka.server=kafka:${KAFKA_INTERNAL_PORT}", "--web.listen-address=:9308"]
+    ports:
+      - "${KAFKA_EXPORTER_PORT}:9308"
+    healthcheck:
+      test: ["CMD", "/bin/kafka_exporter", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — сбор метрик
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    container_name: iot-prometheus
+    <<: *default-restart
+    logging: *default-logging
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Loki — хранение логов
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:${LOKI_VERSION}
+    container_name: iot-loki
+    <<: *default-restart
+    logging: *default-logging
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    user: "0"
+    ports:
+      - "${LOKI_PORT}:3100"
+    volumes:
+      - ./config/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Tempo — хранение трейсов (OTLP)
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:${TEMPO_VERSION}
+    container_name: iot-tempo
+    <<: *default-restart
+    logging: *default-logging
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    user: "0"
+    ports:
+      - "${TEMPO_HTTP_PORT}:3200"
+      - "${TEMPO_OTLP_GRPC_PORT}:4317"
+      - "${TEMPO_OTLP_HTTP_PORT}:4318"
+    volumes:
+      - ./config/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3200/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Grafana Alloy — сбор логов контейнеров и приём OTLP
+  # ---------------------------------------------------------------------------
+  alloy:
+    image: grafana/alloy:${ALLOY_VERSION}
+    container_name: iot-alloy
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    command:
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    user: "0"
+    ports:
+      - "${ALLOY_PORT}:12345"
+    volumes:
+      - ./config/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    healthcheck:
+      # В образе alloy нет curl/wget — проверяем через /dev/tcp в bash
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/12345; printf 'GET /-/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; head -1 <&3 | grep -q '200 OK'"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Grafana — дашборды (Kafka, PostgreSQL) поверх Prometheus/Loki/Tempo
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: iot-grafana
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_FEATURE_TOGGLES_ENABLE: traceQLEditor
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [iot-net]
+
+networks:
+  iot-net:
+    name: iot-net
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  clickhouse-data:
+  kafka-data:
+  minio-data:
+  keycloak-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  alloy-data:
+  grafana-data:

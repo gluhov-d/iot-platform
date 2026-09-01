@@ -1,0 +1,20 @@
+@startuml Context
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title C4 Level 1 — Системный контекст IoT-платформы
+
+Person(engineer, "Инженер", "DevOps-инженер: разворачивает и настраивает платформу, следит за её работой")
+
+System(iot_platform, "IoT Microservice Platform", "Микросервисная платформа сбора телеметрии и управления IoT-устройствами")
+
+System_Ext(device, "IoT-устройство", "Внешний датчик или контроллер: отправляет данные, получает команды")
+System_Ext(keycloak, "Keycloak", "Сервер аутентификации и авторизации (SSO, OIDC)")
+System_Ext(grafana, "Grafana", "Мониторинг: метрики, логи и дашборды")
+
+Rel(engineer, iot_platform, "Управление и мониторинг платформы", "HTTP/REST, UI")
+Rel(device, iot_platform, "Телеметрия и команды", "MQTT/HTTP")
+Rel(engineer, grafana, "Просмотр метрик и логов", "HTTP (dashboards)")
+Rel(iot_platform, keycloak, "Запрос токена / проверка JWT", "OIDC")
+Rel(iot_platform, grafana, "Экспорт метрик и логов", "Prometheus, Loki")
+
+@enduml

@@ -1,0 +1,45 @@
+@startuml Containers
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title C4 Level 2 — Контейнеры IoT-платформы
+
+Person(engineer, "Инженер")
+System_Ext(device, "IoT-устройство")
+
+Container_Boundary(platform, "IoT Platform") {
+    Container(device_service, "Device Service", "Spring Boot", "Управление IoT-устройствами")
+    Container(analytics_service, "Analytics Service", "Spring Boot", "Обработка телеметрии")
+
+    ContainerDb(pg, "PostgreSQL", "Реляционная БД", "Устройства, команды, БД Keycloak и Camunda")
+    ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "Телеметрия и события")
+    ContainerDb(redis, "Redis", "In-Memory Cache", "Кэш и Pub/Sub")
+    ContainerQueue(kafka, "Kafka", "Message Broker", "Шина событий")
+    Container(schema_registry, "Schema Registry", "Confluent", "Контракты Avro")
+    Container(minio, "MinIO", "Object Storage", "Файлы: прошивки, вложения, DLT")
+    Container(keycloak, "Keycloak", "Identity Server", "SSO/OAuth2")
+    Container(camunda, "Camunda", "BPM Engine", "Оркестрация бизнес-процессов")
+    Container(observability, "Observability", "Prometheus + Grafana + Loki + Tempo", "Метрики, логи, трейсы")
+}
+
+Rel(device, kafka, "Отправка телеметрии (producer)", "Kafka protocol")
+Rel(analytics_service, kafka, "Чтение телеметрии (consumer)", "Kafka")
+Rel(analytics_service, schema_registry, "Схемы событий", "HTTP")
+Rel(analytics_service, clickhouse, "Сохранение телеметрии", "HTTP/SQL")
+
+Rel(device_service, pg, "Конфигурация устройств", "JDBC")
+Rel(device_service, redis, "Кэш активных устройств", "Redis")
+Rel(device_service, kafka, "События об устройствах", "Kafka")
+Rel(device_service, minio, "Загрузка/выгрузка файлов", "S3 API")
+Rel(device_service, keycloak, "Проверка токена", "OIDC")
+Rel(device_service, camunda, "Запуск бизнес-процесса", "REST API")
+
+Rel(camunda, pg, "Состояние процессов", "JDBC")
+Rel(keycloak, pg, "Пользователи и realm-ы", "JDBC")
+
+Rel(engineer, keycloak, "Вход в систему", "OIDC")
+Rel(engineer, camunda, "Мониторинг процессов", "HTTP (Cockpit)")
+Rel(engineer, observability, "Дашборды и логи", "Web UI")
+Rel(observability, kafka, "Сбор метрик", "Prometheus")
+Rel(observability, pg, "Сбор метрик", "Prometheus")
+
+@enduml
