@@ -77,23 +77,24 @@ make reset    # пересоздать окружение с нуля
 
 ### Команды Makefile
 
-| Команда | Назначение |
-|---|---|
-| `make up` | Поднять инфраструктуру и дождаться healthy всех сервисов |
-| `make down` | Остановить и удалить контейнеры (тома сохраняются) |
-| `make stop` / `make start` | Приостановить / возобновить контейнеры |
-| `make restart` | Перезапустить окружение |
-| `make clean` | Удалить контейнеры вместе с томами |
-| `make reset` | `clean` + `up` |
-| `make pull` | Скачать/обновить образы |
-| `make ps` | Статус контейнеров |
-| `make health` | Healthcheck-статус всех сервисов |
-| `make logs` / `make logs S=kafka` | Логи всех сервисов или одного |
-| `make urls` | Показать адреса всех сервисов |
-| `make psql` / `make redis-cli` / `make clickhouse-cli` | Клиенты к БД |
-| `make topics` | Список топиков Kafka |
-| `make check` | Валидация `docker-compose.yaml` |
-| `make diagrams` | Отрендерить `.puml` в PNG (нужен `plantuml`) |
+| Команда                                                | Назначение                                                      |
+|--------------------------------------------------------|-----------------------------------------------------------------|
+| `make up`                                              | Поднять инфраструктуру и дождаться healthy всех сервисов        |
+| `make down`                                            | Остановить и удалить контейнеры (тома сохраняются)              |
+| `make stop` / `make start`                             | Приостановить / возобновить контейнеры                          |
+| `make restart`                                         | Перезапустить окружение                                         |
+| `make clean`                                           | Удалить контейнеры вместе с томами                              |
+| `make reset`                                           | `clean` + `up`                                                  |
+| `make kafka-reset`                                     | Пересоздать только том Kafka (сообщения и схемы будут потеряны) |
+| `make pull`                                            | Скачать/обновить образы                                         |
+| `make ps`                                              | Статус контейнеров                                              |
+| `make health`                                          | Healthcheck-статус всех сервисов                                |
+| `make logs` / `make logs S=kafka`                      | Логи всех сервисов или одного                                   |
+| `make urls`                                            | Показать адреса всех сервисов                                   |
+| `make psql` / `make redis-cli` / `make clickhouse-cli` | Клиенты к БД                                                    |
+| `make topics`                                          | Список топиков Kafka                                            |
+| `make check`                                           | Валидация `docker-compose.yaml`                                 |
+| `make diagrams`                                        | Отрендерить `.puml` в PNG (нужен `plantuml`)                    |
 
 ---
 
@@ -262,7 +263,14 @@ make check             # синтаксис и подстановка перем
   python3 -c "import base64,uuid; print(base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip('='))"
   ```
 
-  После смены значения том `kafka-data` нужно пересоздать: `make clean && make up`.
+  После смены значения пересоздайте том Kafka:
+  ```bash
+  make kafka-reset
+  ```
+  Будут безвозвратно удалены все сообщения во всех топиках, офсеты, консьюмер-групп и Avro-схемы Schema Registry (они хранятся в топике _schemas). 
+  Тома PostgreSQL, ClickHouse, MinIO и остальных сервисов не затрагиваются. Не используйте для этого make clean - он удаляет тома всех сервисов.
+
+
 
 * **Keycloak в цикле перезапусков, в логах `SIGILL` в `System.registerNatives`** —
   на Apple Silicon с включённой опцией *Use Rosetta for x86/amd64 emulation*

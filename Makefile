@@ -12,7 +12,7 @@ export
 HEALTH_SERVICES := postgres redis clickhouse kafka schema-registry minio keycloak camunda prometheus loki tempo grafana
 
 .DEFAULT_GOAL := help
-.PHONY: help up down stop start restart ps logs health urls pull build clean reset \
+.PHONY: help up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check
 
 ## ----------------------------------------------------------------- Справка
@@ -49,6 +49,17 @@ clean: ## Удалить контейнеры вместе с томами (да
 	@$(COMPOSE) down -v --remove-orphans
 
 reset: clean up ## Полный пересоздание окружения с нуля
+
+KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter
+
+kafka-reset: ## Пересоздать только том Kafka (сообщения, офсеты и схемы будут потеряны)
+	@echo "!!! Будут удалены ВСЕ данные Kafka: сообщения во всех топиках, офсеты"
+	@echo "!!! консьюмер-групп и Avro-схемы Schema Registry (топик _schemas)."
+	@echo "    Данные PostgreSQL, ClickHouse, MinIO и остальных сервисов не затрагиваются."
+	@[ "$(FORCE)" = "1" ] || { read -p "Продолжить? [y/N] " a; [ "$$a" = "y" ] || { echo "Отменено"; exit 1; };}
+	@$(COMPOSE) rm -sf $(KAFKA_SERVICES)
+	@docker volume rm $(COMPOSE_PROJECT_NAME)_kafka-data
+	@$(MAKE) --no-print-directory up
 
 pull: ## Скачать/обновить образы
 	@$(COMPOSE) pull
