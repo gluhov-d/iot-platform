@@ -444,6 +444,9 @@ services:
         condition: service_healthy
       tempo:
         condition: service_healthy
+    environment:
+      # Имя Compose-проекта: Alloy собирает логи только его контейнеров
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-iot-platform}
     command:
       - "run"
       - "--server.http.listen-addr=0.0.0.0:12345"

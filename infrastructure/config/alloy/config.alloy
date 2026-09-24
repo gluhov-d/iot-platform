@@ -9,6 +9,13 @@ logging {
 discovery.docker "containers" {
   host             = "unix:///var/run/docker.sock"
   refresh_interval = "15s"
+
+  // Только контейнеры текущего Compose-проекта: логи соседних проектов
+  // с такими же сервисами (postgres, kafka) не попадут в панели платформы
+  filter {
+    name    = "label"
+    values  = ["com.docker.compose.project=" + sys.env("COMPOSE_PROJECT_NAME")]
+  }
 }
 
 discovery.relabel "containers" {
@@ -29,7 +36,7 @@ discovery.relabel "containers" {
 loki.source.docker "containers" {
   host       = "unix:///var/run/docker.sock"
   targets    = discovery.relabel.containers.output
-  labels     = { job = "docker", cluster = "iot-platform" }
+  labels     = { job = "docker", cluster = sys.env("COMPOSE_PROJECT_NAME") }
   forward_to = [loki.write.default.receiver]
 }
 
