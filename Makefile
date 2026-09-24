@@ -5,8 +5,9 @@ ENV_FILE      := $(ROOT_DIR)/.env
 COMPOSE_FILE  := $(INFRA_DIR)/docker-compose.yaml
 COMPOSE       := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
-include $(ENV_FILE)
-export
+# Значение переменной в том виде, как его разобрал Compose из .env.
+# Только для портов и имён - пароли берутся из окружения контейнера.0
+compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Сервисы, у которых есть healthcheck — их ждём при `make up`
 HEALTH_SERVICES := postgres redis clickhouse kafka schema-registry minio keycloak camunda prometheus loki tempo grafana
@@ -58,7 +59,7 @@ kafka-reset: ## Пересоздать только том Kafka (сообщен
 	@echo "    Данные PostgreSQL, ClickHouse, MinIO и остальных сервисов не затрагиваются."
 	@[ "$(FORCE)" = "1" ] || { read -p "Продолжить? [y/N] " a; [ "$$a" = "y" ] || { echo "Отменено"; exit 1; };}
 	@$(COMPOSE) rm -sf $(KAFKA_SERVICES)
-	@docker volume rm $(COMPOSE_PROJECT_NAME)_kafka-data
+	@docker volume rm "$(call compose_env,COMPOSE_PROJECT_NAME)_kafka-data"
 	@$(MAKE) --no-print-directory up
 
 pull: ## Скачать/обновить образы
@@ -92,37 +93,38 @@ wait: ## Дождаться, пока все сервисы станут healthy
 	done
 
 urls: ## Показать адреса всех сервисов
-	@echo ""
-	@echo "  Сервис            URL"
-	@echo "  ---------------   ------------------------------------------------"
-	@echo "  PostgreSQL        postgresql://localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)"
-	@echo "  Redis             redis://localhost:$(REDIS_PORT)"
-	@echo "  ClickHouse        http://localhost:$(CLICKHOUSE_HTTP_PORT)  (native: $(CLICKHOUSE_NATIVE_PORT))"
-	@echo "  Kafka             localhost:$(KAFKA_EXTERNAL_PORT)"
-	@echo "  Schema Registry   http://localhost:$(SCHEMA_REGISTRY_PORT)"
-	@echo "  MinIO API         http://localhost:$(MINIO_API_PORT)"
-	@echo "  MinIO Console     http://localhost:$(MINIO_CONSOLE_PORT)"
-	@echo "  Keycloak          http://localhost:$(KEYCLOAK_PORT)"
-	@echo "  Camunda           http://localhost:$(CAMUNDA_PORT)/camunda"
-	@echo "  Grafana           http://localhost:$(GRAFANA_PORT)"
-	@echo "  Prometheus        http://localhost:$(PROMETHEUS_PORT)"
-	@echo "  Loki              http://localhost:$(LOKI_PORT)"
-	@echo "  Tempo             http://localhost:$(TEMPO_HTTP_PORT)  (OTLP: $(TEMPO_OTLP_GRPC_PORT)/$(TEMPO_OTLP_HTTP_PORT))"
-	@echo "  Alloy             http://localhost:$(ALLOY_PORT)"
-	@echo ""
+	@env=$$($(COMPOSE) config --environment); v() { sed -n "s/^$$1=//p" <<<"$$env"; }; \
+	echo ""; \
+	echo "  Сервис            URL"; \
+	echo "  ---------------   ------------------------------------------------"; \
+	echo "  PostgreSQL        postgresql://localhost:$$(v POSTGRES_PORT)/$$(v POSTGRES_DB)"; \
+	echo "  Redis             redis://localhost:$$(v REDIS_PORT)"; \
+	echo "  ClickHouse        http://localhost:$$(v CLICKHOUSE_HTTP_PORT)  (native: $$(v CLICKHOUSE_NATIVE_PORT))"; \
+	echo "  Kafka             localhost:$$(v KAFKA_EXTERNAL_PORT)"; \
+	echo "  Schema Registry   http://localhost:$$(v SCHEMA_REGISTRY_PORT)"; \
+	echo "  MinIO API         http://localhost:$$(v MINIO_API_PORT)"; \
+	echo "  MinIO Console     http://localhost:$$(v MINIO_CONSOLE_PORT)"; \
+	echo "  Keycloak          http://localhost:$$(v KEYCLOAK_PORT)"; \
+	echo "  Camunda           http://localhost:$$(v CAMUNDA_PORT)/camunda"; \
+	echo "  Grafana           http://localhost:$$(v GRAFANA_PORT)"; \
+	echo "  Prometheus        http://localhost:$$(v PROMETHEUS_PORT)"; \
+	echo "  Loki              http://localhost:$$(v LOKI_PORT)"; \
+	echo "  Tempo             http://localhost:$$(v TEMPO_HTTP_PORT)  (OTLP: $$(v TEMPO_OTLP_GRPC_PORT)/$$(v TEMPO_OTLP_HTTP_PORT))"; \
+	echo "  Alloy             http://localhost:$$(v ALLOY_PORT)"; \
+	echo ""
 
 ## ------------------------------------------------------------------ Клиенты
 psql: ## Открыть psql в контейнере postgres
-	@$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
+	@$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
 redis-cli: ## Открыть redis-cli
-	@$(COMPOSE) exec redis redis-cli -a $(REDIS_PASSWORD)
+	@$(COMPOSE) exec redis redis-cli
 
 clickhouse-cli: ## Открыть clickhouse-client
-	@$(COMPOSE) exec clickhouse clickhouse-client --user $(CLICKHOUSE_USER) --password $(CLICKHOUSE_PASSWORD)
+	@$(COMPOSE) exec clickhouse sh -c 'exec clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD"'
 
 topics: ## Список топиков Kafka
-	@$(COMPOSE) exec kafka kafka-topics --bootstrap-server kafka:$(KAFKA_INTERNAL_PORT) --list
+	@$(COMPOSE) exec kafka kafka-topics --bootstrap-server kafka:$(call compose_env,KAFKA_INTERNAL_PORT) --list
 
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml

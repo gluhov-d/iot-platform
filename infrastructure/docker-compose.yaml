@@ -47,12 +47,14 @@ services:
     <<: *default-restart
     logging: *default-logging
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     ports:
       - "${REDIS_PORT}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -314,7 +316,11 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      # Логин и пароль отдельно от URI: экспортёр сам экранирует их при сборке DSN,
+      # поэтому спецсимволы в пароле (#, @, /, ?) не ломают адрес.
+      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      DATA_SOURCE_USER: ${POSTGRES_USER}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD}
       PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
     ports:
       - "${POSTGRES_EXPORTER_PORT}:9187"
