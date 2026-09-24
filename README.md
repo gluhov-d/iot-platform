@@ -242,6 +242,9 @@ PostgreSQL, ClickHouse, MinIO, Keycloak, Camunda, стек наблюдаемо�
 make diagrams          # PNG рядом с .puml (требуется brew install plantuml)
 ```
 
+Отрендеренные `diagrams/Context.png` и `diagrams/Containers.png` хранятся в
+репозитории — после правки `.puml` перегенерируйте их и закоммитьте вместе с исходником.
+
 Либо вставить содержимое файла в http://www.plantuml.com/plantuml.
 
 ---
