@@ -347,7 +347,7 @@ services:
     ports:
       - "${KAFKA_EXPORTER_PORT}:9308"
     healthcheck:
-      test: ["CMD", "/bin/kafka_exporter", "--version"]
+      test: ["CMD-SHELL", "wget -qO- -T 3 http://127.0.0.1:9308/metrics | grep -q '^kafka_brokers [1-9]'"]
       interval: 30s
       timeout: 5s
       retries: 5
