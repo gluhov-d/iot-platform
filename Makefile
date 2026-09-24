@@ -9,8 +9,10 @@ COMPOSE       := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 # Только для портов и имён - пароли берутся из окружения контейнера.0
 compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
-# Сервисы, у которых есть healthcheck — их ждём при `make up`
-HEALTH_SERVICES := postgres redis clickhouse kafka schema-registry minio keycloak camunda prometheus loki tempo grafana
+# Одноразовые задачи: должны завершиться с кодом 0.
+# Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
+INIT_SERVICES := kafka-init minio-init
+WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up down stop start restart ps logs health urls pull build clean reset kafka-reset \
@@ -73,20 +75,36 @@ logs: ## Логи всех сервисов (make logs S=kafka — по одно
 	@$(COMPOSE) logs -f --tail=100 $(S)
 
 health: ## Показать healthcheck-статус всех сервисов
-	@printf "%-20s %-12s %s\n" "SERVICE" "STATE" "HEALTH"; \
-	$(COMPOSE) ps --format '{{.Service}}\t{{.State}}\t{{.Health}}' | \
-		awk -F'\t' '{printf "%-20s %-12s %s\n", $$1, $$2, ($$3 == "" ? "-" : $$3)}'
+	@printf "%-20s %-12s %-10s %s\n" "SERVICE" "STATE" "HEALTH" "EXIT"; \
+	$(COMPOSE) ps -a --format '{{.Service}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' | \
+		awk -F'\t' '{printf "%-20s %-12s %-10s %s\n", $$1, $$2, ($$3 == "" ? "-" : $$3), $$4}'
 
 wait: ## Дождаться, пока все сервисы станут healthy
-	@echo "==> Ожидание готовности сервисов (до 5 минут)"
-	@deadline=$$(( $$(date +%s) + 300 )); \
+	@echo "==> Ожидание готовности сервисов (до $(WAIT_TIMEOUT) с)"
+	@init=" $(INIT_SERVICES) "; \
+	services=$$($(COMPOSE) config --services) || exit 1; \
+	deadline=$$(( $$(date +%s) + $(WAIT_TIMEOUT) )); \
 	while true; do \
-	  pending=""; \
-	  for s in $(HEALTH_SERVICES); do \
-	    st=$$($(COMPOSE) ps --format '{{.Health}}' $$s 2>/dev/null | head -1); \
-	    [ "$$st" = "healthy" ] || pending="$$pending $$s"; \
+	  pending=""; failed=""; \
+	  status=$$($(COMPOSE) ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}') || exit 1; \
+	  for s in $$services; do \
+	    IFS='|' read -r _ state health code  <<<"$$(grep "^$$s|" <<<"$$status")"; \
+	    if [[ "$$init" == *" $$s "* ]]; then \
+	      case "$$state" in \
+	      	exited) [ "$$code" = 0 ] || failed="$$failed $$s(код $$code)";; \
+	     	*) pending="$$pending $$s";; \
+	      esac; \
+	    else \
+	      case "$$state/$$health" in \
+	      	running/healthy) ;; \
+	     	running/) failed="$$failed $$s(нет healthcheck)" ;; \
+	    	exited/*|dead/*) failed="$$failed $$s($$state)" ;; \
+	   		*) pending="$$pending $$s" ;; \
+	   	  esac; \
+	   	fi; \
 	  done; \
-	  if [ -z "$$pending" ]; then echo "==> Все сервисы healthy"; break; fi; \
+	  if [ -n "$$failed" ]; then echo "!!! Ошибка: $$failed"; $(MAKE) --no-print-directory health; exit 1; fi; \
+	  if [ -z "$$pending" ]; then echo "==> Все сервисы healthy, init-задачи завершены с кодом 0"; break; fi; \
 	  if [ $$(date +%s) -ge $$deadline ]; then \
 	    echo "!!! Не дождались:$$pending"; $(MAKE) --no-print-directory health; exit 1; fi; \
 	  echo "    ждём:$$pending"; sleep 10; \

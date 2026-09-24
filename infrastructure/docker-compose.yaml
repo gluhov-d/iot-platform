@@ -325,7 +325,7 @@ services:
     ports:
       - "${POSTGRES_EXPORTER_PORT}:9187"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9187/metrics || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- -T 3 http://127.0.0.1:9187/metrics | grep -q '^pg_up 1'"]
       interval: 20s
       timeout: 5s
       retries: 5
