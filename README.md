@@ -215,9 +215,12 @@ Grafana поднимается с автоматическим провижин�
     deadlock-и и логи из Loki.
 
 Метрики собирает Prometheus с `kafka-exporter`, `postgres-exporter`, MinIO,
-Keycloak, Alloy, Loki, Tempo и Grafana. Логи всех контейнеров подбирает Alloy
-через Docker-сокет и пишет в Loki с метками `service` и `container`. Трейсы
-принимаются в Tempo по OTLP (`4317` gRPC, `4318` HTTP).
+Keycloak, Alloy, Loki, Tempo и Grafana. Логи контейнеров текущего Compose-проекта
+(фильтр по метке `com.docker.compose.project`) подбирает Alloy через Docker-сокет и
+пишет в Loki с метками `service`, `container` и `cluster`. Трейсы приложения
+отправляют по OTLP в Alloy (`alloy:4319` gRPC, `alloy:4320` HTTP — внутри сети
+`iot-net`), Alloy пакетами пересылает их в Tempo. Порты Tempo `4317`/`4318`
+проброшены на хост и принимают OTLP напрямую — для отладки с хоста в обход Alloy.
 
 ---
 
