@@ -129,6 +129,8 @@ urls: ## Показать адреса всех сервисов
 	echo "  Loki              http://localhost:$$(v LOKI_PORT)"; \
 	echo "  Tempo             http://localhost:$$(v TEMPO_HTTP_PORT)  (OTLP: $$(v TEMPO_OTLP_GRPC_PORT)/$$(v TEMPO_OTLP_HTTP_PORT))"; \
 	echo "  Alloy             http://localhost:$$(v ALLOY_PORT)"; \
+	echo "  postgres-exporter http://localhost:$$(v POSTGRES_EXPORTER_PORT)/metrics"; \
+	echo "  kafka-exporter    http://localhost:$$(v KAFKA_EXPORTER_PORT)/metrics"; \
 	echo ""
 
 ## ------------------------------------------------------------------ Клиенты

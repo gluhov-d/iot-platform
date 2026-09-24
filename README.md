@@ -145,6 +145,8 @@ make reset    # пересоздать окружение с нуля
 | Loki | http://localhost:3100 | — |
 | Tempo | http://localhost:3200 (OTLP `4317`/`4318`) | — |
 | Alloy | http://localhost:12345 | — |
+| postgres-exporter | http://localhost:9187/metrics | — |
+| kafka-exporter | http://localhost:9308/metrics | — |
 
 > ClickHouse слушает нативный протокол на хостовом порту **9010**, а не 9000, чтобы
 > не конфликтовать с MinIO API.
