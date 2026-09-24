@@ -191,7 +191,7 @@ GRAFANA_PORT=3000
 
 * **PostgreSQL** — БД `iot_devices` (основная) плюс `iot_commands`, `keycloak`,
   `camunda`; таблицы `devices` и `device_commands` с индексами.
-* **ClickHouse** — база `iot_telemetry`, таблицы `events` (MergeTree, партиции по
+* **ClickHouse** — база из CLICKHOUSE_DB (по умолчанию `iot_telemetry`), таблицы `events` (MergeTree, партиции по
   месяцам, TTL 90 дней) и `dead_letters`.
 * **Kafka** — топики `iot.events`, `iot.device-id`, `iot.dlt`.
 * **MinIO** — бакеты `iot-dlt`, `iot-attachments`.
