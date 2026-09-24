@@ -315,6 +315,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # postmaster collector в v0.15.0 выключен по умолчанию, а на нём
+    # держится панель Uptime (pg_postmaster_start_time_seconds)
+    command: ["--collector.postmaster"]
     environment:
       # Логин и пароль отдельно от URI: экспортёр сам экранирует их при сборке DSN,
       # поэтому спецсимволы в пароле (#, @, /, ?) не ломают адрес.
