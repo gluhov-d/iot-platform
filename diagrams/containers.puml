@@ -3,16 +3,21 @@
 
 title C4 Level 2 — Контейнеры IoT-платформы
 
-' Маршруты выделены цветом и нумерацией: T — приём телеметрии, C — выполнение команд, E — обработка ошибок
+' Маршруты выделены цветом и нумерацией: T — приём телеметрии, C — выполнение команд, E — обработка ошибок.
+' Наблюдаемость: M — метрики, L — логи, R — трейсы
 AddRelTag("telemetry", $textColor="#1565C0", $lineColor="#1565C0", $legendText="T: приём телеметрии")
 AddRelTag("command",   $textColor="#2E7D32", $lineColor="#2E7D32", $legendText="C: выполнение команд")
 AddRelTag("error",     $textColor="#C62828", $lineColor="#C62828", $lineStyle=DashedLine(), $legendText="E: обработка ошибок")
+AddRelTag("metrics",   $textColor="#EF6C00", $lineColor="#EF6C00", $lineStyle=DottedLine(), $legendText="M: метрики")
+AddRelTag("logs",      $textColor="#6A1B9A", $lineColor="#6A1B9A", $lineStyle=DottedLine(), $legendText="L: логи")
+AddRelTag("traces",    $textColor="#00838F", $lineColor="#00838F", $lineStyle=DottedLine(), $legendText="R: трейсы")
 
 Person(engineer, "Инженер", "Регистрирует устройства, отправляет команды, смотрит телеметрию")
 System_Ext(device, "IoT-устройство", "Датчик/контроллер: шлёт телеметрию, получает команды")
 
 System_Boundary(platform, "IoT Platform") {
 
+  Boundary(apps, "Прикладные сервисы", "Spring Boot") {
     Container(gateway, "API Gateway", "Spring Cloud Gateway", "Единая точка входа прикладного API: проверка JWT, маршрутизация")
     Container(orchestrator, "API Orchestrator", "Spring Boot", "Сценарии из нескольких шагов: запускает процессы Camunda, агрегирует ответы")
 
@@ -23,6 +28,7 @@ System_Boundary(platform, "IoT Platform") {
     Container(device_collector, "Device Collector", "Spring Boot, MQTT/HTTP adapter", "Протокольный шлюз устройств: принимает MQTT/HTTP, проверяет устройство, публикует в Kafka; доставляет команды устройству")
     Container(events_collector, "Events Collector", "Spring Boot, Kafka consumer", "Пакетная запись телеметрии из Kafka в ClickHouse")
     Container(failed_processor, "Failed Events Processor", "Spring Boot, Kafka consumer", "Разбор DLT: сохраняет сбойные сообщения, повторяет обработку")
+  }
 
     Boundary(kafka, "Kafka", "Message Broker") {
         ContainerQueue(topic_events, "iot.events", "Kafka topic", "Телеметрия и события устройств (Avro)")
@@ -36,10 +42,20 @@ System_Boundary(platform, "IoT Platform") {
     ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "База CLICKHOUSE_DB:     events, dead_letters")
     ContainerDb(minio, "MinIO", "Object Storage", "Бакеты iot-dlt, iot-attachments")
     Container(camunda, "Camunda", "BPM Engine", "Процесс выполнения команды: отправка, ожидание подтверждения, таймаут")
+
+    Boundary(obs, "Наблюдаемость") {
+        Container(alloy, "Alloy", "Grafana Alloy", "Агент: читает логи контейнеров проекта через Docker API, принимает OTLP-трейсы")
+        ContainerDb(loki, "Loki", "Log storage", "Логи с метками service, container, cluster")
+        ContainerDb(tempo, "Tempo", "Trace storage", "Трейсы")
+        ContainerDb(prometheus, "Prometheus", "TSDB, pull", "Метрики: скрейп каждые 15 с")
+        Container(pg_exporter, "postgres-exporter", "Prometheus exporter", "Метрики PostgreSQL на :9187")
+        Container(kafka_exporter, "kafka-exporter", "Prometheus exporter", "Метрики Kafka на :9308")
+        Container(grafana, "Grafana", "Dashboards", "Дашборды поверх Prometheus, Loki, Tempo")
+    }
 }
 
 System_Ext(keycloak, "Keycloak", "OIDC-провайдер")
-System_Ext(observability, "Observability", "Prometheus, Loki, Tempo, Grafana")
+System_Ext(docker, "Docker Engine", "Логи контейнеров, метки Compose-проекта")
 
 ' ------------------------------------------------------------------ Вход инженера
 Rel(engineer, keycloak, "Вход, получение токена", "OIDC")
@@ -81,9 +97,28 @@ Rel(failed_processor, clickhouse, "E3. Запись в dead_letters", "HTTP/SQL"
 Rel(failed_processor, topic_events, "E4. Повторная публикация исправимых", "Kafka", $tags="error")
 Rel(camunda, command_service, "E5. Таймаут ack → FAILED", "External Task / REST", $tags="error")
 
-' ------------------------------------------------------------------ Наблюдаемость
-Rel(observability, platform, "Метрики, логи, трейсы", "Prometheus, Alloy, OTLP")
-Rel(engineer, observability, "Дашборды и логи", "Web UI")
+' ------------------------------------------------------------------ M: метрики (Prometheus забирает сам, pull)
+Rel(prometheus, pg_exporter, "M1. Скрейп /metrics", "HTTP :9187", $tags="metrics")
+Rel(pg_exporter, pg, "M2. Статистика pg_stat_*", "SQL", $tags="metrics")
+Rel(prometheus, kafka_exporter, "M1. Скрейп /metrics", "HTTP :9308", $tags="metrics")
+Rel(kafka_exporter, kafka, "M2. Брокеры, топики, лаг", "Kafka protocol", $tags="metrics")
+Rel(prometheus, minio, "M1. Встроенные метрики", "HTTP :9000", $tags="metrics")
+Rel(prometheus, keycloak, "M1. Встроенные метрики", "HTTP :9000", $tags="metrics")
+Rel(prometheus, alloy, "M1. Собственные метрики (также Loki, Tempo, Grafana)", "HTTP", $tags="metrics")
+
+' ------------------------------------------------------------------ L: логи
+Rel(alloy, docker, "L1. Контейнеры проекта и их stdout/stderr", "Docker API, фильтр com.docker.compose.project", $tags="logs")
+Rel(alloy, loki, "L2. Отправка логов", "HTTP push :3100", $tags="logs")
+
+' ------------------------------------------------------------------ R: трейсы
+Rel(apps, alloy, "R1. Трейсы", "OTLP gRPC :4319 / HTTP :4320", $tags="traces")
+Rel(alloy, tempo, "R2. Батчи трейсов", "OTLP gRPC :4317", $tags="traces")
+
+' ------------------------------------------------------------------ Просмотр
+Rel(grafana, prometheus, "Запросы метрик", "PromQL")
+Rel(grafana, loki, "Запросы логов", "LogQL")
+Rel(grafana, tempo, "Запросы трейсов", "TraceQL")
+Rel(engineer, grafana, "Дашборды, логи, трейсы", "Web UI")
 
 SHOW_LEGEND()
 @enduml
