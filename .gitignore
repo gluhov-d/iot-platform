@@ -40,4 +40,8 @@ out/
 
 ### Project ###
 diagrams/*.svg
-.env
+/.env
+
+### Gradle-сборка сервиса ###
+services/*/build/
+services/*/.gradle/
