@@ -40,3 +40,4 @@ out/
 
 ### Project ###
 diagrams/*.svg
+.env
