@@ -46,7 +46,7 @@ public class EventIngestionService implements IngestEventUseCase {
             step(name).observe(action);
         } catch (RuntimeException e) {
             metrics.eventPersistFailed();
-            throw new EventPersistenceException(name + " не выполнен", e);
+            throw new EventPersistenceException(name + " failed", e);
         }
     }
 

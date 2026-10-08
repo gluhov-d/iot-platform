@@ -30,12 +30,12 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     private final ObservationRegistry observationRegistry;
     private final OutboxPolicy policy;
     private final Clock clock;
-    
+
     @Override
     public BatchResult publishPendingBatch() {
         Optional<String> ownerToken = lease.tryAcquire(policy.leaseTtl());
         if (ownerToken.isEmpty()) {
-            log.debug("Аренда outbox: lease занята другим экземпляром, итерация пропущена");
+            log.debug("Outbox lease is held by another instance, iteration skipped");
             refreshPendingCount();
             return BatchResult.leaseNotAcquired();
         }
@@ -45,12 +45,12 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
                     .observe(this::publishBatch);
         } finally {
             if (!lease.release(ownerToken.get())) {
-                log.warn("Аренда outbox: lease истекла до конца итерации - увеличьте OUTBOX_LEASE_TTL_MS");
+                log.warn("Outbox lease expired before the iteration finished, increase OUTBOX_LEASE_TTL_MS");
             }
             refreshPendingCount();
         }
     }
-    
+
     private BatchResult publishBatch() {
         List<OutboxRecord> pending = outboxRepository.findPending(policy.maxAttempts(), policy.batchSize());
         Map<PublishOutcome, Integer> outcomes = new EnumMap<>(PublishOutcome.class);
@@ -63,11 +63,11 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
                 outcomes.getOrDefault(PublishOutcome.FAILED, 0),
                 outcomes.getOrDefault(PublishOutcome.ERROR, 0));
         if (!pending.isEmpty()) {
-            log.info("Итерация outbox завершена: {}", result);
+            log.info("Outbox batch completed: {}", result);
         }
         return result;
     }
-    
+
     PublishOutcome processOne(OutboxRecord record) {
         try (var ignoredEvent = MDC.putCloseable("eventId", record.eventId());
              var ignoredDevice = MDC.putCloseable("deviceId", record.deviceId())) {
@@ -82,7 +82,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
             return PublishOutcome.ERROR;
         }
     }
-    
+
     private PublishOutcome publishOrSkip(OutboxRecord record) {
         boolean alreadyPublished = step("redis devices:published check")
                 .observe(() -> publishedDeviceStore.isPublished(record.deviceId()));
@@ -92,7 +92,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
             logOutcome(PublishOutcome.SKIPPED, null);
             return PublishOutcome.SKIPPED;
         }
-        
+
         try {
             step("publish devices").observe(() -> publisher.publish(record.deviceId(), now().toEpochMilli()));
         } catch (RuntimeException e) {
@@ -114,20 +114,20 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         try {
             metrics.pendingCount(outboxRepository.countPending(policy.maxAttempts()));
         } catch (RuntimeException e) {
-            log.warn("Не удалось обновить outbox_pending_count: {}", e.toString());
+            log.warn("Failed to refresh outbox_pending_count: {}", e.toString());
         }
     }
-    
+
     private Observation step(String name) {
         return Observation.createNotStarted("outbox.step", observationRegistry)
                 .contextualName(name)
                 .lowCardinalityKeyValue("step", name);
     }
-    
+
     private Instant now() {
         return clock.instant();
     }
-    
+
     private static String describe(Throwable e) {
         Throwable root = e;
         while (root.getCause() != null && root.getCause() != root) {
@@ -135,20 +135,20 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         }
         return root.getClass().getSimpleName() + ": " + root.getMessage();
     }
-    
+
     private static void logOutcome(PublishOutcome outcome, Throwable error) {
         try (var ignored = MDC.putCloseable("status", outcome.name())) {
             if (error == null) {
-                log.info("Outbox-запись обработана: {}", outcome);
+                log.info("Outbox record processed: {}", outcome);
                 return;
             }
 
             try (var c = MDC.putCloseable("errorClass", error.getClass().getName());
                  var m = MDC.putCloseable("errorMessage", String.valueOf(error.getMessage()))) {
                 if (outcome == PublishOutcome.ERROR) {
-                    log.error("Outbox-запись не обработана, будет выбрана повторно", error);
+                    log.error("Outbox record not processed, will be selected again", error);
                 } else {
-                    log.warn("Публикация DeviceInfo не удалась: {}", describe(error));
+                    log.warn("DeviceInfo publish failed: {}", describe(error));
                 }
             }
         }

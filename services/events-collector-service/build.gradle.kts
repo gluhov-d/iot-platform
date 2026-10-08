@@ -99,10 +99,10 @@ sourceSets["main"].java.srcDir(avroOutputDir)
 tasks.compileJava {dependsOn(generateAvro)}
 
 // ---------------------------------------------------------------- Тесты
-// *Test - модульные (без Docker), *It - интеграционные (Testcontainers).
+// *Test — модульные (без Docker), It*Test — интеграционные (Testcontainers).
 tasks.test {
     useJUnitPlatform()
-    exclude("**/*IT.class")
+    exclude("**/It*Test.class")
 }
 
 val integrationTest by tasks.registering(Test::class) {
@@ -111,7 +111,7 @@ val integrationTest by tasks.registering(Test::class) {
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform()
-    include("**/*IT.class")
+    include("**/It*Test.class")
     shouldRunAfter(tasks.test)
 }
 
