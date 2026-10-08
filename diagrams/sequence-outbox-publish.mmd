@@ -1,0 +1,43 @@
+%% Фоновая публикация outbox: один активный публикатор через Redis-аренду
+sequenceDiagram
+    autonumber
+    participant J as OutboxPublisherJob
+    participant P as OutboxPublishingService
+    participant R as Redis
+    participant CH as ClickHouse device_outbox
+    participant K as Kafka (devices)
+
+    J->>P: publishPendingBatch() (fixedDelay OUTBOX_PUBLISH_INTERVAL_MS)
+    P->>R: SET outbox:lease <ownerToken> NX PX <ttlMs>
+    alt аренда не получена
+        R-->>P: nil
+        Note over P: итерация завершается, ничего не публикуется
+    else аренда получена
+        R-->>P: OK
+        P->>CH: SELECT ... FROM device_outbox FINAL<br/>WHERE status IN ('NEW', 'FAILED') AND attempts < OUTBOX_MAX_ATTEMPTS<br/>ORDER BY created_at LIMIT OUTBOX_BATCH_SIZE
+        CH-->>P: outbox-записи
+        loop каждая запись
+            P->>R: SISMEMBER devices:published <deviceId>
+            alt уже опубликовано
+                R-->>P: 1
+                P->>CH: INSERT версия v+1, SENT
+                Note over P: outbox_publish_skipped_total++
+            else еще не опубликовано
+                R-->>P: 0
+                P->>K: send(devices, key=deviceId, DeviceInfo) - ждем подтверждения
+                alt отправка успешна
+                    K-->>P: ack (acks=all)
+                    P->>R: SADD devices:published <deviceId>
+                    P->>CH: INSERT версия v+1, SENT
+                    Note over P: outbox_publish_success_total++
+                else ошибка отправки
+                    K-->>P: ошибка / таймаут
+                    P->>CH: INSERT версия v+1, FAILED, attempts+1, last_error
+                    Note over P: outbox_publish_fail_total++
+                end
+            end
+        end
+        Note over P,R: finally
+        P->>R: EVAL release.lua (DEL, только если значение == ownerToken)
+    end
+    P->>CH: SELECT count() ... FINAL -> outbox_pending_count

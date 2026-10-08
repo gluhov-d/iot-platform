@@ -1,0 +1,41 @@
+%% Прием события: at-least-once, offset подтверждается только после записи в обе таблицы
+sequenceDiagram
+    autonumber
+    participant K as Kafka (events)
+    participant SR as Schema Registry
+    participant L as KafkaEventListener
+    participant S as EventIngestionService
+    participant V as DeviceEventValidator
+    participant CE as ClickHouse device_events
+    participant CO as ClickHouse device_outbox
+
+    K->>L: poll (max.poll.records=1, enable.auto.commit=false)
+    L->>SR: схема по id (KafkaAvroDeserializer, кешируется)
+    SR-->>L: DeviceEvent (SpecificRecord)
+    L->>L: MDC: topic, partition, offset, eventId, deviceId
+    L->>S: ingest(event)
+    S->>V: validate(eventId, deviceId, eventType, timestampMs)
+
+    alt событие невалидно
+        V-->>S: InvalidEventException
+        S-->>L: исключение
+        Note over L,K: ack не вызывается. DefaultErrorHandler не повторяет<br/>(not retryable),  пишет лог status=REJECTED
+        else событие валидно
+        S->>S: event_date = дата в UTC, ingested_at = now
+        S->>CE: INSERT device_events
+        alt ошибка записи
+            CE-->>S: ошибка
+            S-->>L: EventPersistenceException (events_persist_fail_total++)
+            Note over L,K: ack не вызывается -> повтор с backoff без лимита попыток
+        else записано
+            S->>CO: INSERT device_outbox (state_version=1, NEW, attempts=0)
+            alt ошибка записи
+                CO-->>S: ошибка
+                S-->>L: EventPersistenceException
+                Note over L,K: ack не вызывается -> повтор. Повторная строка<br/>device_events схлопнется ReplacingMergeTree
+            else записано
+                S-->>L: ok (events_processed_total++, outbox_candidate_created_total++)
+                L->>K: ack.acknowledge() - commit offset
+            end
+        end
+    end
