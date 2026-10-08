@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "DeviceInfo",
+  "namespace": "com.github.gluhov.iotplatform.events.avro",
+  "fields": [
+    {
+      "name": "deviceId",
+      "type": "string"
+    },
+    {
+      "name": "emittedAtMs",
+      "type": "long"
+    }
+  ]
+}

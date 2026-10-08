@@ -1,0 +1,23 @@
+{
+  "type": "record",
+  "name": "DeviceEvent",
+  "namespace": "com.github.gluhov.iotplatform.events.avro",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": "string"
+    },
+    {
+      "name": "deviceId",
+      "type": "string"
+    },
+    {
+      "name": "timestampMs",
+      "type": "long"
+    },
+    {
+      "name": "eventType",
+      "type": "string"
+    }
+  ]
+}
