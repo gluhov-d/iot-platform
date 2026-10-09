@@ -3,10 +3,12 @@ package com.github.gluhov.iotplatform.eventscollector.domain.service;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.InvalidEventException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Duration;
 
+@Component
 @RequiredArgsConstructor
 public class DeviceEventValidator {
 

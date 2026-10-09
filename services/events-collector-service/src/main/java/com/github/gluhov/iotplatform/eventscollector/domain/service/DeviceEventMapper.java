@@ -3,11 +3,13 @@ package com.github.gluhov.iotplatform.eventscollector.domain.service;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.DeviceEventRecord;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxRecord;
+import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 
+@Component
 public class DeviceEventMapper {
 
     public DeviceEventRecord toEventRecord(DeviceEvent event, Instant ingestedAt) {

@@ -11,6 +11,7 @@ import io.micrometer.observation.ObservationRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -19,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.List;
 
+@Service
 @Slf4j
 @RequiredArgsConstructor
 public class OutboxPublishingService implements PublishOutboxUseCase {

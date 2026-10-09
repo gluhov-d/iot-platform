@@ -11,10 +11,12 @@ import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepos
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.Instant;
 
+@Service
 @RequiredArgsConstructor
 public class EventIngestionService implements IngestEventUseCase {
 
