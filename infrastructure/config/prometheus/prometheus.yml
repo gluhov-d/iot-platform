@@ -10,9 +10,28 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
+  # events-collector-service: DNS Docker возвращает все реплики сервиса,
+  # поэтому при --scale каждая реплика скрейпится отдельно
+  - job_name: events-collector-service
+    metrics_path: /actuator/prometheus
+    scrape_interval: 5s
+    dns_sd_configs:
+      - names: ["events-collector-service"]
+        type: A
+        port: 8080
+        refresh_interval: 15s
+    # Prometheus Java client 1.x запрещает имена с суффиксом _created (зарезервирован
+    # OpenMetrics), поэтому счетчик outbox.candidate.created экспортируется как
+    # outbox_candidate_total. Возвращаем требуемое имя при скрейпе
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: outbox_candidate_total
+        target_label: __name__
+        replacement: outbox_candidate_created_total
+
   - job_name: postgres
     static_configs:
-      - targets: ["postgres-exporter:9187"]
+      - targets: [ "postgres-exporter:9187" ]
         labels:
           instance: iot-postgres
 
