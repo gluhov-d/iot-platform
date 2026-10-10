@@ -1,0 +1,18 @@
+# Интеграционные тесты: адреса контейнеров приходят из @DynamicPropertySource (AbstractItTest)
+# Планировщик выключен - итерации публикации тест запускает сам, чтобы результат был детерминированным.
+app:
+  instance-id: it
+  kafka:
+    send-timeout: 5s
+  outbox:
+    batch-size: 50
+    max-attempts: 3
+    lease-ttl-ms: 10_000
+    publish-interval-ms: 500
+    scheduling-enabled: false
+
+management:
+  tracing:
+    export:
+      otlp:
+        enabled: false
