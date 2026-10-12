@@ -166,3 +166,12 @@ tasks.check {
 
 tasks.bootJar { archiveFileName = "events-collector-service.jar" }
 tasks.jar { enabled = false }
+
+// ---------------------------------------------------------------- Быстрая проверка стенда
+// Нужен поднятый стенд (make up), поэтому задача не входит в check и build
+// Exec без объявленных выходов Gradle выполняет при каждом запуске - кешировать нечего.
+val checkLocal by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Быстрая проверка поднятого локального стенда (scripts/check-local.sh)"
+    commandLine(layout.projectDirectory.file("scripts/check-local.sh").asFile.absolutePath)
+}

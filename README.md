@@ -297,6 +297,7 @@ docker compose -f infrastructure/docker-compose.yaml up -d --build events-collec
 
 ```bash
 services/events-collector-service/scripts/check-local.sh     # или make check-local
+./gradlew :services:events-collector-service:checkLocal      # то же через gradle (группа verification)
 ```
 
 Скрипт отправляет один `DeviceEvent` (уникальные `eventId` и `deviceId`, ключ `deviceId`) и проверяет:
