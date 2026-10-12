@@ -66,6 +66,7 @@
 | Java | 25 (Gradle toolchain, JDK скачивается автоматически через foojay) |
 | Spring Boot | 4.0.3 (Spring Framework 7.0, Spring for Apache Kafka 4.0) |
 | Apache Kafka | 4.2.0, KRaft (`apache/kafka:4.2.0`) |
+| Kafka UI (профиль `tools`) | kafbat/kafka-ui v1.5.0 |
 | Confluent Schema Registry | 8.2.4 |
 | ClickHouse | 26.2.19 (`clickhouse/clickhouse-server:26.2.19-alpine`, на Apple M4 — `linux/amd64`, см. «Типовые проблемы»), JDBC `clickhouse-jdbc` 0.9.9 |
 | Redis Open Source | 8.6.7 |
@@ -255,6 +256,7 @@ docker compose -f infrastructure/docker-compose.yaml --profile observability up 
 ```bash
 make up                       # базовый стенд
 make up-obs                   # с observability
+make up PROFILES=tools        # плюс Kafka UI (http://localhost:8090)
 make up PROFILES="observability platform"   # плюс окружение модуля 1 (Postgres, Keycloak, Camunda, MinIO)
 make health | make topics | make urls | make logs S=events-collector-service
 make down                     # остановить (тома сохраняются)
@@ -350,6 +352,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 | Prometheus | http://localhost:9090 (job `events-collector-service`) |
 | Loki | Grafana → Explore → Loki: `{service="events-collector-service"} \| json` |
 | Tempo | Grafana → Explore → Tempo: `{name="publish devices"}` (публикация), `{name="events process"}` (приём) |
+| Kafka UI | http://localhost:8090 (профиль `tools`): темы, сообщения Avro как JSON, лаг consumer group, схемы |
 
 Порт сервиса на хосте Docker выбирает из диапазона `EVENTS_COLLECTOR_PORTS` (по умолчанию 8085–8087,
 диапазон нужен для `--scale`). Фактический порт: `make urls` или

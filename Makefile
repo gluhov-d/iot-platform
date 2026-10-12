@@ -10,6 +10,7 @@ SERVICE_PROJ  := :services:events-collector-service
 
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
+#	make up PROFILES=tools	- плюс Kafka UI
 #	make up PROFILES="observability platform" - плюс окружение модуля
 PROFILES ?=
 COMPOSE       := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) $(foreach p, $(PROFILES),--profile $(p))
@@ -133,6 +134,8 @@ urls: ## Показать адреса всех сервисов
 	echo "  Schema Registry           http://localhost:$$(v SCHEMA_REGISTRY_PORT)"; \
 	echo "  ClickHouse                http://localhost:$$(v CLICKHOUSE_HTTP_PORT)  (native: $$(v CLICKHOUSE_NATIVE_PORT))"; \
 	echo "  Redis                     redis://localhost:$$(v REDIS_PORT)"; \
+	echo "  --- профиль tools"; \
+	echo "  Kafka UI                  http://localhost:$$(v KAFKA_UI_PORT)"; \
 	echo "  --- профиль observability"; \
 	echo "  Grafana                   http://localhost:$$(v GRAFANA_PORT)"; \
 	echo "  Prometheus                http://localhost:$$(v PROMETHEUS_PORT)"; \
