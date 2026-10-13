@@ -14,8 +14,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
-import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.LEASE_KEY;
-import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.RELEASE_SCRIPT;
+import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -69,5 +68,21 @@ class RedisLeaseServiceTest {
         when(redisTemplate.execute(RELEASE_SCRIPT, List.of(LEASE_KEY), "foreign-token")).thenReturn(0L);
 
         assertThat(leaseService.release("foreign-token")).isFalse();
+    }
+
+    @Test
+    @DisplayName("Extend by owner then lease prolonged")
+    void givenOwnerToken_whenExtend_thenTrue() {
+        when(redisTemplate.execute(EXTEND_SCRIPT, List.of(LEASE_KEY), TOKEN, "30000")).thenReturn(1L);
+
+        assertThat(leaseService.extend(TOKEN, TTL)).isTrue();
+    }
+
+    @Test
+    @DisplayName("Extend with foreign token then lease not prolonged")
+    void givenForeignToken_whenExtend_thenFalse() {
+        when(redisTemplate.execute(EXTEND_SCRIPT, List.of(LEASE_KEY), "foreign-token", "30000")).thenReturn(0L);
+
+        assertThat(leaseService.extend("foreign-token", TTL)).isFalse();
     }
 }

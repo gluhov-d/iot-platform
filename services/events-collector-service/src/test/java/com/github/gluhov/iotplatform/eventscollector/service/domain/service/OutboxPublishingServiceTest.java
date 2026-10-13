@@ -61,6 +61,7 @@ class OutboxPublishingServiceTest {
         lenient().when(lease.tryAcquire(TTL)).thenReturn(Optional.of(TOKEN));
         lenient().when(lease.release(TOKEN)).thenReturn(true);
         lenient().when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending));
+        lenient().when(lease.extend(TOKEN, TTL)).thenReturn(true);
     }
 
     @Test
@@ -193,6 +194,48 @@ class OutboxPublishingServiceTest {
         BatchResult result = service.publishPendingBatch();
 
         assertThat(result.skipped()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Batch of several records then lease extended before each next record")
+    void givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachNextRecord() {
+        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW);
+        OutboxRecord third = OutboxRecord.initial("evt-3", "dev-3", 3_000L, NOW);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second, third));
+        when(publishedDeviceStore.isPublished(anyString())).thenReturn(false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        InOrder order = inOrder(publisher, lease);
+        order.verify(publisher).publish(eq(DEVICE_ID), anyLong());
+        order.verify(lease).extend(TOKEN, TTL);
+        order.verify(publisher).publish(eq("dev-2"), anyLong());
+        order.verify(lease).extend(TOKEN, TTL);
+        order.verify(publisher).publish(eq("dev-3"), anyLong());
+        order.verify(lease).release(TOKEN);
+        verify(lease, times(2)).extend(TOKEN, TTL);
+        assertThat(result.published()).isEqualTo(3);
+        assertThat(result.leaseLost()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Lease lost during batch then remaining records not published")
+    void givenLeaseLostMidBatch_whenPublishBatch_thenBatchStops() {
+        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        when(lease.extend(TOKEN, TTL)).thenReturn(false);
+        when(lease.release(TOKEN)).thenReturn(false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher).publish(eq(DEVICE_ID), anyLong());
+        verify(publisher, never()).publish(eq("dev-2"), anyLong());
+        verify(outboxRepository, never()).insert(argThat(r -> "evt-2".equals(r.eventId())));
+        verify(lease).release(TOKEN);
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.selected()).isEqualTo(2);
+        assertThat(result.published()).isEqualTo(1);
     }
 
     private OutboxRecord captureInsert(InOrder order) {

@@ -44,7 +44,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         try {
             return Observation.createNotStarted("outbox.batch", observationRegistry)
                     .contextualName("outbox batch")
-                    .observe(this::publishBatch);
+                    .observe(() -> publishBatch(ownerToken.get()));
         } finally {
             if (!lease.release(ownerToken.get())) {
                 log.warn("Outbox lease expired before the iteration finished, increase OUTBOX_LEASE_TTL_MS");
@@ -53,17 +53,26 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         }
     }
 
-    private BatchResult publishBatch() {
+    private BatchResult publishBatch(String ownerToken) {
         List<OutboxRecord> pending = outboxRepository.findPending(policy.maxAttempts(), policy.batchSize());
         Map<PublishOutcome, Integer> outcomes = new EnumMap<>(PublishOutcome.class);
-        for (OutboxRecord record: pending) {
-            outcomes.merge(processOne(record), 1, Integer::sum);
+        boolean leaseLost = false;
+        for (int i = 0; i < pending.size(); i++) {
+            // Перед каждой следующей записью аренда продлевается на leaseTtl, поэтому TTL должен превышать
+            // время одной записи, а не всей пачки. Не продлилась - аренда у другого экземпляра, публиковать дальше нельзя
+            if (i > 0 && !extendLease(ownerToken)) {
+                leaseLost = true;
+                log.warn("Outbox lease lost, batch stopped: {} of {} records processed", i, pending.size());
+                break;
+            }
+            outcomes.merge(processOne(pending.get(i)), 1, Integer::sum);
         }
         BatchResult result = new BatchResult(true, pending.size(),
                 outcomes.getOrDefault(PublishOutcome.PUBLISHED, 0),
                 outcomes.getOrDefault(PublishOutcome.SKIPPED, 0),
                 outcomes.getOrDefault(PublishOutcome.FAILED, 0),
-                outcomes.getOrDefault(PublishOutcome.ERROR, 0));
+                outcomes.getOrDefault(PublishOutcome.ERROR, 0),
+                leaseLost);
         if (!pending.isEmpty()) {
             log.info("Outbox batch completed: {}", result);
         }
@@ -154,5 +163,9 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
                 }
             }
         }
+    }
+
+    private boolean extendLease(String ownerToken) {
+        return step("redis outbox:lease extend").observe(() -> lease.extend(ownerToken, policy.leaseTtl()));
     }
 }

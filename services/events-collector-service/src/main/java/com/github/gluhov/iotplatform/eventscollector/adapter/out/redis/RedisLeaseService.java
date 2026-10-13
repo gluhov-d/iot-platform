@@ -30,6 +30,15 @@ public class RedisLeaseService implements PublisherLease {
                 end
             """, Long.class);
 
+    // Продлевается только своя аренда: истекшую и взятую другим экземпляром продлить нельзя
+    public static final RedisScript<Long> EXTEND_SCRIPT = new DefaultRedisScript<>("""
+                if redis.call("get", KEYS[1]) == ARGV[1] then
+                    return redis.call("pexpire", KEYS[1], ARGV[2])
+                else
+                    return 0
+                end
+            """, Long.class);
+
     private final StringRedisTemplate redisTemplate;
 
     @Override
@@ -41,6 +50,12 @@ public class RedisLeaseService implements PublisherLease {
                         Expiration.milliseconds(ttl.toMillis()),
                         SetOption.ifAbsent()));
         return Boolean.TRUE.equals(acquired) ? Optional.of(ownerToken) : Optional.empty();
+    }
+
+    @Override
+    public boolean extend(String ownerToken, Duration ttl) {
+        Long extended = redisTemplate.execute(EXTEND_SCRIPT, List.of(LEASE_KEY), ownerToken, String.valueOf(ttl.toMillis()));
+        return extended != null && extended == 1L;
     }
 
     @Override

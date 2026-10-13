@@ -17,6 +17,13 @@ sequenceDiagram
         P->>CH: SELECT ... FROM device_outbox FINAL<br/>WHERE status IN ('NEW', 'FAILED') AND attempts < OUTBOX_MAX_ATTEMPTS<br/>ORDER BY created_at LIMIT OUTBOX_BATCH_SIZE
         CH-->>P: outbox-записи
         loop каждая запись
+            opt не первая запись пачки
+                P->>R: EVAL extend.lua (PEXPIRE ttlMs, только если значение == ownerToken)
+                break аренда потеряна (0)
+                    Note over P: пачка останавливается, остальные записи выберет следующая итерация
+                end
+                R-->>P: 1 - аренда продлена
+            end
             P->>R: SISMEMBER devices:published <deviceId>
             alt уже опубликовано
                 R-->>P: 1

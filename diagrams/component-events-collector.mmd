@@ -39,7 +39,7 @@ flowchart LR
     end
 
     subgraph redis["Redis 8.6"]
-        kLease[/"outbox:lease<br/>SET NX PX · Lua release"/]
+        kLease[/"outbox:lease<br/>SET NX PX · Lua extend/release"/]
         kPublished[/"devices:published<br/>Set&lt;deviceId&gt;"/]
     end
 
