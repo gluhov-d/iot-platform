@@ -57,6 +57,7 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers-kafka")
     testImplementation("org.testcontainers:testcontainers-clickhouse")
     testImplementation("org.awaitility:awaitility")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.1")
     testCompileOnly("org.projectlombok:lombok")
     testAnnotationProcessor("org.projectlombok:lombok")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
