@@ -1,14 +1,7 @@
 package com.github.gluhov.iotplatform.eventscollector.service.domain.service;
 
-import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
-import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxPolicy;
-import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxRecord;
-import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxStatus;
-import com.github.gluhov.iotplatform.eventscollector.domain.port.out.CollectorMetrics;
-import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceInfoPublisher;
-import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
-import com.github.gluhov.iotplatform.eventscollector.domain.port.out.PublishedDeviceStore;
-import com.github.gluhov.iotplatform.eventscollector.domain.port.out.PublisherLease;
+import com.github.gluhov.iotplatform.eventscollector.domain.model.*;
+import com.github.gluhov.iotplatform.eventscollector.domain.port.out.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,6 +40,8 @@ class OutboxPublishingServiceTest {
     @Mock
     private DeviceInfoPublisher publisher;
     @Mock
+    private PublicationAuditRepository publicationAuditRepository;
+    @Mock
     private CollectorMetrics metrics;
 
     private OutboxPublishingService service;
@@ -54,7 +49,7 @@ class OutboxPublishingServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new OutboxPublishingService(lease, outboxRepository, publishedDeviceStore, publisher, metrics,
+        service = new OutboxPublishingService(lease, outboxRepository, publishedDeviceStore, publisher, publicationAuditRepository, metrics,
                 ObservationRegistry.NOOP, new OutboxPolicy(BATCH_SIZE, MAX_ATTEMPTS, TTL), Clock.fixed(NOW, ZoneOffset.UTC));
         pending = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW.minusSeconds(5));
 
@@ -236,6 +231,64 @@ class OutboxPublishingServiceTest {
         assertThat(result.leaseLost()).isTrue();
         assertThat(result.selected()).isEqualTo(2);
         assertThat(result.published()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Publish retried record then audit PUBLISHED with attempt number")
+    void givenRetriedRecord_whenPublishBatch_thenAuditPublishedWithAttemptNumber() {
+        OutboxRecord failedOnce = pending.failed(NOW.minusSeconds(1), "timeout");
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(failedOnce));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+
+        service.publishPendingBatch();
+
+        assertThat(captureAudit()).isEqualTo(
+                new PublicationAuditRecord(EVENT_ID, DEVICE_ID, PublishOutcome.PUBLISHED, 2, "", NOW));
+    }
+
+    @Test
+    @DisplayName("Publish already published device then audit SKIPPED")
+    void givenPublishedDevice_whenPublishBatch_thenAuditSkipped() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+
+        service.publishPendingBatch();
+
+        assertThat(captureAudit().outcome()).isEqualTo(PublishOutcome.SKIPPED);
+    }
+
+    @Test
+    @DisplayName("Kafka send fails then audit FAILED with error text")
+    void givenKafkaFailure_whenPublishBatch_thenAuditFailedWithError() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(eq(DEVICE_ID), anyLong());
+
+        service.publishPendingBatch();
+
+        PublicationAuditRecord audit = captureAudit();
+        assertThat(audit.outcome()).isEqualTo(PublishOutcome.FAILED);
+        assertThat(audit.attempt()).isEqualTo(1);
+        assertThat(audit.error()).contains("broker unavailable");
+    }
+
+    @Test
+    @DisplayName("Audit write fails then publication still counted as done")
+    void givenAuditFailure_whenPublishBatch_thenPublicationKept() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        doThrow(new IllegalStateException("clickhouse down")).when(publicationAuditRepository).insert(any());
+
+        BatchResult result = service.publishPendingBatch();
+
+        assertThat(result.published()).isEqualTo(1);
+        assertThat(result.errors()).isZero();
+        verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
+        verify(metrics).publishSucceeded();
+    }
+
+    private PublicationAuditRecord captureAudit() {
+        ArgumentCaptor<PublicationAuditRecord> captor = ArgumentCaptor.forClass(PublicationAuditRecord.class);
+        verify(publicationAuditRepository).insert(captor.capture());
+        return captor.getValue();
     }
 
     private OutboxRecord captureInsert(InOrder order) {

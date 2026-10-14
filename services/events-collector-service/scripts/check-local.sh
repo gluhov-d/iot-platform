@@ -87,6 +87,12 @@ wait_for SENT clickhouse "SELECT toString(status) FROM iot_platform.device_outbo
 ok "device_outbox: SENT"
 
 # ------------------------------------------------------------------------------
+next "Publication audited in iot_platform.device_publication_audit"
+wait_for PUBLISHED clickhouse "SELECT toString(outcome) FROM iot_platform.device_publication_audit WHERE event_id = {eid:String} ORDER BY occurred_at DESC LIMIT 1" \
+  || fail "no PUBLISHED audit record (table missing? see infrastructure/init/clickhouse/02-audit.sh)"
+ok "device_publication_audit: PUBLISHED"
+
+# ------------------------------------------------------------------------------
 next "DeviceInfo published to topic devices"
 found="$("${COMPOSE[@]}" exec -T schema-registry \
   kafka-avro-console-consumer \

@@ -16,6 +16,7 @@ flowchart LR
         publish["OutboxPublishingService"]
         eventRepo["ClickHouseEventRepository"]
         outboxRepo["ClickHouseOutboxRepository"]
+        auditRepo["ClickHousePublicationAuditRepository"]
         lease["RedisLeaseService"]
         store["RedisPublishedDeviceStore"]
         kprod["KafkaDeviceInfoProducer"]
@@ -29,6 +30,7 @@ flowchart LR
         publish --> outboxRepo
         publish --> store
         publish --> kprod
+        publish --> auditRepo
         ingest -.-> metrics
         publish -.-> metrics
     end
@@ -36,6 +38,7 @@ flowchart LR
     subgraph ch["ClickHouse 26.2 · iot_platform"]
         tEvents[("device_events<br/>ReplacingMergeTree(ingested_at)")]
         tOutbox[("device_outbox<br/>ReplacingMergeTree(state_version)")]
+        tAudit[("device_publication_audit<br/>MergeTree · TTL 30 дней")]
     end
 
     subgraph redis["Redis 8.6"]
@@ -59,6 +62,7 @@ flowchart LR
     kprod -. "схема" .- sr
     eventRepo -- "INSERT" --> tEvents
     outboxRepo -- "INSERT версии · SELECT FINAL" --> tOutbox
+    auditRepo -- "INSERT попытки" --> tAudit
     lease --> kLease
     store --> kPublished
     kprod -- "DeviceInfo (Avro)" --> devices

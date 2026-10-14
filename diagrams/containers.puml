@@ -39,7 +39,7 @@ System_Boundary(platform, "IoT Platform") {
 
     ContainerDb(pg, "PostgreSQL", "Реляционная БД", "devices, device_commands; БД Keycloak и Camunda")
     ContainerDb(redis, "Redis", "In-Memory", "outbox:lease (аренда публикатора), devices:published; кэш активных устройств")
-    ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "iot_platform: device_events, device_outbox (ReplacingMergeTree)")
+    ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "iot_platform: device_events, device_outbox (ReplacingMergeTree), device_publication_audit (MergeTree)")
     ContainerDb(minio, "MinIO", "Object Storage", "Бакеты iot-dlt, iot-attachments")
     Container(camunda, "Camunda", "BPM Engine", "Процесс выполнения команды: отправка, ожидание подтверждения, таймаут")
 

@@ -1,9 +1,6 @@
 package com.github.gluhov.iotplatform.eventscollector.domain.service;
 
-import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
-import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxPolicy;
-import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxRecord;
-import com.github.gluhov.iotplatform.eventscollector.domain.model.PublishOutcome;
+import com.github.gluhov.iotplatform.eventscollector.domain.model.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.*;
 import io.micrometer.observation.Observation;
@@ -28,6 +25,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     private final OutboxRepository outboxRepository;
     private final PublishedDeviceStore publishedDeviceStore;
     private final DeviceInfoPublisher publisher;
+    private final PublicationAuditRepository publicationAuditRepository;
     private final CollectorMetrics metrics;
     private final ObservationRegistry observationRegistry;
     private final OutboxPolicy policy;
@@ -90,7 +88,18 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         } catch (RuntimeException e) {
             // Не удалось записать новую версию: запись останется NEW/FAILED и будет выбрана снова
             logOutcome(PublishOutcome.ERROR, e);
+            audit(record, PublishOutcome.ERROR, e);
             return PublishOutcome.ERROR;
+        }
+    }
+
+    // Технический аудит пишется после смены статуса в outbox; его ошибка не меняет результат публикации
+    private void audit(OutboxRecord record, PublishOutcome publishOutcome, Throwable error) {
+        PublicationAuditRecord entry = PublicationAuditRecord.of(record, publishOutcome, error == null ? null : describe(error), now());
+        try {
+            step("append audit record").observe(() -> publicationAuditRepository.insert(entry));
+        } catch (RuntimeException e) {
+            log.warn("Publication audit record not written: {}", describe(e));
         }
     }
 
@@ -101,6 +110,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
             step("append SENT version").observe(() -> outboxRepository.insert(record.sent(now())));
             metrics.publishSkipped();
             logOutcome(PublishOutcome.SKIPPED, null);
+            audit(record, PublishOutcome.SKIPPED, null);
             return PublishOutcome.SKIPPED;
         }
 
@@ -110,6 +120,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
             outboxRepository.insert(record.failed(now(), describe(e)));
             metrics.publishFailed();
             logOutcome(PublishOutcome.FAILED, e);
+            audit(record, PublishOutcome.FAILED, e);
             return PublishOutcome.FAILED;
         }
 
@@ -118,6 +129,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         step("append SENT version").observe(() -> outboxRepository.insert(record.sent(now())));
         metrics.publishSucceeded();
         logOutcome(PublishOutcome.PUBLISHED, null);
+        audit(record, PublishOutcome.PUBLISHED, null);
         return PublishOutcome.PUBLISHED;
     }
 

@@ -101,6 +101,7 @@ iot-platform/
 │   ├── init/
 │   │   ├── kafka/init-topics.sh       # создание тем events/devices (контейнер kafka-init)
 │   │   ├── clickhouse/01-schema.sh    # база iot_platform, таблицы device_events и device_outbox
+│   │   ├── clickhouse/02-audit.sh     # таблица аудита публикаций device_publication_audit
 │   │   └── postgres/                  # профиль platform (окружение модуля 1)
 │   └── config/
 │       ├── prometheus/prometheus.yml
@@ -136,13 +137,13 @@ iot-platform/
 
 | Пакет | Содержимое |
 |---|---|
-| `domain.model` | `DeviceEventRecord`, `OutboxRecord` (версии и переходы), `OutboxStatus`, `OutboxPolicy`, `PublishOutcome`, `BatchResult` |
+| `domain.model` | `DeviceEventRecord`, `OutboxRecord` (версии и переходы), `OutboxStatus`, `OutboxPolicy`, `PublishOutcome`, `BatchResult`, `PublicationAuditRecord` |
 | `domain.exception` | `InvalidEventException` (не повторяется), `EventPersistenceException` (повторяется) |
-| `domain.port.in` / `out` | `IngestEventUseCase`, `PublishOutboxUseCase` / репозитории, аренда, учёт устройств, публикатор, метрики |
+| `domain.port.in` / `out` | `IngestEventUseCase`, `PublishOutboxUseCase` / репозитории (события, outbox, аудит), аренда, учёт устройств, публикатор, метрики |
 | `domain.service` | `EventIngestionService`, `OutboxPublishingService`, `DeviceEventValidator`, `DeviceEventMapper` |
 | `adapter.in.kafka` | `KafkaEventListener` — принять, передать в сервис, ack |
 | `adapter.in.scheduler` | `OutboxPublisherJob` |
-| `adapter.out.clickhouse` | `ClickHouseEventRepository`, `ClickHouseOutboxRepository` |
+| `adapter.out.clickhouse` | `ClickHouseEventRepository`, `ClickHouseOutboxRepository`, `ClickHousePublicationAuditRepository` |
 | `adapter.out.kafka` | `KafkaDeviceInfoProducer`, `DeviceInfoPublishException` |
 | `adapter.out.redis` | `RedisLeaseService`, `RedisPublishedDeviceStore` |
 | `support` | `MetricsFacade` |
@@ -181,7 +182,8 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
 
 ## 7. Таблицы ClickHouse
 
-База `iot_platform`, DDL — `infrastructure/init/clickhouse/01-schema.sh` (выполняется только на **пустом** томе).
+База `iot_platform`, DDL — `infrastructure/init/clickhouse/01-schema.sh` и `02-audit.sh` (выполняются по порядку
+и только на **пустом** томе).
 
 **`device_events`** — `ReplacingMergeTree(ingested_at)`, `PARTITION BY event_date`,
 `ORDER BY (device_id, event_date, timestamp_ms, event_id)`. Одно Kafka-сообщение — одна строка;
@@ -205,6 +207,26 @@ WHERE event_id = 'evt-1';
 | ошибка отправки | v+1 | FAILED | +1, `last_error` |
 
 Записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются (остаются FAILED; видны в логах и метриках).
+
+**`device_publication_audit`** — технический аудит публикаций: `MergeTree`, `PARTITION BY toYYYYMM(occurred_at)`,
+`ORDER BY (device_id, occurred_at, event_id)`, `TTL` 30 дней. Каждая попытка публикации outbox-записи — отдельная
+строка: исход `outcome` (`PUBLISHED`/`SKIPPED`/`FAILED`/`ERROR`), номер попытки `attempt` (`attempts + 1`), текст
+ошибки, `instance_id` экземпляра и время. Строка пишется после смены статуса в `device_outbox`; если ClickHouse её
+не принял, публикация всё равно считается выполненной, в логе — «Publication audit record not written».
+
+```sql
+SELECT occurred_at, toString(outcome) AS outcome, attempt, instance_id, error
+FROM iot_platform.device_publication_audit
+WHERE event_id = 'evt-1'
+ORDER BY occurred_at;
+```
+
+На стенде, поднятом до появления таблицы, `02-audit.sh` не выполнялся (init-скрипты работают только на пустом
+томе), а healthcheck ClickHouse ждёт именно `device_publication_audit`. Создать таблицу без потери данных:
+
+```bash
+docker compose -f infrastructure/docker-compose.yaml exec clickhouse bash /docker-entrypoint-initdb.d/02-audit.sh
+```
 
 ## 8. Redis-ключи
 
@@ -308,8 +330,9 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ```
 
 Скрипт отправляет один `DeviceEvent` (уникальные `eventId` и `deviceId`, ключ `deviceId`) и проверяет:
-сервис healthy → строка в `device_events` → запись в `device_outbox` → статус `SENT` → `DeviceInfo` в теме
-`devices` → `/actuator/health` = `UP`. Код выхода 0 — «All checks passed»; иначе печатается упавший шаг.
+сервис healthy → строка в `device_events` → запись в `device_outbox` → статус `SENT` → аудит `PUBLISHED` →
+`DeviceInfo` в теме `devices` → `/actuator/health` = `UP`. Код выхода 0 — «All checks passed»; иначе печатается
+упавший шаг.
 Это быстрая проверка поднятого стенда, а не замена интеграционным тестам.
 
 ## 14. Модульные тесты
@@ -318,13 +341,14 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:test     # или make test; Docker не нужен
 ```
 
-Классы `*Test` (52 теста). Ключевые сценарии:
+Классы `*Test` (56 тестов). Ключевые сценарии:
 
 * `EventIngestionScenarioTest` — корректное событие, пустые `eventId`/`deviceId`, некорректный `timestampMs`,
   ошибки записи в `device_events` и `device_outbox`: проверяется, вызван ли `ack.acknowledge()`;
 * `OutboxPublishingServiceTest` — новое устройство (порядок send → SADD → SENT), уже опубликованное,
   ошибка Kafka (FAILED, attempts + 1), аренда не получена, освобождение аренды при ошибке,
-  продление аренды перед каждой следующей записью и остановка пачки при её потере;
+  продление аренды перед каждой следующей записью и остановка пачки при её потере, запись аудита
+  (`PUBLISHED` с номером попытки, `SKIPPED`, `FAILED` с ошибкой) и публикация при недоступном аудите;
 * `RedisLeaseServiceTest` — освобождение и продление аренды владельцем, попытка освободить или продлить чужую аренду;
 * `MetricsFacadeTest` — имена метрик в формате Prometheus;
 * `ArchitectureTest` (ArchUnit, 9 правил) — слои и направления зависимостей: домен без Kafka, JDBC и Redis,
@@ -344,7 +368,8 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 что и на стенде.
 
 * `ItEventsCollectorTest` — приём события; публикация outbox и пропуск повторной публикации; повторная доставка
-  того же `eventId`; ошибка публикации, повторная попытка и остановка после `OUTBOX_MAX_ATTEMPTS`;
+  того же `eventId`; ошибка публикации, повторная попытка и остановка после `OUTBOX_MAX_ATTEMPTS`; строки аудита
+  каждой попытки (исход, номер попытки, `instance_id`);
 * `ItRedisLeaseServiceTest` — захват, освобождение владельцем, попытка удалить чужую аренду, истечение TTL,
   продление своей аренды, отказ продлить чужую или истёкшую.
 
@@ -437,6 +462,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | панель логов в Grafana: `timeout awaiting response headers` | после долгого сбоя (например, ClickHouse недоступен) в логах много стек-трейсов, и ответ Loki превышает лимит gRPC; в `loki-config.yaml` лимит поднят до 16 МБ (`grpc_server_max_*_msg_size`) — после правки `docker compose -f infrastructure/docker-compose.yaml restart loki` |
 | сборка образа: `failed to resolve source metadata for docker.io/docker/dockerfile` | временно недоступен Docker Hub (фронтенд `# syntax=docker/dockerfile:1.7`); повторить сборку или заранее `docker pull docker/dockerfile:1.7` |
 | сервис не стартует: `input/output error` при `docker pull`/`build` | переполнен диск VM Docker или диск хоста; освободить место (`docker builder prune -af`, удаление неиспользуемых образов) и перезапустить Docker Desktop |
+| нет строк в `device_publication_audit`, ClickHouse unhealthy после обновления | стенд поднят до появления таблицы: `02-audit.sh` выполняется только на пустом томе — создать таблицу вручную (раздел 7); при ошибке записи аудита в логе сервиса — «Publication audit record not written» |
 | сообщения events не читаются, лаг растёт | логи сервиса со `status=FAILED` — временная ошибка ClickHouse, раздел ждёт с backoff до 10 с; после восстановления хранилища чтение продолжится автоматически |
 | лаг consumer group отрицательный (`-1`) | у группы ещё нет подтверждённого offset в разделе (в раздел не приходили сообщения) — kafka-exporter отдаёт `-1`; после первого обработанного сообщения лаг станет 0 |
 | порт занят | поменять `*_PORT` / `EVENTS_COLLECTOR_PORTS` в `.env` |

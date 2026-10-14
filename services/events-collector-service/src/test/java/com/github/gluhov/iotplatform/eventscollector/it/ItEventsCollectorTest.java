@@ -123,6 +123,7 @@ class ItEventsCollectorTest extends AbstractItTest {
         assertThat(redisTemplate.opsForSet().isMember(PUBLISHED_KEY, deviceId)).isTrue();
         await().atMost(WAIT).untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).isNotEmpty());
         assertThat(redisTemplate.hasKey(LEASE_KEY)).as("lease released").isFalse();
+        assertThat(auditTrail(eventId)).containsExactly("PUBLISHED/1/it");
         
         // Второе событие того же устройства: публикации нет, только версия SENT
         String secondEventId = unique("evt");
@@ -131,6 +132,7 @@ class ItEventsCollectorTest extends AbstractItTest {
         publishOutbox.publishPendingBatch();
         
         assertThat(outboxRow(secondEventId)).containsEntry("status", "SENT");
+        assertThat(auditTrail(secondEventId)).containsExactly("SKIPPED/1/it");
         await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).hasSize(1));
     }
@@ -188,6 +190,7 @@ class ItEventsCollectorTest extends AbstractItTest {
                 .containsEntry("attempts", 1L)
                 .containsEntry("state_version", 3L);
         await().atMost(WAIT).untilAsserted(() -> assertThat(publishedDeviceInfo(retriedDevice)).hasSize(1));
+        assertThat(auditTrail(retriedEvent)).containsExactly("FAILED/1/it", "PUBLISHED/2/it");
 
         // Постоянная ошибка: после OUTBOX_MAX_ATTEMPTS (3 в тестах) запись больше не выбирается
         String brokenEvent = unique("evt");
@@ -204,6 +207,7 @@ class ItEventsCollectorTest extends AbstractItTest {
                 .containsEntry("status", "FAILED")
                 .containsEntry("attempts", 3L)
                 .containsEntry("state_version", 4L);
+        assertThat(auditTrail(brokenEvent)).containsExactly("FAILED/1/it", "FAILED/2/it", "FAILED/3/it");
     }
 
     private static void send(String eventId, String deviceId, long timestampMs) {
@@ -250,6 +254,18 @@ class ItEventsCollectorTest extends AbstractItTest {
                         "attempts", rs.getLong("attempts"),
                         "last_error", rs.getString("last_error")))
                 .single();
+    }
+
+    // Попытки публикации события из аудита: "исход/номер попытки/экземпляр" в порядке времени
+    private List<String> auditTrail(String eventId) {
+        return jdbcClient.sql("""
+                        SELECT concat(toString(outcome), '/', toString(attempt), '/', instance_id)
+                        FROM device_publication_audit WHERE event_id = :id
+                        ORDER BY occurred_at, attempt
+                        """)
+                .param("id", eventId)
+                .query(String.class)
+                .list();
     }
     
     private static List<DeviceInfo> publishedDeviceInfo(String deviceId) {

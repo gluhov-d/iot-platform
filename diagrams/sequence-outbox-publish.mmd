@@ -5,6 +5,7 @@ sequenceDiagram
     participant P as OutboxPublishingService
     participant R as Redis
     participant CH as ClickHouse device_outbox
+    participant A as ClickHouse device_publication_audit
     participant K as Kafka (devices)
 
     J->>P: publishPendingBatch() (fixedDelay OUTBOX_PUBLISH_INTERVAL_MS)
@@ -43,6 +44,8 @@ sequenceDiagram
                     Note over P: outbox_publish_fail_total++
                 end
             end
+            P->>A: INSERT аудит (outcome, attempt = attempts + 1, instance_id)
+            Note over P,A: ошибка аудита - только предупреждение в лог, результат публикации не меняется
         end
         Note over P,R: finally
         P->>R: EVAL release.lua (DEL, только если значение == ownerToken)
