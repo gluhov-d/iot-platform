@@ -3,6 +3,7 @@ package com.github.gluhov.iotplatform.eventscollector.domain.service;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.DeviceEventRecord;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxRecord;
+import com.github.gluhov.iotplatform.eventscollector.domain.model.TraceRef;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -22,8 +23,8 @@ public class DeviceEventMapper {
                 ingestedAt);
     }
 
-    public OutboxRecord toInitialOutbox(DeviceEvent event, Instant now) {
-        return OutboxRecord.initial(event.getEventId(), event.getDeviceId(), event.getTimestampMs(), now);
+    public OutboxRecord toInitialOutbox(DeviceEvent event, Instant now, TraceRef trace) {
+        return OutboxRecord.initial(event.getEventId(), event.getDeviceId(), event.getTimestampMs(), now, trace);
     }
 
     /**

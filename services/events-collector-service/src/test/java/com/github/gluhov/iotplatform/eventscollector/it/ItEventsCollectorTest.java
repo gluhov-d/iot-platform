@@ -25,12 +25,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.LEASE_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.PUBLISHED_KEY;
@@ -124,6 +122,10 @@ class ItEventsCollectorTest extends AbstractItTest {
         await().atMost(WAIT).untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).isNotEmpty());
         assertThat(redisTemplate.hasKey(LEASE_KEY)).as("lease released").isFalse();
         assertThat(auditTrail(eventId)).containsExactly("PUBLISHED/1/it");
+        // Сквозной трейс: DeviceInfo отправлен в том же трейсе, в котором событие было принято
+        String ingestionTraceId = String.valueOf(outboxRow(eventId).get("trace_id"));
+        assertThat(ingestionTraceId).hasSize(32);
+        assertThat(publishedTraceIds(deviceId)).containsExactly(ingestionTraceId);
         
         // Второе событие того же устройства: публикации нет, только версия SENT
         String secondEventId = unique("evt");
@@ -242,7 +244,7 @@ class ItEventsCollectorTest extends AbstractItTest {
     private Map<String, Object> outboxRow(String eventId) {
         return jdbcClient.sql("""
                         SELECT device_id, source_timestamp_ms, toString(status) AS status,
-                               toInt64(state_version) AS state_version, toInt64(attempts) AS attempts, last_error
+                               toInt64(state_version) AS state_version, toInt64(attempts) AS attempts, last_error, trace_id
                         FROM device_outbox FINAL WHERE event_id = :id
                         """)
                 .param("id", eventId)
@@ -252,7 +254,8 @@ class ItEventsCollectorTest extends AbstractItTest {
                         "state_version", rs.getLong("state_version"),
                         "status", rs.getString("status"),
                         "attempts", rs.getLong("attempts"),
-                        "last_error", rs.getString("last_error")))
+                        "last_error", rs.getString("last_error"),
+                        "trace_id", rs.getString("trace_id")))
                 .single();
     }
 
@@ -273,6 +276,17 @@ class ItEventsCollectorTest extends AbstractItTest {
         return devicesSeen.stream()
                 .filter(record -> deviceId.equals(record.key()))
                 .map(ConsumerRecord::value)
+                .toList();
+    }
+
+    // traceId из заголовка traceparent сообщений устройства в devices (его добавляет KafkaTemplate)
+    private static List<String> publishedTraceIds(String deviceId) {
+        publishedDeviceInfo(deviceId);
+        return devicesSeen.stream()
+                .filter(record -> deviceId.equals(record.key()))
+                .map(record -> record.headers().lastHeader("traceparent"))
+                .filter(Objects::nonNull)
+                .map(header -> new String(header.value(), StandardCharsets.UTF_8).split("-")[1])
                 .toList();
     }
 }

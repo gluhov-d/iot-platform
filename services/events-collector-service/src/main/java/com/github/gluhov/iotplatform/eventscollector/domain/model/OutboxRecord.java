@@ -11,23 +11,24 @@ public record OutboxRecord(
         long stateVersion,
         OutboxStatus status,
         int attempts,
-        String lastError) {
+        String lastError,
+        TraceRef traceRef) {
 
     public static final long INITIAL_VERSION = 1L;
     public static final int MAX_ERROR_LENGTH = 1000;
 
-    public static OutboxRecord initial(String eventId, String deviceId, long sourceTimestampMs, Instant now) {
-        return new OutboxRecord(eventId, deviceId, sourceTimestampMs, now, now, INITIAL_VERSION, OutboxStatus.NEW, 0, "");
+    public static OutboxRecord initial(String eventId, String deviceId, long sourceTimestampMs, Instant now, TraceRef traceRef) {
+        return new OutboxRecord(eventId, deviceId, sourceTimestampMs, now, now, INITIAL_VERSION, OutboxStatus.NEW, 0, "", traceRef);
     }
 
     public OutboxRecord sent(Instant now) {
         return new OutboxRecord(eventId, deviceId, sourceTimestampMs, createdAt, now,
-                stateVersion + 1, OutboxStatus.SENT, attempts, "");
+                stateVersion + 1, OutboxStatus.SENT, attempts, "", traceRef);
     }
 
     public OutboxRecord failed(Instant now, String error) {
         return new OutboxRecord(eventId, deviceId, sourceTimestampMs, createdAt, now,
-                stateVersion + 1, OutboxStatus.FAILED, attempts + 1, truncate(error));
+                stateVersion + 1, OutboxStatus.FAILED, attempts + 1, truncate(error), traceRef);
     }
 
     private static String truncate(String error) {

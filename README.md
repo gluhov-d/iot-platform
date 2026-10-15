@@ -127,7 +127,7 @@ iot-platform/
 |---|---|
 | `infrastructure/compose.yaml` (раздел 14) | `infrastructure/docker-compose.yaml` (как в разделе 22) |
 | `infrastructure/kafka/init-topics.sh` | `infrastructure/init/kafka/init-topics.sh` |
-| `infrastructure/clickhouse/init/01-create-database.sql`, `02-device-events.sql`, `03-device-outbox.sql` | `infrastructure/init/clickhouse/01-schema.sh` — тот же DDL из раздела 8 одним скриптом; имя базы — из `CLICKHOUSE_DB` (по умолчанию `iot_platform`) |
+| `infrastructure/clickhouse/init/01-create-database.sql`, `02-device-events.sql`, `03-device-outbox.sql` | `infrastructure/init/clickhouse/01-schema.sh` — тот же DDL из раздела 8 одним скриптом; имя базы — из `CLICKHOUSE_DB` (по умолчанию `iot_platform`); в `device_outbox` по согласованию с преподавателем добавлены `trace_id` и `span_id` для сквозного трейса |
 | `infrastructure/{prometheus,grafana,loki,tempo,alloy}/...` | `infrastructure/config/{prometheus,grafana,loki,tempo,alloy}/...` |
 | `services/events-collector-service/settings.gradle.kts`, свой `gradlew` | многомодульная сборка: `settings.gradle.kts` и `gradlew` в корне |
 | `application.yml`, `application-local.yml`, `application-docker.yml` | те же профили с расширением `.yaml` |
@@ -191,7 +191,8 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
 
 **`device_outbox`** — `ReplacingMergeTree(state_version)`, `ORDER BY (event_id)`. Журнал версий:
 каждая смена статуса — `INSERT` новой строки с `state_version + 1`, `ALTER TABLE ... UPDATE` не используется.
-Текущее состояние читается через `FINAL`:
+Текущее состояние читается через `FINAL`. Колонки `trace_id` и `span_id` (`DEFAULT ''`) — расширение DDL задания:
+спан приёма события, который продолжает публикация (раздел 16); все версии записи несут одно и то же значение.
 
 ```sql
 SELECT event_id, device_id, toString(status) AS status, state_version, attempts, last_error
@@ -207,6 +208,17 @@ WHERE event_id = 'evt-1';
 | ошибка отправки | v+1 | FAILED | +1, `last_error` |
 
 Записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются (остаются FAILED; видны в логах и метриках).
+
+На стенде, поднятом до появления колонок трассировки, их нужно добавить один раз (данные сохраняются; записи,
+принятые раньше, публикуются в отдельном трейсе, как до изменения):
+
+```bash
+docker compose -f infrastructure/docker-compose.yaml exec -T clickhouse sh -c 'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --database "$CLICKHOUSE_DB"' <<'SQL'
+ALTER TABLE device_outbox
+    ADD COLUMN IF NOT EXISTS trace_id String DEFAULT '',
+    ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''
+SQL
+```
 
 **`device_publication_audit`** — технический аудит публикаций: `MergeTree`, `PARTITION BY toYYYYMM(occurred_at)`,
 `ORDER BY (device_id, occurred_at, event_id)`, `TTL` 30 дней. Каждая попытка публикации outbox-записи — отдельная
@@ -341,14 +353,16 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:test     # или make test; Docker не нужен
 ```
 
-Классы `*Test` (56 тестов). Ключевые сценарии:
+Классы `*Test` (58 тестов). Ключевые сценарии:
 
 * `EventIngestionScenarioTest` — корректное событие, пустые `eventId`/`deviceId`, некорректный `timestampMs`,
-  ошибки записи в `device_events` и `device_outbox`: проверяется, вызван ли `ack.acknowledge()`;
+  ошибки записи в `device_events` и `device_outbox`: проверяется, вызван ли `ack.acknowledge()`; спан приёма
+  сохраняется в outbox-записи;
 * `OutboxPublishingServiceTest` — новое устройство (порядок send → SADD → SENT), уже опубликованное,
   ошибка Kafka (FAILED, attempts + 1), аренда не получена, освобождение аренды при ошибке,
-  продление аренды перед каждой следующей записью и остановка пачки при её потере, запись аудита
-  (`PUBLISHED` с номером попытки, `SKIPPED`, `FAILED` с ошибкой) и публикация при недоступном аудите;
+  продление аренды перед каждой следующей записью и остановка пачки при её потере, отправка внутри трейса приёма,
+  запись аудита (`PUBLISHED` с номером попытки, `SKIPPED`, `FAILED` с ошибкой) и публикация при недоступном аудите;
+* `OutboxRecordTest` — версии записи: повторная доставка, обрезка ошибки, перенос контекста трассировки;
 * `RedisLeaseServiceTest` — освобождение и продление аренды владельцем, попытка освободить или продлить чужую аренду;
 * `MetricsFacadeTest` — имена метрик в формате Prometheus;
 * `ArchitectureTest` (ArchUnit, 9 правил) — слои и направления зависимостей: домен без Kafka, JDBC и Redis,
@@ -369,7 +383,8 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 
 * `ItEventsCollectorTest` — приём события; публикация outbox и пропуск повторной публикации; повторная доставка
   того же `eventId`; ошибка публикации, повторная попытка и остановка после `OUTBOX_MAX_ATTEMPTS`; строки аудита
-  каждой попытки (исход, номер попытки, `instance_id`);
+  каждой попытки (исход, номер попытки, `instance_id`); `DeviceInfo` уходит в трейсе приёма (`traceId` из
+  `traceparent` совпадает с `trace_id` в outbox);
 * `ItRedisLeaseServiceTest` — захват, освобождение владельцем, попытка удалить чужую аренду, истечение TTL,
   продление своей аренды, отказ продлить чужую или истёкшую.
 
@@ -415,18 +430,23 @@ metadata (не метки, чтобы не раздувать индекс). С�
 
 **Трассировки** — Micrometer Tracing + OpenTelemetry, OTLP HTTP → Alloy (`:4320`) → Tempo, выборка 100 %.
 
-* Путь приёма (один трейс): `events process` → `validate` → `insert device_events` → `insert device_outbox`.
-* Путь публикации (отдельный трейс итерации): `task outboxPublisherJob.run` → `outbox batch` → `outbox publish` →
+* Сквозной трейс события (приём и публикация): `events process` → `validate` → `insert device_events` →
+  `insert device_outbox`, а после итерации публикатора там же `outbox publish` (дочерний спан `events process`) →
   `redis devices:published check` → `publish devices` → `devices send` (спан Kafka-продюсера) →
   `redis devices:published add` → `append SENT version`.
-* Путь пропуска: `outbox batch` → `outbox publish` → `redis devices:published check` → `append SENT version`.
+* Пропуск публикации — в трейсе своего события: `outbox publish` → `redis devices:published check` → `append SENT version`.
+* Трейс итерации публикатора: `task outboxPublisherJob.run` → `outbox batch` — выборка и продление аренды;
+  обработка записей уходит в трейсы их событий.
 
 Запросы к `/actuator/*` и спаны команд Redis (Lettuce) не трассируются (`ObservationConfig`), чтобы в Tempo
 оставались только пути приёма и публикации. Шаги с Redis видны через собственные спаны сервиса.
 
-Приём и публикация — разные трейсы: публикация выполняется позже, в другом потоке, а в схеме
-`device_outbox` нет колонки для контекста трассировки. Связать их можно поиском по атрибуту `eventId`
-у спана `outbox publish` (`{span.eventId="<eventId>"}` в TraceQL). Без профиля `observability` трейсы
+Публикация выполняется позже и в другом потоке, поэтому контекст трассировки переносится через саму outbox-запись:
+при приёме `EventIngestionService` сохраняет `trace_id`/`span_id` текущего спана в `device_outbox`, при публикации
+`OutboxPublishingService` делает спан `outbox publish` дочерним к нему (`TraceContextCarrier`, реализация —
+`support/MicrometerTraceContextCarrier`). Связь задаёт контекст W3C, а не поиск по `eventId`. Заголовок `traceparent`
+сообщения `DeviceInfo` содержит тот же `traceId`, поэтому потребители `devices` продолжают этот трейс, а если источник
+событий присылает `traceparent` в `events`, трейс начинается ещё у него. Без профиля `observability` трейсы
 не доставляются (Alloy не запущен): OpenTelemetry-экспортёр периодически пишет в лог ошибку
 `Failed to export spans ... UnknownHostException: alloy` — на работу сервиса это не влияет.
 
@@ -435,9 +455,8 @@ metadata (не метки, чтобы не раздувать индекс). С�
 | Файл | Что |
 |---|---|
 | `grafana-dashboard.png` | дашборд сервиса с метриками |
-| `tempo-trace-publish.png` | трейс успешного пути публикации |
-| `tempo-trace-ingest.png` | трейс приёма события |
-| `tempo-trace-skip.png` | трейс пропуска публикации для уже опубликованного устройства |
+| `tempo-trace-end-to-end.png` | сквозной трейс успешного пути: приём (`events process`) и публикация (`outbox publish` — дочерний спан) в одном трейсе |
+| `tempo-trace-skip.png` | пропуск публикации для уже опубликованного устройства — в трейсе своего события: `outbox publish` → `redis devices:published check` → `append SENT version` → `append audit record`, без отправки в Kafka |
 
 ## 17. Диаграммы
 
@@ -463,6 +482,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | сборка образа: `failed to resolve source metadata for docker.io/docker/dockerfile` | временно недоступен Docker Hub (фронтенд `# syntax=docker/dockerfile:1.7`); повторить сборку или заранее `docker pull docker/dockerfile:1.7` |
 | сервис не стартует: `input/output error` при `docker pull`/`build` | переполнен диск VM Docker или диск хоста; освободить место (`docker builder prune -af`, удаление неиспользуемых образов) и перезапустить Docker Desktop |
 | нет строк в `device_publication_audit`, ClickHouse unhealthy после обновления | стенд поднят до появления таблицы: `02-audit.sh` выполняется только на пустом томе — создать таблицу вручную (раздел 7); при ошибке записи аудита в логе сервиса — «Publication audit record not written» |
+| публикация в отдельном трейсе, а не в трейсе события | запись принята до добавления колонок `trace_id`/`span_id` (у неё они пустые) — так и должно быть; если пусто у новых записей — не выполнен `ALTER` из раздела 7 или ingest шёл без трассировки |
 | сообщения events не читаются, лаг растёт | логи сервиса со `status=FAILED` — временная ошибка ClickHouse, раздел ждёт с backoff до 10 с; после восстановления хранилища чтение продолжится автоматически |
 | лаг consumer group отрицательный (`-1`) | у группы ещё нет подтверждённого offset в разделе (в раздел не приходили сообщения) — kafka-exporter отдаёт `-1`; после первого обработанного сообщения лаг станет 0 |
 | порт занят | поменять `*_PORT` / `EVENTS_COLLECTOR_PORTS` в `.env` |

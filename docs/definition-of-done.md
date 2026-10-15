@@ -68,8 +68,11 @@
    `outbox_candidate_created_total` - в Prometheus после relabel (в `/actuator/prometheus` - `outbox_candidate_total`,
    ограничение Prometheus Java client 1.x, см. README, раздел 16).
 - [ ] Логи - JSON с `traceId`, `eventId`, `deviceId`, `topic`, `partition`, `offset` (`dc logs events-collector-service`).
-- [ ] Трассировка успешного пути в Tempo - `docs/screenshots/tempo-trace-publish.png` (прием - `tempo-trace-ingest.png`).
-- [ ] Трассировка пути пропуска публикации (`redis devices:published check` -> `append SENT version`) - `docs/screenshots/tempo-trace-skip.png`.
+- [ ] Трассировка успешного пути в Tempo - один сквозной трейс: прием (`events process`) и публикация (`outbox publish`,
+   дочерний спан) - `docs/screenshots/tempo-trace-end-to-end.png`; контекст переносится через `trace_id`/`span_id`
+   в `device_outbox` (`ItEventsCollectorTest.givenNewDevice_whenPublish_thenDeviceInfoSentAndSecondEventSkipped`).
+- [ ] Трассировка пути пропуска публикации - в трейсе своего события (`outbox publish` -> `redis devices:published check`
+   -> `append SENT version`, без `devices send`) - `docs/screenshots/tempo-trace-skip.png`.
 - [ ] Дашборд Grafana "IoT Platform - events-collector-service" - `docs/screenshots/grafana-dashboard.png`.
 
 ## Тесты

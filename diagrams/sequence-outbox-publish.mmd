@@ -26,6 +26,7 @@ sequenceDiagram
                 R-->>P: 1 - аренда продлена
             end
             P->>R: SISMEMBER devices:published <deviceId>
+            Note over P: спан outbox publish - дочерний к спану приема<br/>(trace_id/span_id из записи): один трейс на событие
             alt уже опубликовано
                 R-->>P: 1
                 P->>CH: INSERT версия v+1, SENT

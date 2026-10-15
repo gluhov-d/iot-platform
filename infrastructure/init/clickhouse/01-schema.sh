@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS \`${DB}\`.device_outbox
     state_version       UInt64,
     status              Enum8('NEW' = 0, 'SENT' = 1, 'FAILED' = 2),
     attempts            UInt32,
-    last_error          String
+    last_error          String,
+    -- Сквозной трейс: спан приема события, который продолжает публикация
+    trace_id            String DEFAULT '',
+    span_id             String DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(state_version)
 PARTITION BY toYYYYMM(created_at)

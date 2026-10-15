@@ -8,6 +8,7 @@ import com.github.gluhov.iotplatform.eventscollector.domain.port.in.IngestEventU
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.CollectorMetrics;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceEventRepository;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
+import com.github.gluhov.iotplatform.eventscollector.domain.port.out.TraceContextCarrier;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,7 @@ public class EventIngestionService implements IngestEventUseCase {
     private final OutboxRepository outboxRepository;
     private final CollectorMetrics metrics;
     private final ObservationRegistry observationRegistry;
+    private final TraceContextCarrier traceContextCarrier;
     private final Clock clock;
 
     @Override
@@ -34,7 +36,8 @@ public class EventIngestionService implements IngestEventUseCase {
 
         Instant now = clock.instant();
         DeviceEventRecord eventRecord = mapper.toEventRecord(event, now);
-        OutboxRecord outboxRecord = mapper.toInitialOutbox(event, now);
+        // Спан приема сохраняется в outbox: публикация продолжит этот же трейс
+        OutboxRecord outboxRecord = mapper.toInitialOutbox(event, now, traceContextCarrier.current());
 
         persist("insert device_events", () -> eventRepository.insert(eventRecord));
         persist("insert device_outbox", () -> outboxRepository.insert(outboxRecord));

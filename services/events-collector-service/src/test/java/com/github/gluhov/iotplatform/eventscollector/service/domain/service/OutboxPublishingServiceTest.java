@@ -18,6 +18,8 @@ import java.time.Duration;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,6 +45,8 @@ class OutboxPublishingServiceTest {
     private PublicationAuditRepository publicationAuditRepository;
     @Mock
     private CollectorMetrics metrics;
+    @Mock
+    private TraceContextCarrier traceContextCarrier;
 
     private OutboxPublishingService service;
     private OutboxRecord pending;
@@ -50,8 +54,12 @@ class OutboxPublishingServiceTest {
     @BeforeEach
     void setUp() {
         service = new OutboxPublishingService(lease, outboxRepository, publishedDeviceStore, publisher, publicationAuditRepository, metrics,
-                ObservationRegistry.NOOP, new OutboxPolicy(BATCH_SIZE, MAX_ATTEMPTS, TTL), Clock.fixed(NOW, ZoneOffset.UTC));
-        pending = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW.minusSeconds(5));
+                ObservationRegistry.NOOP, traceContextCarrier, new OutboxPolicy(BATCH_SIZE, MAX_ATTEMPTS, TTL), Clock.fixed(NOW, ZoneOffset.UTC));
+        pending = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW.minusSeconds(5), TraceRef.NONE);
+
+        // Без трассировки: работа просто выполняется (doAnswer - чтобы при настройке не вызывался сам ответ)
+        lenient().doAnswer(call -> ((Supplier<?>) call.getArgument(1)).get())
+                .when(traceContextCarrier).continueTrace(any(), any());
 
         lenient().when(lease.tryAcquire(TTL)).thenReturn(Optional.of(TOKEN));
         lenient().when(lease.release(TOKEN)).thenReturn(true);
@@ -157,7 +165,7 @@ class OutboxPublishingServiceTest {
     @Test
     @DisplayName("Storage error on one record then batch continues")
     void givenStorageErrorOnOneRecord_whenPublishBatch_thenBatchContinues() {
-        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW);
+        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second));
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenThrow(new IllegalStateException("redis down"));
         when(publishedDeviceStore.isPublished("dev-2")).thenReturn(false);
@@ -194,8 +202,8 @@ class OutboxPublishingServiceTest {
     @Test
     @DisplayName("Batch of several records then lease extended before each next record")
     void givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachNextRecord() {
-        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW);
-        OutboxRecord third = OutboxRecord.initial("evt-3", "dev-3", 3_000L, NOW);
+        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
+        OutboxRecord third = OutboxRecord.initial("evt-3", "dev-3", 3_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second, third));
         when(publishedDeviceStore.isPublished(anyString())).thenReturn(false);
 
@@ -216,7 +224,7 @@ class OutboxPublishingServiceTest {
     @Test
     @DisplayName("Lease lost during batch then remaining records not published")
     void givenLeaseLostMidBatch_whenPublishBatch_thenBatchStops() {
-        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW);
+        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second));
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
         when(lease.extend(TOKEN, TTL)).thenReturn(false);
@@ -231,6 +239,34 @@ class OutboxPublishingServiceTest {
         assertThat(result.leaseLost()).isTrue();
         assertThat(result.selected()).isEqualTo(2);
         assertThat(result.published()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Record with ingestion trace then published inside that trace")
+    void givenTracedRecord_whenPublishBatch_thenPublishedInsideIngestionTrace() {
+        TraceRef ingestion = new TraceRef("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
+        OutboxRecord traced = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW, ingestion);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(traced));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        AtomicReference<TraceRef> activeTrace = new AtomicReference<>(TraceRef.NONE);
+        doAnswer(call -> {
+            activeTrace.set(call.getArgument(0));
+            try {
+                return ((Supplier<?>) call.getArgument(1)).get();
+            } finally {
+                activeTrace.set(TraceRef.NONE);
+            }
+        }).when(traceContextCarrier).continueTrace(eq(ingestion), any());
+        AtomicReference<TraceRef> traceAtSend = new AtomicReference<>();
+        doAnswer(call -> {
+            traceAtSend.set(activeTrace.get());
+            return null;
+        }).when(publisher).publish(eq(DEVICE_ID), anyLong());
+
+        service.publishPendingBatch();
+
+        assertThat(traceAtSend.get()).as("send runs inside ingestion trace").isEqualTo(ingestion);
+        assertThat(captureInsert(inOrder(outboxRepository)).traceRef()).as("SENT version keeps trace").isEqualTo(ingestion);
     }
 
     @Test

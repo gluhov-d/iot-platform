@@ -28,6 +28,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     private final PublicationAuditRepository publicationAuditRepository;
     private final CollectorMetrics metrics;
     private final ObservationRegistry observationRegistry;
+    private final TraceContextCarrier traceContextCarrier;
     private final OutboxPolicy policy;
     private final Clock clock;
 
@@ -80,11 +81,14 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     PublishOutcome processOne(OutboxRecord record) {
         try (var ignoredEvent = MDC.putCloseable("eventId", record.eventId());
              var ignoredDevice = MDC.putCloseable("deviceId", record.deviceId())) {
-            return Observation.createNotStarted("outbox.publish", observationRegistry)
+            // Публикация продолжает трейс приема: родитель спана - спан приема из outbox, поэтому
+            // родительское наблюдение пачки сбрасывается (иначе спан записи стал бы ребенком пачки)
+            return traceContextCarrier.continueTrace(record.traceRef(), () -> Observation.createNotStarted("outbox.publish", observationRegistry)
+                    .parentObservation(null)
                     .contextualName("outbox publish")
                     .highCardinalityKeyValue("eventId", record.eventId())
                     .highCardinalityKeyValue("deviceId", record.deviceId())
-                    .observe(() -> publishOrSkip(record));
+                    .observe(() -> publishOrSkip(record)));
         } catch (RuntimeException e) {
             // Не удалось записать новую версию: запись останется NEW/FAILED и будет выбрана снова
             logOutcome(PublishOutcome.ERROR, e);

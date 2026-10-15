@@ -2,6 +2,7 @@ package com.github.gluhov.iotplatform.eventscollector.adapter.out.clickhouse;
 
 import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxRecord;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxStatus;
+import com.github.gluhov.iotplatform.eventscollector.domain.model.TraceRef;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -20,11 +21,11 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
     private static final String INSERT = """
             INSERT INTO device_outbox
                 (event_id, device_id, source_timestamp_ms, created_at, updated_at,
-                state_version, status, attempts, last_error)
+                state_version, status, attempts, last_error, trace_id, span_id)
             VALUES (:eventId, :deviceId, :sourceTimestampMs,
                     fromUnixTimestamp64Milli(:createdAtMs, 'UTC'),
                     fromUnixTimestamp64Milli(:updatedAtMs, 'UTC'),
-                    :stateVersion, :status, :attempts, :lastError)
+                    :stateVersion, :status, :attempts, :lastError, :traceId, :spanId)
             """;
 
     private static final String SELECT_PENDING = """
@@ -37,7 +38,9 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
                 state_version,
                 toString(status) AS status,
                 attempts,
-                last_error
+                last_error,
+                trace_id,
+                span_id
             FROM device_outbox FINAL
             WHERE status IN ('NEW', 'FAILED')
                 AND attempts < :maxAttempts
@@ -66,6 +69,8 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
                 .param("status", record.status().name())
                 .param("attempts", record.attempts())
                 .param("lastError", record.lastError())
+                .param("traceId", record.traceRef().traceId())
+                .param("spanId", record.traceRef().spanId())
                 .update();
     }
 
@@ -96,7 +101,9 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
                 resultSet.getLong("state_version"),
                 OutboxStatus.valueOf(resultSet.getString("status")),
                 resultSet.getInt("attempts"),
-                resultSet.getString("last_error")
+                resultSet.getString("last_error"),
+                new TraceRef(resultSet.getString("trace_id"),
+                resultSet.getString("span_id"))
         );
     }
 }

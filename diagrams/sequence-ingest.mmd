@@ -28,7 +28,7 @@ sequenceDiagram
             S-->>L: EventPersistenceException (events_persist_fail_total++)
             Note over L,K: ack не вызывается -> повтор с backoff без лимита попыток
         else записано
-            S->>CO: INSERT device_outbox (state_version=1, NEW, attempts=0)
+                        S->>CO: INSERT device_outbox (state_version=1, NEW, attempts=0, <br/>trace_id/span_id текущего спана - для сквозного трейса)
             alt ошибка записи
                 CO-->>S: ошибка
                 S-->>L: EventPersistenceException

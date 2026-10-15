@@ -7,9 +7,11 @@ import com.github.gluhov.iotplatform.eventscollector.domain.exception.InvalidEve
 import com.github.gluhov.iotplatform.eventscollector.domain.model.DeviceEventRecord;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxRecord;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.OutboxStatus;
+import com.github.gluhov.iotplatform.eventscollector.domain.model.TraceRef;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.CollectorMetrics;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceEventRepository;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
+import com.github.gluhov.iotplatform.eventscollector.domain.port.out.TraceContextCarrier;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceEventMapper;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceEventValidator;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.EventIngestionService;
@@ -39,6 +41,7 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class EventIngestionScenarioTest {
     private static final String TOPIC = "events";
+    private static final TraceRef INGESTION_TRACE = new TraceRef("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
 
     @Mock
     private DeviceEventRepository deviceEventRepository;
@@ -48,6 +51,8 @@ class EventIngestionScenarioTest {
     private CollectorMetrics metrics;
     @Mock
     private Acknowledgment ack;
+    @Mock
+    private TraceContextCarrier traceContext;
 
     private KafkaEventListener listener;
 
@@ -56,8 +61,9 @@ class EventIngestionScenarioTest {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         EventIngestionService service = new EventIngestionService(
                 new DeviceEventValidator(clock), new DeviceEventMapper(),
-                deviceEventRepository, outboxRepository, metrics, ObservationRegistry.NOOP, clock);
+                deviceEventRepository, outboxRepository, metrics, ObservationRegistry.NOOP, traceContext, clock);
         listener = new KafkaEventListener(service);
+        lenient().when(traceContext.current()).thenReturn(INGESTION_TRACE);
     }
 
     @Test
@@ -82,6 +88,7 @@ class EventIngestionScenarioTest {
         assertThat(outboxRecord.stateVersion()).isEqualTo(OutboxRecord.INITIAL_VERSION);
         assertThat(outboxRecord.attempts()).isZero();
         assertThat(outboxRecord.sourceTimestampMs()).isEqualTo(deviceEvent.getTimestampMs());
+        assertThat(outboxRecord.traceRef()).as("Ingestion span saved for publication").isEqualTo(INGESTION_TRACE);
 
         verify(metrics).eventProcessed();
         verify(metrics).outboxCandidateCreated();
