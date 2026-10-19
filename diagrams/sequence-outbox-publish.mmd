@@ -15,20 +15,20 @@ sequenceDiagram
         Note over P: итерация завершается, ничего не публикуется
     else аренда получена
         R-->>P: OK
+        Note over P,R: LeaseGuard: фоновое продление extend.lua каждые ttlMs/3 до конца итерации -<br/>аренда не истекает во время выборки, отправки и записи
         P->>CH: SELECT ... FROM device_outbox FINAL<br/>WHERE status IN ('NEW', 'FAILED') AND attempts < OUTBOX_MAX_ATTEMPTS<br/>ORDER BY created_at LIMIT OUTBOX_BATCH_SIZE
         CH-->>P: outbox-записи
-        loop каждая запись
-            opt не первая запись пачки
-                P->>R: EVAL extend.lua (PEXPIRE ttlMs, только если значение == ownerToken)
-                break аренда потеряна (0)
-                    Note over P: пачка останавливается, остальные записи выберет следующая итерация
-                end
-                R-->>P: 1 - аренда продлена
+        loop каждая запись, в том числе первая
+            P->>R: EVAL extend.lua (PEXPIRE ttlMs, только если значение == ownerToken)
+            break аренда потеряна (0 или ошибка Redis)
+                Note over P: пачка останавливается, остальные записи выберет следующая итерация
             end
+            R-->>P: 1 - аренда продлена
             P->>R: SISMEMBER devices:published <deviceId>
             Note over P: спан outbox publish - дочерний к спану приема<br/>(trace_id/span_id из записи): один трейс на событие
             alt уже опубликовано
                 R-->>P: 1
+                P->>R: EVAL extend.lua - контрольная точка
                 P->>CH: INSERT версия v+1, SENT
                 Note over P: outbox_publish_skipped_total++
             else еще не опубликовано
@@ -37,18 +37,21 @@ sequenceDiagram
                 alt отправка успешна
                     K-->>P: ack (acks=all)
                     P->>R: SADD devices:published <deviceId>
+                    P->>R: EVAL extend.lua - контрольная точка
                     P->>CH: INSERT версия v+1, SENT
                     Note over P: outbox_publish_success_total++
                 else ошибка отправки
                     K-->>P: ошибка / таймаут
+                    P->>R: EVAL extend.lua - контрольная точка
                     P->>CH: INSERT версия v+1, FAILED, attempts+1, last_error
                     Note over P: outbox_publish_fail_total++
                 end
             end
+            Note over P,CH: контрольная точка не прошла - версия v+1 и аудит не пишутся, пачка останавливается
             P->>A: INSERT аудит (outcome, attempt = attempts + 1, instance_id)
             Note over P,A: ошибка аудита - только предупреждение в лог, результат публикации не меняется
         end
-        Note over P,R: finally
+        Note over P,R: finally: фоновое продление остановлено
         P->>R: EVAL release.lua (DEL, только если значение == ownerToken)
     end
     P->>CH: SELECT count() ... FINAL -> outbox_pending_count

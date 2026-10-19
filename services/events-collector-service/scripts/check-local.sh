@@ -12,7 +12,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-COMPOSE=(docker compose -f "${ROOT_DIR}/infrastructure/docker-compose.yaml")
+# Корневой .env передается явно, как в Makefile: скрипт запускают из разных каталогов (make, Gradle, вручную),
+# а без --env-file Compose ищет .env рядом с compose-файлом и без него подставляет пустые значения переменных
+COMPOSE=(docker compose --env-file "${ROOT_DIR}/.env" -f "${ROOT_DIR}/infrastructure/docker-compose.yaml")
 TIMEOUT="${CHECK_TIMEOUT:-60}"
 
 EVENT_ID="check-$(date +%s)-${RANDOM}"
@@ -46,9 +48,15 @@ clickhouse() {
 echo "==> events-collector-service: local stand quick check"
 echo "    eventId=${EVENT_ID} deviceId=${DEVICE_ID}"
 
+if [[ ! -f "${ROOT_DIR}/.env" ]]; then
+  printf '  [FAIL] %s not found: cp .env.example .env\n' "${ROOT_DIR}/.env" >&2
+  exit 1
+fi
+
 # ------------------------------------------------------------------------------
 next "Service is running and healthy"
-state="$("${COMPOSE[@]}" ps --format '{{.Health}}' events-collector-service 2>/dev/null | head -1)"
+# || state="": при ошибке Compose (pipefail) скрипт иначе завершился бы молча, без сообщения о шаге
+state="$("${COMPOSE[@]}" ps --format '{{.Health}}' events-collector-service 2>/dev/null | head -1)" || state=""
 [[ "${state}" == "healthy" ]] || fail "events-collector-service is not healthy (state: '${state:-not running}'); see docker compose ps"
 ok "container healthy"
 

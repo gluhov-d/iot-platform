@@ -35,7 +35,11 @@ create() {
 create "${EVENTS_TOPIC}" delete
 # Производный поток устройств: важен последний факт по ключу deviceId
 create "${DEVICES_TOPIC}" compact
+# Входные сообщения, которые нельзя обработать (не Avro, не прошли валидацию): сервис откладывает их сюда,
+# а не теряет; число разделов как у events - сообщение уходит в раздел с тем же номером
+create "${EVENTS_TOPIC}.DLT" delete
 
 echo "==> итоговая конфигурация:"
 topics --describe --topic "${EVENTS_TOPIC}"
 topics --describe --topic "${DEVICES_TOPIC}"
+topics --describe --topic "${EVENTS_TOPIC}.DLT"

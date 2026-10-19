@@ -1,8 +1,11 @@
 package com.github.gluhov.iotplatform.eventscollector.service.domain.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
+import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,11 +15,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.MDC;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -178,6 +183,48 @@ class OutboxPublishingServiceTest {
     }
 
     @Test
+    @DisplayName("Redis fails during publish then error log and audit written inside event MDC and ingestion trace")
+    void givenRedisFailure_whenPublishBatch_thenErrorLoggedAndAuditedInsideEventScope() {
+        TraceRef ingestion = new TraceRef("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
+        OutboxRecord traced = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW, ingestion);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(traced));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenThrow(new IllegalStateException("redis down"));
+        // Как настоящий перенос трейса: пока выполняется работа, traceId приема есть в MDC
+        doAnswer(call -> {
+            try (var ignored = MDC.putCloseable("traceId", ingestion.traceId())) {
+                return ((Supplier<?>) call.getArgument(1)).get();
+            }
+        }).when(traceContextCarrier).continueTrace(eq(ingestion), any());
+        AtomicReference<Map<String, String>> mdcAtAudit = new AtomicReference<>();
+        doAnswer(call -> {
+            mdcAtAudit.set(MDC.getCopyOfContextMap());
+            return null;
+        }).when(publicationAuditRepository).insert(any());
+
+        BatchResult result;
+        ILoggingEvent error;
+        try (LogCapture logs = LogCapture.of(OutboxPublishingService.class)) {
+            result = service.publishPendingBatch();
+            error = logs.single(Level.ERROR, "Outbox record not processed, will be selected again");
+        }
+
+        assertThat(result.errors()).isEqualTo(1);
+        assertThat(error.getMDCPropertyMap())
+                .containsEntry("eventId", EVENT_ID)
+                .containsEntry("deviceId", DEVICE_ID)
+                .containsEntry("traceId", ingestion.traceId())
+                .containsEntry("status", "ERROR")
+                .containsEntry("errorClass", IllegalStateException.class.getName())
+                .containsEntry("errorMessage", "redis down");
+        assertThat(error.getThrowableProxy().getMessage()).isEqualTo("redis down");
+        assertThat(captureAudit().outcome()).isEqualTo(PublishOutcome.ERROR);
+        assertThat(mdcAtAudit.get()).as("audit written inside event MDC and ingestion trace")
+                .containsEntry("eventId", EVENT_ID)
+                .containsEntry("deviceId", DEVICE_ID)
+                .containsEntry("traceId", ingestion.traceId());
+    }
+
+    @Test
     @DisplayName("Iteration finished then pending count refreshed")
     void givenIteration_whenPublishBatch_thenPendingCountRefreshed() {
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
@@ -200,8 +247,8 @@ class OutboxPublishingServiceTest {
     }
 
     @Test
-    @DisplayName("Batch of several records then lease extended before each next record")
-    void givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachNextRecord() {
+    @DisplayName("Batch of several records then lease extended before each record and each outbox write")
+    void givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachRecordAndWrite() {
         OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
         OutboxRecord third = OutboxRecord.initial("evt-3", "dev-3", 3_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second, third));
@@ -209,14 +256,16 @@ class OutboxPublishingServiceTest {
 
         BatchResult result = service.publishPendingBatch();
 
-        InOrder order = inOrder(publisher, lease);
-        order.verify(publisher).publish(eq(DEVICE_ID), anyLong());
-        order.verify(lease).extend(TOKEN, TTL);
-        order.verify(publisher).publish(eq("dev-2"), anyLong());
-        order.verify(lease).extend(TOKEN, TTL);
-        order.verify(publisher).publish(eq("dev-3"), anyLong());
+        InOrder order = inOrder(outboxRepository, publisher, lease);
+        order.verify(outboxRepository).findPending(MAX_ATTEMPTS, BATCH_SIZE);
+        for (String deviceId : List.of(DEVICE_ID, "dev-2", "dev-3")) {
+            order.verify(lease).extend(TOKEN, TTL);
+            order.verify(publisher).publish(eq(deviceId), anyLong());
+            order.verify(lease).extend(TOKEN, TTL);
+            order.verify(outboxRepository).insert(argThat(r -> deviceId.equals(r.deviceId())));
+        }
         order.verify(lease).release(TOKEN);
-        verify(lease, times(2)).extend(TOKEN, TTL);
+        verify(lease, times(6)).extend(TOKEN, TTL);
         assertThat(result.published()).isEqualTo(3);
         assertThat(result.leaseLost()).isFalse();
     }
@@ -227,18 +276,83 @@ class OutboxPublishingServiceTest {
         OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second));
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
-        when(lease.extend(TOKEN, TTL)).thenReturn(false);
+        // Первая запись: перед обработкой и перед SENT - аренда наша; перед второй записью - уже нет
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, true, false);
         when(lease.release(TOKEN)).thenReturn(false);
 
         BatchResult result = service.publishPendingBatch();
 
         verify(publisher).publish(eq(DEVICE_ID), anyLong());
+        verify(outboxRepository).insert(argThat(r -> EVENT_ID.equals(r.eventId())));
         verify(publisher, never()).publish(eq("dev-2"), anyLong());
         verify(outboxRepository, never()).insert(argThat(r -> "evt-2".equals(r.eventId())));
         verify(lease).release(TOKEN);
         assertThat(result.leaseLost()).isTrue();
         assertThat(result.selected()).isEqualTo(2);
         assertThat(result.published()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Lease lost during selection then first record not published")
+    void givenLeaseLostDuringSelection_whenPublishBatch_thenNothingPublished() {
+        when(lease.extend(TOKEN, TTL)).thenReturn(false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publishedDeviceStore, never()).isPublished(anyString());
+        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(outboxRepository, never()).insert(any());
+        verify(publicationAuditRepository, never()).insert(any());
+        verify(lease).release(TOKEN);
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.selected()).isEqualTo(1);
+        assertThat(result.published()).isZero();
+    }
+
+    @Test
+    @DisplayName("Lease lost during Kafka send then no SENT version written")
+    void givenLeaseLostDuringSend_whenPublishBatch_thenNoOutboxVersion() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        // Kafka подтвердила отправку - устройство отмечено; SENT запишет новый владелец (пропуск по devices:published)
+        verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        verify(outboxRepository, never()).insert(any());
+        verify(publicationAuditRepository, never()).insert(any());
+        verify(metrics, never()).publishSucceeded();
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.published()).isZero();
+        assertThat(result.errors()).isZero();
+    }
+
+    @Test
+    @DisplayName("Lease lost after Kafka failure then no FAILED version written")
+    void givenLeaseLostAfterKafkaFailure_whenPublishBatch_thenNoFailedVersion() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(eq(DEVICE_ID), anyLong());
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(outboxRepository, never()).insert(any());
+        verify(metrics, never()).publishFailed();
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.failed()).isZero();
+    }
+
+    @Test
+    @DisplayName("Redis fails on lease extend then batch stops as with lost lease")
+    void givenRedisFailureOnExtend_whenPublishBatch_thenBatchStops() {
+        when(lease.extend(TOKEN, TTL)).thenThrow(new IllegalStateException("redis down"));
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(outboxRepository, never()).insert(any());
+        verify(lease).release(TOKEN);
+        assertThat(result.leaseLost()).isTrue();
     }
 
     @Test

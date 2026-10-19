@@ -7,12 +7,16 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Duration;
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.LEASE_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.config.RedisTestContainerConfig.PORT;
 import static com.github.gluhov.iotplatform.eventscollector.config.RedisTestContainerConfig.REDIS_CONTAINER;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.LeaseGuard;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 // Lua-скрипт освобождения аренды проверяется на настоящем Redis: мок скрипт не выполняет
 class ItRedisLeaseServiceTest {
@@ -117,5 +121,44 @@ class ItRedisLeaseServiceTest {
 
         assertThat(leaseService.extend(token, TTL)).isFalse();
         assertThat(redisTemplate.hasKey(LEASE_KEY)).isFalse();
+    }
+
+    @Test
+    @DisplayName("Lease guard heartbeat keeps lease longer than TTL then lease expires after close")
+    void givenLeaseGuard_whenLongerThanTtl_thenLeaseKept() throws InterruptedException {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            String token = leaseService.tryAcquire(SHORT_TTL).orElseThrow();
+            try (LeaseGuard guard = new LeaseGuard(leaseService, token, SHORT_TTL, scheduler)) {
+                // Блокирующий вызов длиной в 5 TTL: без продления ключ истек бы
+                Thread.sleep(SHORT_TTL.multipliedBy(5));
+
+                assertThat(guard.isLost()).isFalse();
+                assertThat(redisTemplate.opsForValue().get(LEASE_KEY)).isEqualTo(token);
+                assertThat(leaseService.tryAcquire(TTL)).as("another instance cannot take it").isEmpty();
+            }
+            await().atMost(Duration.ofSeconds(2)).until(() -> !redisTemplate.hasKey(LEASE_KEY));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("Lease taken by another instance then guard detects loss and leaves foreign lease untouched")
+    void givenForeignLease_whenGuardHeartbeat_thenLost() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            String token = leaseService.tryAcquire(SHORT_TTL).orElseThrow();
+            try (LeaseGuard guard = new LeaseGuard(leaseService, token, SHORT_TTL, scheduler)) {
+                redisTemplate.opsForValue().set(LEASE_KEY, "other-instance-token", TTL);
+
+                await().atMost(Duration.ofSeconds(2)).until(guard::isLost);
+                assertThat(guard.renew()).isFalse();
+                assertThat(redisTemplate.opsForValue().get(LEASE_KEY)).isEqualTo("other-instance-token");
+                assertThat(redisTemplate.getExpire(LEASE_KEY)).isBetween(1L, 10L);
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
     }
 }
