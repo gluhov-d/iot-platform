@@ -98,25 +98,37 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     }
 
     PublishOutcome processOne(OutboxRecord record, LeaseGuard guard) {
+        // Без catch: ресурсы try-with-resources закрываются до catch, и ошибка записалась бы уже без
+        // eventId/deviceId в MDC и вне трейса приема. Ошибку обрабатывает publishInEventTrace внутри этих областей
         try (var ignoredEvent = MDC.putCloseable("eventId", record.eventId());
              var ignoredDevice = MDC.putCloseable("deviceId", record.deviceId())) {
-            // Публикация продолжает трейс приема: родитель спана - спан приема из outbox, поэтому
-            // родительское наблюдение пачки сбрасывается (иначе спан записи стал бы ребенком пачки)
-            return traceContextCarrier.continueTrace(record.traceRef(), () -> Observation.createNotStarted("outbox.publish", observationRegistry)
-                    .parentObservation(null)
-                    .contextualName("outbox publish")
-                    .highCardinalityKeyValue("eventId", record.eventId())
-                    .highCardinalityKeyValue("deviceId", record.deviceId())
-                    .observe(() -> publishOrSkip(record, guard)));
-        } catch (LeaseLostException e) {
-            // Не ошибка записи, а потеря права публиковать: решает publishBatch
-            throw e;
-        } catch (RuntimeException e) {
-            // Не удалось записать новую версию: запись останется NEW/FAILED и будет выбрана снова
-            logOutcome(PublishOutcome.ERROR, e);
-            audit(record, PublishOutcome.ERROR, e);
-            return PublishOutcome.ERROR;
+            return traceContextCarrier.continueTrace(record.traceRef(), () -> publishInEventTrace(record, guard));
         }
+    }
+
+    // Публикация продолжает трейс приема: родитель спана - спан приема из outbox, поэтому
+    // родительское наблюдение пачки сбрасывается (иначе спан записи стал бы ребенком пачки)
+    private PublishOutcome publishInEventTrace(OutboxRecord record, LeaseGuard guard) {
+        Observation observation = Observation.createNotStarted("outbox.publish", observationRegistry)
+                .parentObservation(null)
+                .contextualName("outbox publish")
+                .highCardinalityKeyValue("eventId", record.eventId())
+                .highCardinalityKeyValue("deviceId", record.deviceId());
+        return observation.observe(() -> {
+            try {
+                return publishOrSkip(record, guard);
+            } catch (LeaseLostException e) {
+                // Не ошибка записи, а потеря права публиковать: решает publishBatch
+                throw e;
+            } catch (RuntimeException e) {
+                // Не удалось записать новую версию: запись останется NEW/FAILED и будет выбрана снова.
+                // Спан outbox publish еще открыт: ошибка отмечается в нем, журнал и аудит - в трейсе приема
+                observation.error(e);
+                logOutcome(PublishOutcome.ERROR, e);
+                audit(record, PublishOutcome.ERROR, e);
+                return PublishOutcome.ERROR;
+            }
+        });
     }
 
     // Технический аудит пишется после смены статуса в outbox; его ошибка не меняет результат публикации

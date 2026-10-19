@@ -372,7 +372,8 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:test     # или make test; Docker не нужен
 ```
 
-Классы `*Test` (70 тестов). Ключевые сценарии:
+Классы `*Test` (71 тест). Сообщения журнала проверяются через `support/LogCapture` (Logback `ListAppender`
+со снимком MDC на момент записи). Ключевые сценарии:
 
 * `EventIngestionScenarioTest` — корректное событие, пустые `eventId`/`deviceId`, некорректный `timestampMs`,
   ошибки записи в `device_events` и `device_outbox`: проверяется, вызван ли `ack.acknowledge()`; спан приёма
@@ -382,7 +383,9 @@ services/events-collector-service/scripts/check-local.sh     # или make check
   продление аренды перед каждой записью (в том числе первой) и перед каждой записью версии; потеря аренды после
   выборки, посреди пачки, во время отправки, после ошибки Kafka и при ошибке Redis — пачка останавливается, версия
   и аудит не пишутся; отправка внутри трейса приёма, запись аудита (`PUBLISHED` с номером попытки, `SKIPPED`,
-  `FAILED` с ошибкой) и публикация при недоступном аудите;
+  `FAILED` с ошибкой) и публикация при недоступном аудите; ошибка Redis при обработке записи — в сообщении
+  «Outbox record not processed» есть `eventId`, `deviceId`, `traceId` приёма, `status`, `errorClass`, `errorMessage`,
+  аудит `ERROR` записан в том же MDC и трейсе;
 * `LeaseGuardTest` — фоновое продление на настоящем планировщике с коротким TTL, обнаружение чужой аренды
   (дальше Redis не вызывается), ошибка Redis — потеря аренды, `close()` останавливает продление;
 * `OutboxRecordTest` — версии записи: повторная доставка, обрезка ошибки, перенос контекста трассировки;
@@ -401,7 +404,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 65 % (make coverage)
 ```
 
-Классы `It*Test` (17 тестов). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
+Классы `It*Test` (18 тестов). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
 (`config/*TestContainerConfig`, базовый класс `it/AbstractItTest`), заранее запущенный compose не нужен.
 Используются те же `infrastructure/init/clickhouse/01-schema.sh` и `infrastructure/init/kafka/init-topics.sh`,
 что и на стенде.
@@ -411,6 +414,8 @@ services/events-collector-service/scripts/check-local.sh     # или make check
   каждой попытки (исход, номер попытки, `instance_id`); `DeviceInfo` уходит в трейсе приёма (`traceId` из
   `traceparent` совпадает с `trace_id` в outbox); аренда истекает во время `findPending` и её берёт другой
   экземпляр — ничего не отправлено, новой версии outbox и аудита нет, аренда нового владельца не тронута;
+  ошибка Redis при публикации — в сообщении «Outbox record not processed» есть `eventId`, `deviceId` и `traceId`
+  приёма (совпадает с `trace_id` в outbox), в аудите — `ERROR`;
 * `ItKafkaErrorHandlingTest` — ошибки приёма на отдельной теме с одним разделом и своей consumer group, после
   каждой проверяется committed offset: однократный таймаут Schema Registry (`SocketTimeoutException`) — сообщение
   повторено и сохранено, offset подтверждён после обоих сообщений; не-Avro сообщение — в DLT с исходными байтами,
@@ -458,6 +463,9 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 `errorMessage`. Значения `status`: `PROCESSED`, `REJECTED`, `FAILED` (приём), `PUBLISHED`, `SKIPPED`,
 `FAILED`, `ERROR` (публикация). В Loki `level` — метка, `trace_id`/`event_id`/`device_id` — structured
 metadata (не метки, чтобы не раздувать индекс). Секреты и строки подключения в логи не пишутся.
+Публикатор пишет сообщения об обработке outbox-записи, в том числе об ошибке «Outbox record not processed»
+(`status=ERROR`), и строку аудита внутри MDC и трейса её события: в сообщении есть `eventId`, `deviceId` и `traceId`
+приёма, поэтому по журналу находится и сама запись outbox, и трейс её приёма в Tempo.
 В Grafana поле `traceId` в строке лога — ссылка на трейс в Tempo.
 
 **Трассировки** — Micrometer Tracing + OpenTelemetry, OTLP HTTP → Alloy (`:4320`) → Tempo, выборка 100 %.

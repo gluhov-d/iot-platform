@@ -85,6 +85,10 @@
    `outbox_candidate_created_total` - в Prometheus после relabel (в `/actuator/prometheus` - `outbox_candidate_total`,
    ограничение Prometheus Java client 1.x, см. README, раздел 16).
 - [ ] Логи - JSON с `traceId`, `eventId`, `deviceId`, `topic`, `partition`, `offset` (`dc logs events-collector-service`).
+- [ ] Ошибка обработки outbox-записи пишется внутри MDC и трейса события: в «Outbox record not processed» есть
+   `eventId`, `deviceId`, `traceId` приема, `status=ERROR`, `errorClass`, `errorMessage`; аудит `ERROR` - в том же контексте
+   (`OutboxPublishingServiceTest.givenRedisFailure_whenPublishBatch_thenErrorLoggedAndAuditedInsideEventScope`;
+   с настоящей трассировкой - `ItEventsCollectorTest.givenRedisFailure_whenPublish_thenErrorLogLinkedToEventAndIngestionTrace`).
 - [ ] Трассировка успешного пути в Tempo - один сквозной трейс: прием (`events process`) и публикация (`outbox publish`,
    дочерний спан) - `docs/screenshots/tempo-trace-end-to-end.png`; контекст переносится через `trace_id`/`span_id`
    в `device_outbox` (`ItEventsCollectorTest.givenNewDevice_whenPublish_thenDeviceInfoSentAndSecondEventSkipped`).

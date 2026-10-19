@@ -1,5 +1,7 @@
 package com.github.gluhov.iotplatform.eventscollector.it;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.eventscollector.adapter.out.kafka.DeviceInfoPublishException;
@@ -7,6 +9,9 @@ import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceInfoPublisher;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
+import com.github.gluhov.iotplatform.eventscollector.domain.port.out.PublishedDeviceStore;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
+import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -22,6 +27,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -60,6 +66,8 @@ class ItEventsCollectorTest extends AbstractItTest {
     private DeviceInfoPublisher deviceInfoPublisher;
     @MockitoSpyBean
     private OutboxRepository outboxRepository;
+    @MockitoSpyBean
+    private PublishedDeviceStore publishedDeviceStore;
     
     @BeforeAll
     static void createClients() {
@@ -291,6 +299,37 @@ class ItEventsCollectorTest extends AbstractItTest {
         } finally {
             redisTemplate.delete(LEASE_KEY);
         }
+    }
+
+    @Test
+    @DisplayName("Redis fails during publish then error log has event fields and ingestion traceId, ERROR audited")
+    void givenRedisFailure_whenPublish_thenErrorLogLinkedToEventAndIngestionTrace() {
+        String eventId = unique("evt");
+        String deviceId = unique("dev");
+        doThrow(new RedisConnectionFailureException("redis unavailable"))
+                .when(publishedDeviceStore).isPublished(deviceId);
+        send(eventId, deviceId, Instant.now().toEpochMilli());
+        awaitOutbox(eventId);
+        String ingestionTraceId = String.valueOf(outboxRow(eventId).get("trace_id"));
+
+        BatchResult result;
+        ILoggingEvent error;
+        try (LogCapture logs = LogCapture.of(OutboxPublishingService.class)) {
+            result = publishOutbox.publishPendingBatch();
+            error = logs.single(Level.ERROR, "Outbox record not processed, will be selected again");
+        }
+
+        assertThat(result.errors()).isEqualTo(1);
+        // По журналу находится запись outbox и трейс ее приема
+        assertThat(error.getMDCPropertyMap())
+                .containsEntry("eventId", eventId)
+                .containsEntry("deviceId", deviceId)
+                .containsEntry("traceId", ingestionTraceId)
+                .containsEntry("status", "ERROR")
+                .containsEntry("errorClass", RedisConnectionFailureException.class.getName())
+                .containsEntry("errorMessage", "redis unavailable");
+        assertThat(auditTrail(eventId)).containsExactly("ERROR/1/it");
+        assertThat(outboxRow(eventId)).containsEntry("status", "NEW").containsEntry("state_version", 1L);
     }
 
     // Попытки публикации события из аудита: "исход/номер попытки/экземпляр" в порядке времени

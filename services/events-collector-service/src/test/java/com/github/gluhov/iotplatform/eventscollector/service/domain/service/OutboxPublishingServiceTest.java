@@ -1,8 +1,11 @@
 package com.github.gluhov.iotplatform.eventscollector.service.domain.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
+import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,11 +15,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.MDC;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -175,6 +180,48 @@ class OutboxPublishingServiceTest {
         assertThat(result.errors()).isEqualTo(1);
         assertThat(result.published()).isEqualTo(1);
         verify(publisher).publish(eq("dev-2"), anyLong());
+    }
+
+    @Test
+    @DisplayName("Redis fails during publish then error log and audit written inside event MDC and ingestion trace")
+    void givenRedisFailure_whenPublishBatch_thenErrorLoggedAndAuditedInsideEventScope() {
+        TraceRef ingestion = new TraceRef("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
+        OutboxRecord traced = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW, ingestion);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(traced));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenThrow(new IllegalStateException("redis down"));
+        // Как настоящий перенос трейса: пока выполняется работа, traceId приема есть в MDC
+        doAnswer(call -> {
+            try (var ignored = MDC.putCloseable("traceId", ingestion.traceId())) {
+                return ((Supplier<?>) call.getArgument(1)).get();
+            }
+        }).when(traceContextCarrier).continueTrace(eq(ingestion), any());
+        AtomicReference<Map<String, String>> mdcAtAudit = new AtomicReference<>();
+        doAnswer(call -> {
+            mdcAtAudit.set(MDC.getCopyOfContextMap());
+            return null;
+        }).when(publicationAuditRepository).insert(any());
+
+        BatchResult result;
+        ILoggingEvent error;
+        try (LogCapture logs = LogCapture.of(OutboxPublishingService.class)) {
+            result = service.publishPendingBatch();
+            error = logs.single(Level.ERROR, "Outbox record not processed, will be selected again");
+        }
+
+        assertThat(result.errors()).isEqualTo(1);
+        assertThat(error.getMDCPropertyMap())
+                .containsEntry("eventId", EVENT_ID)
+                .containsEntry("deviceId", DEVICE_ID)
+                .containsEntry("traceId", ingestion.traceId())
+                .containsEntry("status", "ERROR")
+                .containsEntry("errorClass", IllegalStateException.class.getName())
+                .containsEntry("errorMessage", "redis down");
+        assertThat(error.getThrowableProxy().getMessage()).isEqualTo("redis down");
+        assertThat(captureAudit().outcome()).isEqualTo(PublishOutcome.ERROR);
+        assertThat(mdcAtAudit.get()).as("audit written inside event MDC and ingestion trace")
+                .containsEntry("eventId", EVENT_ID)
+                .containsEntry("deviceId", DEVICE_ID)
+                .containsEntry("traceId", ingestion.traceId());
     }
 
     @Test
