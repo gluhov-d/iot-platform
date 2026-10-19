@@ -253,25 +253,39 @@ docker compose -f infrastructure/docker-compose.yaml exec clickhouse bash /docke
 | `devices:published` | Set | `deviceId`, для которых `DeviceInfo` уже отправлен в Kafka |
 
 * Захват: `SET outbox:lease <ownerToken> NX PX <OUTBOX_LEASE_TTL_MS>`. Не получили — итерация пропускается.
-* Продление — перед каждой следующей записью пачки, Lua-скрипт: `PEXPIRE outbox:lease <OUTBOX_LEASE_TTL_MS>`,
-  только если значение совпадает с токеном. Не продлилась — аренду уже взял другой экземпляр: пачка
-  останавливается, необработанные записи остаются NEW/FAILED и попадут в следующую итерацию.
-* Освобождение (в `finally`) — Lua-скрипт: удаляет ключ, только если значение совпадает с токеном.
-  Если аренда истекла и её взял другой экземпляр, старый владелец чужую аренду не удалит.
+* Продление — Lua-скрипт: `PEXPIRE outbox:lease <OUTBOX_LEASE_TTL_MS>`, только если значение совпадает с токеном.
+  Аренду удерживает `LeaseGuard`, он создаётся сразу после захвата, ещё до выборки:
+  * фоновое продление (поток `outbox-lease-heartbeat`) каждые `OUTBOX_LEASE_TTL_MS / 3` — аренда не истекает
+    во время блокирующих вызовов: выборки из ClickHouse, ожидания подтверждения Kafka, записи версии;
+  * контрольные точки — синхронное продление перед каждой записью пачки, в том числе первой (сразу после
+    выборки), и перед каждой записью новой версии outbox (SENT после пропуска или после send + SADD,
+    FAILED после ошибки отправки).
+* Не продлилась или Redis не ответил — аренда считается потерянной до конца итерации: пачка останавливается,
+  новая версия outbox и аудит не пишутся, необработанные записи остаются NEW/FAILED и попадут в следующую
+  итерацию нового владельца. Если Kafka уже подтвердила отправку, устройство есть в `devices:published`, и новый
+  владелец запишет SENT как пропуск.
+* Освобождение (в `finally`) — фоновое продление останавливается, затем Lua-скрипт удаляет ключ, только если
+  значение совпадает с токеном. Если аренда истекла и её взял другой экземпляр, старый владелец чужую аренду не удалит.
 * `SADD devices:published` — **только после** подтверждения отправки в Kafka.
 * Redis не используется для устранения повторов до создания outbox-записи.
 
-Благодаря продлению TTL аренды должен превышать время обработки одной записи, а не всей пачки
-(в худшем случае — таймаут отправки 20 с плюс запись в ClickHouse). Если аренда всё же истекла,
-пачка останавливается на следующей записи, в логе — «Outbox lease lost, batch stopped».
+Благодаря фоновому продлению TTL не обязан превышать время выборки или отправки: он должен быть заметно больше
+периода продления плюс задержка ответа Redis (при продлении каждые TTL/3 можно пропустить одно продление). Если
+аренда всё же потеряна (Redis недоступен, процесс замер дольше TTL), в логе — «Outbox lease lost: …» и
+«Outbox lease lost, batch stopped» или «Outbox lease lost while processing record, batch stopped».
+
+Ограничение: проверка аренды — не fencing. Между последней контрольной точкой и `INSERT` в ClickHouse остаётся
+короткое окно в одну запись: если процесс замрёт именно в нём дольше TTL, две версии с одинаковым `state_version`
+всё же возможны (`ReplacingMergeTree` оставит одну из них). Закрыть окно полностью может только fencing-токен,
+который проверяет само хранилище, а условной вставки в ClickHouse нет.
 
 ## 9. Масштабирование
 
 * **Приём** — горизонтально: реплики в одной consumer group `KAFKA_CONSUMER_GROUP` делят 3 раздела `events`
   (больше 3 активных потребителей не будет).
 * **Публикация outbox** — один активный экземпляр в каждый момент (Redis-аренда). Аренда берётся на одну
-  итерацию и продлевается по ходу пачки, поэтому публикатор может меняться от итерации к итерации, но каждая
-  запись публикуется один раз.
+  итерацию и удерживается фоновым продлением и проверками перед каждой записью, поэтому публикатор может
+  меняться от итерации к итерации, но каждая запись публикуется один раз.
 
 ```bash
 docker compose -f infrastructure/docker-compose.yaml up -d --scale events-collector-service=2 events-collector-service
@@ -358,15 +372,19 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:test     # или make test; Docker не нужен
 ```
 
-Классы `*Test` (62 теста). Ключевые сценарии:
+Классы `*Test` (70 тестов). Ключевые сценарии:
 
 * `EventIngestionScenarioTest` — корректное событие, пустые `eventId`/`deviceId`, некорректный `timestampMs`,
   ошибки записи в `device_events` и `device_outbox`: проверяется, вызван ли `ack.acknowledge()`; спан приёма
   сохраняется в outbox-записи;
 * `OutboxPublishingServiceTest` — новое устройство (порядок send → SADD → SENT), уже опубликованное,
   ошибка Kafka (FAILED, attempts + 1), аренда не получена, освобождение аренды при ошибке,
-  продление аренды перед каждой следующей записью и остановка пачки при её потере, отправка внутри трейса приёма,
-  запись аудита (`PUBLISHED` с номером попытки, `SKIPPED`, `FAILED` с ошибкой) и публикация при недоступном аудите;
+  продление аренды перед каждой записью (в том числе первой) и перед каждой записью версии; потеря аренды после
+  выборки, посреди пачки, во время отправки, после ошибки Kafka и при ошибке Redis — пачка останавливается, версия
+  и аудит не пишутся; отправка внутри трейса приёма, запись аудита (`PUBLISHED` с номером попытки, `SKIPPED`,
+  `FAILED` с ошибкой) и публикация при недоступном аудите;
+* `LeaseGuardTest` — фоновое продление на настоящем планировщике с коротким TTL, обнаружение чужой аренды
+  (дальше Redis не вызывается), ошибка Redis — потеря аренды, `close()` останавливает продление;
 * `OutboxRecordTest` — версии записи: повторная доставка, обрезка ошибки, перенос контекста трассировки;
 * `RedisLeaseServiceTest` — освобождение и продление аренды владельцем, попытка освободить или продлить чужую аренду;
 * `KafkaErrorClassifierTest` — таймаут и ответ 5xx Schema Registry — временные (повтор), не Avro и неизвестная
@@ -383,7 +401,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 65 % (make coverage)
 ```
 
-Классы `It*Test` (14 тестов). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
+Классы `It*Test` (17 тестов). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
 (`config/*TestContainerConfig`, базовый класс `it/AbstractItTest`), заранее запущенный compose не нужен.
 Используются те же `infrastructure/init/clickhouse/01-schema.sh` и `infrastructure/init/kafka/init-topics.sh`,
 что и на стенде.
@@ -391,16 +409,18 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 * `ItEventsCollectorTest` — приём события; публикация outbox и пропуск повторной публикации; повторная доставка
   того же `eventId`; ошибка публикации, повторная попытка и остановка после `OUTBOX_MAX_ATTEMPTS`; строки аудита
   каждой попытки (исход, номер попытки, `instance_id`); `DeviceInfo` уходит в трейсе приёма (`traceId` из
-  `traceparent` совпадает с `trace_id` в outbox);
+  `traceparent` совпадает с `trace_id` в outbox); аренда истекает во время `findPending` и её берёт другой
+  экземпляр — ничего не отправлено, новой версии outbox и аудита нет, аренда нового владельца не тронута;
 * `ItKafkaErrorHandlingTest` — ошибки приёма на отдельной теме с одним разделом и своей consumer group, после
   каждой проверяется committed offset: однократный таймаут Schema Registry (`SocketTimeoutException`) — сообщение
   повторено и сохранено, offset подтверждён после обоих сообщений; не-Avro сообщение — в DLT с исходными байтами,
   его offset подтверждён сразу после записи в DLT; невалидное событие — в DLT в Avro; следующее корректное
   сообщение всякий раз обработано;
 * `ItRedisLeaseServiceTest` — захват, освобождение владельцем, попытка удалить чужую аренду, истечение TTL,
-  продление своей аренды, отказ продлить чужую или истёкшую.
+  продление своей аренды, отказ продлить чужую или истёкшую; `LeaseGuard` удерживает аренду дольше TTL и замечает,
+  что её взял другой экземпляр.
 
-Покрытие строк (JaCoCo, unit + integration): порог 65 %, фактически около 97 %; отчёт —
+Покрытие строк (JaCoCo, unit + integration): порог 65 %, фактически около 98 %; отчёт —
 `services/events-collector-service/build/reports/jacoco/test/html/index.html`.
 Сгенерированные Avro-классы и код Lombok исключены из отчёта.
 
@@ -445,10 +465,11 @@ metadata (не метки, чтобы не раздувать индекс). С�
 * Сквозной трейс события (приём и публикация): `events process` → `validate` → `insert device_events` →
   `insert device_outbox`, а после итерации публикатора там же `outbox publish` (дочерний спан `events process`) →
   `redis devices:published check` → `publish devices` → `devices send` (спан Kafka-продюсера) →
-  `redis devices:published add` → `append SENT version`.
-* Пропуск публикации — в трейсе своего события: `outbox publish` → `redis devices:published check` → `append SENT version`.
-* Трейс итерации публикатора: `task outboxPublisherJob.run` → `outbox batch` — выборка и продление аренды;
-  обработка записей уходит в трейсы их событий.
+  `redis devices:published add` → `redis outbox:lease extend` → `append SENT version`.
+* Пропуск публикации — в трейсе своего события: `outbox publish` → `redis devices:published check` →
+  `redis outbox:lease extend` → `append SENT version`.
+* Трейс итерации публикатора: `task outboxPublisherJob.run` → `outbox batch` — выборка и контрольные продления
+  аренды перед каждой записью; обработка записей уходит в трейсы их событий. Фоновое продление спанов не создаёт.
 
 Запросы к `/actuator/*` и спаны команд Redis (Lettuce) не трассируются (`ObservationConfig`), чтобы в Tempo
 оставались только пути приёма и публикации. Шаги с Redis видны через собственные спаны сервиса.
@@ -487,7 +508,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |
-| аренда не освобождается | аренда продлевается перед каждой записью, поэтому TTL (`OUTBOX_LEASE_TTL_MS`) должен быть больше времени обработки одной записи — иначе в логе «Outbox lease lost, batch stopped» и «Outbox lease expired before the iteration finished»; значение ключа — токен владельца, Lua-скрипты продлевают и удаляют ключ только при совпадении токена; после падения экземпляра аренда исчезнет сама через TTL |
+| аренда не освобождается или пачка останавливается | аренду продлевает фоновый поток каждые `OUTBOX_LEASE_TTL_MS / 3` и проверки перед каждой записью; «Outbox lease lost» в логе — продлить не удалось (Redis недоступен, процесс замер дольше TTL, ключ удалён вручную): пачка остановлена, записи выберет следующая итерация; «Outbox lease expired before the iteration finished» без «lease lost» — TTL слишком мал для периода продления; значение ключа — токен владельца, Lua-скрипты продлевают и удаляют ключ только при совпадении токена; после падения экземпляра аренда исчезнет сама через TTL |
 | нет трассировок | запущен ли профиль `observability`; `MANAGEMENT_OTLP_ENDPOINT` (`http://alloy:4320/v1/traces` в compose, `http://localhost:4318/v1/traces` из IDE — напрямую в Tempo); Alloy: http://localhost:12345 → компоненты `otelcol.*`; Tempo healthy; интервал поиска в Grafana захватывает время событий |
 | нет логов в Loki | `infrastructure/config/alloy/config.alloy`: фильтр по метке `com.docker.compose.project` = `COMPOSE_PROJECT_NAME`; Alloy видит `/var/run/docker.sock`; метки `service`/`container`; запрос `{service="events-collector-service"}` |
 | панель логов в Grafana: `timeout awaiting response headers` | после долгого сбоя (например, ClickHouse недоступен) в логах много стек-трейсов, и ответ Loki превышает лимит gRPC; в `loki-config.yaml` лимит поднят до 16 МБ (`grpc_server_max_*_msg_size`) — после правки `docker compose -f infrastructure/docker-compose.yaml restart loki` |

@@ -200,8 +200,8 @@ class OutboxPublishingServiceTest {
     }
 
     @Test
-    @DisplayName("Batch of several records then lease extended before each next record")
-    void givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachNextRecord() {
+    @DisplayName("Batch of several records then lease extended before each record and each outbox write")
+    void givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachRecordAndWrite() {
         OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
         OutboxRecord third = OutboxRecord.initial("evt-3", "dev-3", 3_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second, third));
@@ -209,14 +209,16 @@ class OutboxPublishingServiceTest {
 
         BatchResult result = service.publishPendingBatch();
 
-        InOrder order = inOrder(publisher, lease);
-        order.verify(publisher).publish(eq(DEVICE_ID), anyLong());
-        order.verify(lease).extend(TOKEN, TTL);
-        order.verify(publisher).publish(eq("dev-2"), anyLong());
-        order.verify(lease).extend(TOKEN, TTL);
-        order.verify(publisher).publish(eq("dev-3"), anyLong());
+        InOrder order = inOrder(outboxRepository, publisher, lease);
+        order.verify(outboxRepository).findPending(MAX_ATTEMPTS, BATCH_SIZE);
+        for (String deviceId : List.of(DEVICE_ID, "dev-2", "dev-3")) {
+            order.verify(lease).extend(TOKEN, TTL);
+            order.verify(publisher).publish(eq(deviceId), anyLong());
+            order.verify(lease).extend(TOKEN, TTL);
+            order.verify(outboxRepository).insert(argThat(r -> deviceId.equals(r.deviceId())));
+        }
         order.verify(lease).release(TOKEN);
-        verify(lease, times(2)).extend(TOKEN, TTL);
+        verify(lease, times(6)).extend(TOKEN, TTL);
         assertThat(result.published()).isEqualTo(3);
         assertThat(result.leaseLost()).isFalse();
     }
@@ -227,18 +229,83 @@ class OutboxPublishingServiceTest {
         OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
         when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second));
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
-        when(lease.extend(TOKEN, TTL)).thenReturn(false);
+        // Первая запись: перед обработкой и перед SENT - аренда наша; перед второй записью - уже нет
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, true, false);
         when(lease.release(TOKEN)).thenReturn(false);
 
         BatchResult result = service.publishPendingBatch();
 
         verify(publisher).publish(eq(DEVICE_ID), anyLong());
+        verify(outboxRepository).insert(argThat(r -> EVENT_ID.equals(r.eventId())));
         verify(publisher, never()).publish(eq("dev-2"), anyLong());
         verify(outboxRepository, never()).insert(argThat(r -> "evt-2".equals(r.eventId())));
         verify(lease).release(TOKEN);
         assertThat(result.leaseLost()).isTrue();
         assertThat(result.selected()).isEqualTo(2);
         assertThat(result.published()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Lease lost during selection then first record not published")
+    void givenLeaseLostDuringSelection_whenPublishBatch_thenNothingPublished() {
+        when(lease.extend(TOKEN, TTL)).thenReturn(false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publishedDeviceStore, never()).isPublished(anyString());
+        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(outboxRepository, never()).insert(any());
+        verify(publicationAuditRepository, never()).insert(any());
+        verify(lease).release(TOKEN);
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.selected()).isEqualTo(1);
+        assertThat(result.published()).isZero();
+    }
+
+    @Test
+    @DisplayName("Lease lost during Kafka send then no SENT version written")
+    void givenLeaseLostDuringSend_whenPublishBatch_thenNoOutboxVersion() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        // Kafka подтвердила отправку - устройство отмечено; SENT запишет новый владелец (пропуск по devices:published)
+        verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        verify(outboxRepository, never()).insert(any());
+        verify(publicationAuditRepository, never()).insert(any());
+        verify(metrics, never()).publishSucceeded();
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.published()).isZero();
+        assertThat(result.errors()).isZero();
+    }
+
+    @Test
+    @DisplayName("Lease lost after Kafka failure then no FAILED version written")
+    void givenLeaseLostAfterKafkaFailure_whenPublishBatch_thenNoFailedVersion() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(eq(DEVICE_ID), anyLong());
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(outboxRepository, never()).insert(any());
+        verify(metrics, never()).publishFailed();
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.failed()).isZero();
+    }
+
+    @Test
+    @DisplayName("Redis fails on lease extend then batch stops as with lost lease")
+    void givenRedisFailureOnExtend_whenPublishBatch_thenBatchStops() {
+        when(lease.extend(TOKEN, TTL)).thenThrow(new IllegalStateException("redis down"));
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(outboxRepository, never()).insert(any());
+        verify(lease).release(TOKEN);
+        assertThat(result.leaseLost()).isTrue();
     }
 
     @Test

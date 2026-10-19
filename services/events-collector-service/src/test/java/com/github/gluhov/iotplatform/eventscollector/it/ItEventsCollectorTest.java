@@ -6,6 +6,7 @@ import com.github.gluhov.iotplatform.eventscollector.adapter.out.kafka.DeviceInf
 import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceInfoPublisher;
+import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -37,9 +38,8 @@ import static com.github.gluhov.iotplatform.eventscollector.data.TestData.EVENT_
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.unique;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class ItEventsCollectorTest extends AbstractItTest {
     private static final Duration WAIT = Duration.ofSeconds(30);
@@ -58,6 +58,8 @@ class ItEventsCollectorTest extends AbstractItTest {
     private PublishOutboxUseCase publishOutbox;
     @MockitoSpyBean
     private DeviceInfoPublisher deviceInfoPublisher;
+    @MockitoSpyBean
+    private OutboxRepository outboxRepository;
     
     @BeforeAll
     static void createClients() {
@@ -257,6 +259,38 @@ class ItEventsCollectorTest extends AbstractItTest {
                         "last_error", rs.getString("last_error"),
                         "trace_id", rs.getString("trace_id")))
                 .single();
+    }
+
+    @Test
+    @DisplayName("Lease TTL expires during findPending and another instance takes it then nothing published or written")
+    void givenLeaseExpiredDuringSelection_whenPublish_thenNothingPublishedOrWritten() {
+        String eventId = unique("evt");
+        String deviceId = unique("dev");
+        String otherOwner = "other-instance-token";
+        send(eventId, deviceId, Instant.now().toEpochMilli());
+        awaitOutbox(eventId);
+        // Выборка длится дольше TTL: аренда истекает в Redis, и ее получает другой экземпляр
+        doAnswer(call -> {
+            redisTemplate.expire(LEASE_KEY, Duration.ofMillis(1));
+            await().atMost(Duration.ofSeconds(2)).until(() -> !redisTemplate.hasKey(LEASE_KEY));
+            redisTemplate.opsForValue().setIfAbsent(LEASE_KEY, otherOwner, Duration.ofSeconds(30));
+            return call.callRealMethod();
+        }).when(outboxRepository).findPending(anyInt(), anyInt());
+
+        try {
+            BatchResult result = publishOutbox.publishPendingBatch();
+
+            assertThat(result.leaseLost()).isTrue();
+            assertThat(result.published()).isZero();
+            verify(deviceInfoPublisher, never()).publish(eq(deviceId), anyLong());
+            assertThat(outboxRow(eventId)).as("no new outbox version")
+                    .containsEntry("status", "NEW")
+                    .containsEntry("state_version", 1L);
+            assertThat(auditTrail(eventId)).isEmpty();
+            assertThat(redisTemplate.opsForValue().get(LEASE_KEY)).as("new owner's lease kept").isEqualTo(otherOwner);
+        } finally {
+            redisTemplate.delete(LEASE_KEY);
+        }
     }
 
     // Попытки публикации события из аудита: "исход/номер попытки/экземпляр" в порядке времени

@@ -56,6 +56,19 @@
 - [ ] `SADD` только после успешной отправки (`OutboxPublishingServiceTest.givenNewDevice_whenPublishBatch_thenPublishMarkAndSent`) -
    `givenKafkaFailure_whenPublishBatch_thenFailedVersionWithIncrementedAttempts` - `markPublished` не вызван).
 - [ ] Без аренды публикации нет (`OutboxPublishingServiceTest.givenLeaseNotAcquired_whenPublishBatch_thenNothingPublished`).
+- [ ] Аренда проверяется и продлевается после выборки - перед каждой записью, в том числе первой, и перед каждой
+   записью версии outbox (`OutboxPublishingServiceTest.givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachRecordAndWrite`).
+- [ ] Владение сохраняется на время блокирующих вызовов - фоновое продление каждые TTL/3
+   (`LeaseGuardTest.givenHeldLease_whenTimePasses_thenHeartbeatExtends`; на настоящем Redis -
+   `ItRedisLeaseServiceTest.givenLeaseGuard_whenLongerThanTtl_thenLeaseKept`).
+- [ ] При потере аренды обработка останавливается, новая версия outbox и аудит не пишутся
+   (`OutboxPublishingServiceTest.givenLeaseLostDuringSelection_whenPublishBatch_thenNothingPublished`,
+   `givenLeaseLostMidBatch_whenPublishBatch_thenBatchStops`, `givenLeaseLostDuringSend_whenPublishBatch_thenNoOutboxVersion`,
+   `givenLeaseLostAfterKafkaFailure_whenPublishBatch_thenNoFailedVersion`, `givenRedisFailureOnExtend_whenPublishBatch_thenBatchStops`;
+   `LeaseGuardTest.givenForeignLease_whenHeartbeat_thenLostAndNoMoreExtends`;
+   на настоящем Redis - `ItRedisLeaseServiceTest.givenForeignLease_whenGuardHeartbeat_thenLost`).
+- [ ] TTL истёк во время `findPending`, аренду взял другой экземпляр - ничего не отправлено и не записано, аренда
+   нового владельца не тронута (`ItEventsCollectorTest.givenLeaseExpiredDuringSelection_whenPublish_thenNothingPublishedOrWritten`).
 
 ## Масштабирование
 
@@ -76,7 +89,7 @@
    дочерний спан) - `docs/screenshots/tempo-trace-end-to-end.png`; контекст переносится через `trace_id`/`span_id`
    в `device_outbox` (`ItEventsCollectorTest.givenNewDevice_whenPublish_thenDeviceInfoSentAndSecondEventSkipped`).
 - [ ] Трассировка пути пропуска публикации - в трейсе своего события (`outbox publish` -> `redis devices:published check`
-   -> `append SENT version`, без `devices send`) - `docs/screenshots/tempo-trace-skip.png`.
+   -> `redis outbox:lease extend` -> `append SENT version`, без `devices send`) - `docs/screenshots/tempo-trace-skip.png`.
 - [ ] Дашборд Grafana "IoT Platform - events-collector-service" - `docs/screenshots/grafana-dashboard.png`.
 
 ## Тесты
