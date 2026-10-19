@@ -1,0 +1,123 @@
+# Общие настройки. Все подключения - только из переменных окружения;
+# значения по умолчанию заданы в application-local.yml / application-docker.yml
+spring:
+  application:
+    name: events-collector-service
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    properties:
+      schema.registry.url: ${SCHEMA_REGISTRY_URL}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:events-collector}
+      auto-offset-reset: earliest
+      # Offset подтверждается вручную и только после записи в ClickHouse
+      enable-auto-commit: false
+      # Строго по одному сообщению за poll
+      max-poll-records: 1
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
+        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # SpecificRecord (сгенерированный DeviceEvent), а не GenericRecord
+        specific.avro.reader: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 15000
+    listener:
+      type: single
+      ack-mode: manual_immediate
+      observation-enabled: true
+    template:
+      observation-enabled: true
+
+  datasource:
+    url: ${CLICKHOUSE_URL}/${CLICKHOUSE_DATABASE}
+    username: ${CLICKHOUSE_USERNAME}
+    password: ${CLICKHOUSE_PASSWORD}
+    driver-class-name: com.clickhouse.jdbc.Driver
+    hikari:
+      pool-name: clickhouse
+      maximum-pool-size: 5
+      # Не падать при старте, если ClickHouse еще не готов: запросы повторит обработчик ошибок
+      initialization-fail-timeout: -1
+      connection-test-query: SELECT 1
+
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+
+app:
+  # Пусто или не задано -> hostname контейнера
+    instance-id: ${APP_INSTANCE_ID:${HOSTNAME:local}}
+    kafka:
+      events-topic: ${KAFKA_EVENTS_TOPIC:events}
+      devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
+      send-timeout: 20s
+    outbox:
+      batch-size: ${OUTBOX_BATCH_SIZE:100}
+      max-attempts: ${OUTBOX_MAX_ATTEMPTS:10}
+      lease-ttl-ms: ${OUTBOX_LEASE_TTL_MS:30000}
+      publish-interval-ms: ${OUTBOX_PUBLISH_INTERVAL_MS:2000}
+
+# Только технические точки: health, metrics, prometheus
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    # Не "instance": эту метку Prometheus ставит сам (адрес цели)
+    tags:
+      service: ${spring.application.name}
+      instance_id: ${app.instance-id}
+    # Бакеты гистограммы для панели p95 времени обработки сообщения в Grafana
+    distribution:
+      percentiles-histogram:
+        spring.kafka.listener: true
+  tracing:
+    sampling:
+      probability: 1.0
+  opentelemetry:
+    resource-attributes:
+      service.instance.id: ${app.instance-id}
+    tracing:
+      export:
+        otlp:
+          endpoint: ${MANAGEMENT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+  # Метрики отдаются только через /actuator/prometheus, логи - в stdout (их собирает Alloy)
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+
+# Формат (logstash JSON) задан в logback-spring.xml; здесь - дополнительные поля
+logging:
+  structured:
+    json:
+      add:
+        service: ${spring.application.name}
+        instanceId: ${app.instance-id}
+  level:
+    root: INFO
+    org.apache.kafka: WARN
+    io.confluent: WARN
+    com.clickhouse: WARN
