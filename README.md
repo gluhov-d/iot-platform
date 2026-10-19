@@ -503,7 +503,7 @@ metadata (не метки, чтобы не раздувать индекс). С�
 |---|---|
 | `grafana-dashboard.png` | дашборд сервиса с метриками |
 | `tempo-trace-end-to-end.png` | сквозной трейс успешного пути: приём (`events process`) и публикация (`outbox publish` — дочерний спан) в одном трейсе |
-| `tempo-trace-skip.png` | пропуск публикации для уже опубликованного устройства — в трейсе своего события: `outbox publish` → `redis devices:published check` → `append SENT version` → `append audit record`, без отправки в Kafka |
+| `tempo-trace-skip.png` | пропуск публикации для уже опубликованного устройства — в трейсе своего события: `outbox publish` → `redis devices:published check` → `redis outbox:lease extend` → `append SENT version` → `append audit record`, без отправки в Kafka |
 
 ## 17. Диаграммы
 
