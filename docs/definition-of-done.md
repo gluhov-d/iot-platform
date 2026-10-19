@@ -11,7 +11,7 @@
 - [ ] Входная тема `events`, выходная `devices` (`.env.example`: `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`).
 - [ ] Ключ обеих тем - `deviceId`: `DeviceEvent` отправляется с ключом `deviceId` (`check-local.sh`, `ItEventsCollectorTest`),
         `DeviceInfo` - `KafkaDeviceInfoProducer` (`KafkaDeviceInfoProducerTest.givenDevice_whenPublish_thenSendKeyedByDeviceId`).
-- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=compact`: `make topics`.
+- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=compact`, `events.DLT` - `cleanup.policy=delete`: `make topics`.
 - [ ] Темы создаются автоматически: контейнер `kafka-init` -> `infrastructure/init/kafka/init-topics.sh`,
         `make health` - у `kafka-init` exited, код 0.
 
@@ -25,6 +25,10 @@
   `givenEventInsertFailure_whenOnEvent_thenNoAck`, `givenOutboxInsertFailure_whenOnEvent_thenNoAck` - ack не вызван).
 - [ ] Невалидные `eventId`/`deviceId`/`timestampMs` - ack не вызван, записи нет (`EventIngestionScenarioTest`,
   `givenBlank*`/`givenInvalidTimestamp*`).
+- [ ] Ни одно сообщение не пропускается молча: временный сбой Schema Registry повторяется, недесериализуемые и
+   невалидные сообщения откладываются в `events.DLT`, их offset подтверждается только после записи в DLT
+   (`KafkaConfig`, `KafkaErrorClassifier`); committed offset после ошибки и следующего корректного сообщения -
+   `ItKafkaErrorHandlingTest`.
 - [ ] Redis не участвует в приеме: `EventIngestionService` не зависит от Redis-портов.
 - [ ] Успешный прием создает строку в `device_events` и начальную строку `device_outbox`
   (`ItEventsCollectorTest.givenEvent_whenIngest_thenStoredWithInitialOutbox`, `check-local.sh` шаги 3-4).

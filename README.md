@@ -39,13 +39,17 @@
   Падение между шагами даёт повторную отправку, но устройство не может оказаться «опубликованным»
   без сообщения в Kafka.
 
-**Невалидные сообщения.** Ошибки валидации и десериализации не повторяются, offset такого сообщения
-сервис не подтверждает, событие логируется со `status=REJECTED`. Dead-letter-обработка вне рамок модуля,
-поэтому offset невалидного сообщения фактически перекрывается commit-ом следующего успешного сообщения
-того же раздела. Это осознанное допущение модуля 2, а не потеря валидного события.
+**Невалидные и недесериализуемые сообщения** (не Avro, схемы нет в Schema Registry, не прошли валидацию)
+не повторяются: обработчик ошибок откладывает их в тему `events.DLT` — недесериализуемые с исходными байтами,
+невалидные как `DeviceEvent` в Avro, с заголовками `kafka_dlt-*` (исходные тема, раздел, offset, класс и текст
+ошибки) — и только после успешной записи в DLT подтверждает их offset. Не удалось записать в DLT — сообщение
+остаётся неподтверждённым и обрабатывается снова: раздел не идёт дальше, пока сообщение не сохранено. Лог —
+со `status=REJECTED`; разбор и повторная обработка DLT — вне рамок модуля.
 
-**Временные ошибки** (ClickHouse недоступен и т. п.) повторяются без ограничения числа попыток
-с экспоненциальной паузой до 10 с — раздел ждёт восстановления хранилища.
+**Временные ошибки** (ClickHouse недоступен; Schema Registry не ответил при десериализации — таймаут, обрыв
+соединения, ответ 5xx) повторяются без ограничения числа попыток с экспоненциальной паузой до 10 с: раздел ждёт
+восстановления, offset за сообщением не подтверждается. Что повторять, а что откладывать в DLT, решает
+`KafkaErrorClassifier`.
 
 ## 2. Место сервиса в платформе
 
@@ -99,7 +103,7 @@ iot-platform/
 │   ├── docker-compose.yaml            # стенд: базовый + профили observability, platform
 │   ├── .env -> ../.env                # симлинк на корневой .env (сам .env в Git не хранится)
 │   ├── init/
-│   │   ├── kafka/init-topics.sh       # создание тем events/devices (контейнер kafka-init)
+│   │   ├── kafka/init-topics.sh       # создание тем events, devices, events.DLT (контейнер kafka-init)
 │   │   ├── clickhouse/01-schema.sh    # база iot_platform, таблицы device_events и device_outbox
 │   │   ├── clickhouse/02-audit.sh     # таблица аудита публикаций device_publication_audit
 │   │   └── postgres/                  # профиль platform (окружение модуля 1)
@@ -147,7 +151,7 @@ iot-platform/
 | `adapter.out.kafka` | `KafkaDeviceInfoProducer`, `DeviceInfoPublishException` |
 | `adapter.out.redis` | `RedisLeaseService`, `RedisPublishedDeviceStore` |
 | `support` | `MetricsFacade` |
-| `config` | `KafkaProperties`, `OutboxProperties`, `AppPropertiesConfig` (бины `Clock`, `OutboxPolicy`), `KafkaConfig` (обработчик ошибок), `ObservationConfig`, `SchedulingConfig` |
+| `config` | `KafkaProperties`, `OutboxProperties`, `AppPropertiesConfig` (бины `Clock`, `OutboxPolicy`), `KafkaConfig` (обработчик ошибок и DLT), `KafkaErrorClassifier` (повтор или DLT), `ObservationConfig`, `SchedulingConfig` |
 
 Доменные сервисы — бины Spring (`@Service`, `@Component`), но зависят только от портов: Kafka, ClickHouse
 и Redis подключаются через адаптеры.
@@ -158,6 +162,7 @@ iot-platform/
 |---|---|---|---|---|---|
 | `events` | сырой поток событий устройств | `deviceId` | `delete` | 3 | 1 |
 | `devices` | производный поток обнаруженных устройств | `deviceId` | `compact` | 3 | 1 |
+| `events.DLT` | отложенные сообщения `events`, которые нельзя обработать (раздел — тот же, что у исходного) | `deviceId` | `delete` | 3 | 1 |
 
 * Ключ `deviceId` обязателен: события одного устройства попадают в один раздел и читаются по порядку.
   Для compacted-темы сообщение без ключа брокер отклонит.
@@ -353,7 +358,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:test     # или make test; Docker не нужен
 ```
 
-Классы `*Test` (58 тестов). Ключевые сценарии:
+Классы `*Test` (62 теста). Ключевые сценарии:
 
 * `EventIngestionScenarioTest` — корректное событие, пустые `eventId`/`deviceId`, некорректный `timestampMs`,
   ошибки записи в `device_events` и `device_outbox`: проверяется, вызван ли `ack.acknowledge()`; спан приёма
@@ -364,6 +369,8 @@ services/events-collector-service/scripts/check-local.sh     # или make check
   запись аудита (`PUBLISHED` с номером попытки, `SKIPPED`, `FAILED` с ошибкой) и публикация при недоступном аудите;
 * `OutboxRecordTest` — версии записи: повторная доставка, обрезка ошибки, перенос контекста трассировки;
 * `RedisLeaseServiceTest` — освобождение и продление аренды владельцем, попытка освободить или продлить чужую аренду;
+* `KafkaErrorClassifierTest` — таймаут и ответ 5xx Schema Registry — временные (повтор), не Avro и неизвестная
+  схема — «ядовитые» (DLT), ошибка хранилища — повтор;
 * `MetricsFacadeTest` — имена метрик в формате Prometheus;
 * `ArchitectureTest` (ArchUnit, 9 правил) — слои и направления зависимостей: домен без Kafka, JDBC и Redis,
   адаптеры вызывают домен только через `port.in`, `@KafkaListener` и `@Scheduled` — только во входных адаптерах,
@@ -376,7 +383,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 65 % (make coverage)
 ```
 
-Классы `It*Test` (11 тестов). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
+Классы `It*Test` (14 тестов). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
 (`config/*TestContainerConfig`, базовый класс `it/AbstractItTest`), заранее запущенный compose не нужен.
 Используются те же `infrastructure/init/clickhouse/01-schema.sh` и `infrastructure/init/kafka/init-topics.sh`,
 что и на стенде.
@@ -385,10 +392,15 @@ services/events-collector-service/scripts/check-local.sh     # или make check
   того же `eventId`; ошибка публикации, повторная попытка и остановка после `OUTBOX_MAX_ATTEMPTS`; строки аудита
   каждой попытки (исход, номер попытки, `instance_id`); `DeviceInfo` уходит в трейсе приёма (`traceId` из
   `traceparent` совпадает с `trace_id` в outbox);
+* `ItKafkaErrorHandlingTest` — ошибки приёма на отдельной теме с одним разделом и своей consumer group, после
+  каждой проверяется committed offset: однократный таймаут Schema Registry (`SocketTimeoutException`) — сообщение
+  повторено и сохранено, offset подтверждён после обоих сообщений; не-Avro сообщение — в DLT с исходными байтами,
+  его offset подтверждён сразу после записи в DLT; невалидное событие — в DLT в Avro; следующее корректное
+  сообщение всякий раз обработано;
 * `ItRedisLeaseServiceTest` — захват, освобождение владельцем, попытка удалить чужую аренду, истечение TTL,
   продление своей аренды, отказ продлить чужую или истёкшую.
 
-Покрытие строк (JaCoCo, unit + integration): порог 65 %, фактически 93 %; отчёт —
+Покрытие строк (JaCoCo, unit + integration): порог 65 %, фактически около 97 %; отчёт —
 `services/events-collector-service/build/reports/jacoco/test/html/index.html`.
 Сгенерированные Avro-классы и код Lombok исключены из отчёта.
 
@@ -483,7 +495,8 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | сервис не стартует: `input/output error` при `docker pull`/`build` | переполнен диск VM Docker или диск хоста; освободить место (`docker builder prune -af`, удаление неиспользуемых образов) и перезапустить Docker Desktop |
 | нет строк в `device_publication_audit`, ClickHouse unhealthy после обновления | стенд поднят до появления таблицы: `02-audit.sh` выполняется только на пустом томе — создать таблицу вручную (раздел 7); при ошибке записи аудита в логе сервиса — «Publication audit record not written» |
 | публикация в отдельном трейсе, а не в трейсе события | запись принята до добавления колонок `trace_id`/`span_id` (у неё они пустые) — так и должно быть; если пусто у новых записей — не выполнен `ALTER` из раздела 7 или ingest шёл без трассировки |
-| сообщения events не читаются, лаг растёт | логи сервиса со `status=FAILED` — временная ошибка ClickHouse, раздел ждёт с backoff до 10 с; после восстановления хранилища чтение продолжится автоматически |
+| сообщения events не читаются, лаг растёт | логи сервиса со `status=FAILED` — временная ошибка ClickHouse или Schema Registry, раздел ждёт с backoff до 10 с; после восстановления чтение продолжится автоматически. Раздел стоит и тогда, когда сообщение не удаётся отложить в DLT — в логе «Dead-letter publication … failed», проверить тему `events.DLT` |
+| сообщения в `events.DLT` | входное сообщение не десериализовалось или не прошло валидацию; причина — в заголовках `kafka_dlt-exception-*` (Kafka UI, профиль `tools`) и в логе со `status=REJECTED`; после исправления источника сообщение можно отправить заново |
 | лаг consumer group отрицательный (`-1`) | у группы ещё нет подтверждённого offset в разделе (в раздел не приходили сообщения) — kafka-exporter отдаёт `-1`; после первого обработанного сообщения лаг станет 0 |
 | порт занят | поменять `*_PORT` / `EVENTS_COLLECTOR_PORTS` в `.env` |
 | ClickHouse падает (`Exited (132)`, в `clickhouse-server.err.log` — `Illegal instruction`) на `SELECT ... FINAL` | Apple M4 + Docker Desktop: arm64-сборка ClickHouse 26.2 получает SIGILL, amd64-образ через Rosetta работает. В `.env` задано `CLICKHOUSE_PLATFORM=linux/amd64`; интеграционные тесты на macOS с Apple Silicon тоже берут amd64 (переопределяется переменной `CLICKHOUSE_PLATFORM`). На Linux/x86 amd64 — нативная платформа |
