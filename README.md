@@ -366,6 +366,12 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 упавший шаг.
 Это быстрая проверка поднятого стенда, а не замена интеграционным тестам.
 
+Корневой `.env` скрипт передаёт Compose явно (`--env-file`, как и Makefile), поэтому он одинаково работает
+напрямую из любого каталога, через `make check-local` и через Gradle (задача запускает его из каталога сервиса)
+и не зависит от симлинка `infrastructure/.env` — на Windows без поддержки симлинков на его месте оказывается
+текстовый файл. Без `--env-file` Compose подставил бы пустые значения переменных и завершился бы с ошибкой
+конфигурации. Если корневого `.env` нет, скрипт сразу сообщает об этом.
+
 ## 14. Модульные тесты
 
 ```bash
@@ -528,6 +534,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | сообщения в `events.DLT` | входное сообщение не десериализовалось или не прошло валидацию; причина — в заголовках `kafka_dlt-exception-*` (Kafka UI, профиль `tools`) и в логе со `status=REJECTED`; после исправления источника сообщение можно отправить заново |
 | лаг consumer group отрицательный (`-1`) | у группы ещё нет подтверждённого offset в разделе (в раздел не приходили сообщения) — kafka-exporter отдаёт `-1`; после первого обработанного сообщения лаг станет 0 |
 | порт занят | поменять `*_PORT` / `EVENTS_COLLECTOR_PORTS` в `.env` |
+| `check-local.sh`: «.env not found» | создать корневой `.env`: `cp .env.example .env` |
 | ClickHouse падает (`Exited (132)`, в `clickhouse-server.err.log` — `Illegal instruction`) на `SELECT ... FINAL` | Apple M4 + Docker Desktop: arm64-сборка ClickHouse 26.2 получает SIGILL, amd64-образ через Rosetta работает. В `.env` задано `CLICKHOUSE_PLATFORM=linux/amd64`; интеграционные тесты на macOS с Apple Silicon тоже берут amd64 (переопределяется переменной `CLICKHOUSE_PLATFORM`). На Linux/x86 amd64 — нативная платформа |
 | `No space left on device` в логах Kafka/ClickHouse | заполнен диск VM Docker (`docker system df`) — освободить место или увеличить Disk usage limit в Docker Desktop, затем пересоздать том Kafka (`make kafka-reset`): брокер помечает каталог логов как сбойный |
 

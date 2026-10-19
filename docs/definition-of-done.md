@@ -80,7 +80,7 @@
 
 ## Наблюдаемость
 
-- [ ] `/actuator/health` и `/actuator/prometheus` отвечают (`check-local.sh` шаг 7, `curl localhost:<порт>/actuator/prometheus`, порт - `make urls`).
+- [ ] `/actuator/health` и `/actuator/prometheus` отвечают (`check-local.sh` шаг 8, `curl localhost:<порт>/actuator/prometheus`, порт - `make urls`).
 - [ ] Прикладные метрики с требуемыми именами (`MetricsFacadeTest.givenAllMetricsUpdated_whenScrape_thenRequiredPrometheusNames`).
    `outbox_candidate_created_total` - в Prometheus после relabel (в `/actuator/prometheus` - `outbox_candidate_total`,
    ограничение Prometheus Java client 1.x, см. README, раздел 16).
@@ -111,4 +111,6 @@
 - [ ] `init-topics.sh`, скрипт схемы ClickHouse (`01-schema.sh`), `.env.example` на месте.
 - [ ] Нет секретов в Git: `git ls-files | grep -x .env` - пусто.
 - [ ] Нет образов `latest`: `grep -rn ':latest' infrastructure services .env.example` - пусто.
-- [ ] Быстрая проверка `services/events-collector-service/scripts/check-local.sh` -> "All checks passed".
+- [ ] Быстрая проверка `services/events-collector-service/scripts/check-local.sh` -> "All checks passed" - напрямую
+   из любого каталога, через `make check-local` и `./gradlew :services:events-collector-service:checkLocal`;
+   корневой `.env` передается Compose через `--env-file`, симлинк `infrastructure/.env` не нужен.
