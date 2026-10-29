@@ -274,6 +274,57 @@ services:
       start_period: 30s
     networks: [iot-net]
 
+
+  # ---------------------------------------------------------------------------
+  # Nexus - Maven-репозиторий для контрактов (профиль ci)
+  # ---------------------------------------------------------------------------
+  nexus:
+    image: sonatype/nexus3:${NEXUS_VERSION}
+    container_name: iot-nexus
+    profiles: [ci]
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      # По умолчанию Nexus берет до 2,7 ГБ кучи; для контрактов хватает 1 ГБ.
+      # userRoot - из исходного значения переменной в образе
+      INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx1g -XX:MaxDirectMemorySize=512m -Djava.util.prefs.userRoot=/nexus-data/javaprefs"
+    ports:
+      - "${NEXUS_PORT}:8081"
+    volumes:
+      - nexus-data:/nexus-data
+    healthcheck:
+      # writable отвечает 200, только когда Nexus принимает запросы на запись
+      test: ["CMD-SHELL", "wget -qO /dev/null -T 3 http://127.0.0.1:8081/service/rest/v1/status/writable"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Настройка Nexus - одноразовая задача: пароль admin, EULA, пользователь публикации
+  # ---------------------------------------------------------------------------
+  nexus-init:
+    image: sonatype/nexus3:${NEXUS_VERSION}
+    container_name: iot-nexus-init
+    profiles: [ci]
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      nexus:
+        condition: service_healthy
+    environment:
+      NEXUS_URL: http://nexus:8081
+      NEXUS_ADMIN_PASSWORD: ${NEXUS_ADMIN_PASSWORD}
+      NEXUS_PUBLISH_USER: ${NEXUS_PUBLISH_USER}
+      NEXUS_PUBLISH_PASSWORD: ${NEXUS_PUBLISH_PASSWORD}
+      NEXUS_ACCEPT_EULA: ${NEXUS_ACCEPT_EULA}
+    volumes:
+      # Только чтение: нужен сгенерированный при первом старте /nexus-data/admin.password
+      - nexus-data:/nexus-data:ro
+      - ./init/nexus/init-nexus.sh:/opt/init/init-nexus.sh:ro
+    entrypoint: ["/bin/sh", "/opt/init/init-nexus.sh"]
+    networks: [iot-net]
   # ---------------------------------------------------------------------------
   # MinIO — объектное хранилище (DLT + вложения)
   # ---------------------------------------------------------------------------
@@ -618,3 +669,4 @@ volumes:
   tempo-data:
   alloy-data:
   grafana-data:
+  nexus-data:

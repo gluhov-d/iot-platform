@@ -71,6 +71,7 @@
 | Spring Boot | 4.0.3 (Spring Framework 7.0, Spring for Apache Kafka 4.0) |
 | Apache Kafka | 4.2.0, KRaft (`apache/kafka:4.2.0`) |
 | Kafka UI (профиль `tools`) | kafbat/kafka-ui v1.5.0 |
+| Sonatype Nexus Repository Community Edition (профиль `ci`) | 3.96.5 |
 | Confluent Schema Registry | 8.2.4 |
 | ClickHouse | 26.2.19 (`clickhouse/clickhouse-server:26.2.19-alpine`, на Apple M4 — `linux/amd64`, см. «Типовые проблемы»), JDBC `clickhouse-jdbc` 0.9.9 |
 | Redis Open Source | 8.6.7 |
@@ -100,10 +101,11 @@ iot-platform/
 │   ├── definition-of-done.md          # критерии приёмки со ссылками на файлы и тесты
 │   └── screenshots/                   # дашборд Grafana и трейсы Tempo (раздел 22 задания)
 ├── infrastructure/
-│   ├── docker-compose.yaml            # стенд: базовый + профили observability, platform
+│   ├── docker-compose.yaml            # стенд: базовый + профили observability, platform, tools, ci
 │   ├── .env -> ../.env                # симлинк на корневой .env (сам .env в Git не хранится)
 │   ├── init/
 │   │   ├── kafka/init-topics.sh       # создание тем events, devices, events.DLT (контейнер kafka-init)
+│   │   ├── nexus/init-nexus.sh        # пароль admin, EULA, пользователь публикации контрактов (контейнер nexus-init)
 │   │   ├── clickhouse/01-schema.sh    # база iot_platform, таблицы device_events и device_outbox
 │   │   ├── clickhouse/02-audit.sh     # таблица аудита публикаций device_publication_audit
 │   │   └── postgres/                  # профиль platform (окружение модуля 1)
@@ -315,6 +317,7 @@ docker compose -f infrastructure/docker-compose.yaml --profile observability up 
 make up                       # базовый стенд
 make up-obs                   # с observability
 make up PROFILES=tools        # плюс Kafka UI (http://localhost:8090)
+make up-ci                    # плюс Nexus (http://localhost:8091), то же, что make up PROFILES=ci
 make up PROFILES="observability platform"   # плюс окружение модуля 1 (Postgres, Keycloak, Camunda, MinIO)
 make health | make topics | make urls | make logs S=events-collector-service
 make down                     # остановить (тома сохраняются)
@@ -322,6 +325,20 @@ make clean                    # остановить и удалить тома
 ```
 
 Профиль `platform` — окружение модуля 1, в модуле 2 не используется.
+
+Профиль `ci` — Nexus, Maven-репозиторий, в который конвейер контрактов публикует собранные Avro-классы.
+Одноразовый `nexus-init` (`infrastructure/init/nexus/init-nexus.sh`) после `nexus: healthy`:
+
+* заменяет сгенерированный пароль `admin` на `NEXUS_ADMIN_PASSWORD`;
+* принимает EULA Community Edition — только если в `.env` стоит `NEXUS_ACCEPT_EULA=true`. Без этого Nexus отвечает
+  403 на любую загрузку и скачивание, поэтому `nexus-init` завершается с кодом 1, а `make up-ci` — с ошибкой.
+  Условия: https://links.sonatype.com/products/nxrm/ce-eula — прочитайте и примите решение сами;
+* включает анонимное чтение: контракты не секретны, сервисы скачивают их без пароля;
+* создаёт роль `contracts-publisher` (запись только в `maven-releases` и `maven-snapshots`) и пользователя
+  `NEXUS_PUBLISH_USER`; при каждом запуске синхронизирует его пароль с `.env`.
+
+`maven-releases` не даёт перезаписать выпущенную версию (повторная загрузка — 409). `maven-public` объединяет
+`maven-releases`, `maven-snapshots` и прокси Maven Central.
 
 ## 11. Запуск сервиса из IDE
 
@@ -519,6 +536,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | Проблема | Что проверить |
 |---|---|
 | Schema Registry недоступен | `make health`; `curl localhost:8081/subjects`; у сервиса `SCHEMA_REGISTRY_URL` должен указывать на `http://schema-registry:8081` внутри сети compose и на `http://localhost:8081` из IDE; SR стартует после `kafka: healthy` |
+| `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |

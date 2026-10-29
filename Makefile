@@ -11,6 +11,7 @@ SERVICE_PROJ  := :services:events-collector-service
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
 #	make up PROFILES=tools	- плюс Kafka UI
+#   make up PROFILES=ci     - плюс Nexus для контрактов
 #	make up PROFILES="observability platform" - плюс окружение модуля
 PROFILES ?=
 COMPOSE       := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) $(foreach p, $(PROFILES),--profile $(p))
@@ -21,11 +22,11 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
-INIT_SERVICES := kafka-init minio-init
+INIT_SERVICES := kafka-init minio-init nexus-init
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-obs down stop start restart ps logs health urls pull build clean reset kafka-reset \
+.PHONY: help up up-obs up-ci down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage
 
 ## ----------------------------------------------------------------- Справка
@@ -45,6 +46,9 @@ up: ## Поднять всю инфраструктуру (PROFILES=observabilit
 
 up-obs: ## То же, что make up PROFILES=observability
 	@$(MAKE) --no-print-directory up PROFILES=observability
+
+up-ci: ## То же, что make up PROFILES=ci (базовый стенд + Nexus)
+	@$(MAKE) --no-print-directory up PROFILES=ci
 
 down: ## Остановить и удалить контейнеры всех профилей (тома сохраняются)
 	@echo "==> Остановка инфраструктуры"
@@ -136,6 +140,8 @@ urls: ## Показать адреса всех сервисов
 	echo "  Redis                     redis://localhost:$$(v REDIS_PORT)"; \
 	echo "  --- профиль tools"; \
 	echo "  Kafka UI                  http://localhost:$$(v KAFKA_UI_PORT)"; \
+	echo "  --- профиль ci"; \
+	echo "  Nexus                     http://localhost:$$(v NEXUS_PORT)  (maven-public: /repository/maven-public/)"; \
 	echo "  --- профиль observability"; \
 	echo "  Grafana                   http://localhost:$$(v GRAFANA_PORT)"; \
 	echo "  Prometheus                http://localhost:$$(v PROMETHEUS_PORT)"; \
