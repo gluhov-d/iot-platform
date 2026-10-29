@@ -18,7 +18,13 @@ datasources:
     url: http://loki:3100
     jsonData:
       maxLines: 1000
-
+      # Переход из строки лога в трейс Tempo по полю traceId JSON-лога
+      derivedFields:
+        - name: traceId
+          matcherRegex: '"traceId":"(\w+)"'
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Открыть трейс
   - name: Tempo
     uid: tempo
     type: tempo
@@ -27,7 +33,11 @@ datasources:
     jsonData:
       tracesToLogsV2:
         datasourceUid: loki
-        spanStartTimeShift: -1h
-        spanEndTimeShift: 1h
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        customQuery: true
+        query: '{service="events-collector-service"} |= "$${__trace.traceId}"'
       serviceMap:
         datasourceUid: prometheus
+      nodeGraph:
+        enabled: true

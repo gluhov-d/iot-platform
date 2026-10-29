@@ -26,20 +26,20 @@ System_Boundary(platform, "IoT Platform") {
     Container(event_service, "Event Service", "Spring Boot", "Чтение телеметрии и событий для API")
 
     Container(device_collector, "Device Collector", "Spring Boot, MQTT/HTTP adapter", "Протокольный шлюз устройств: принимает MQTT/HTTP, проверяет устройство, публикует в Kafka; доставляет команды устройству")
-    Container(events_collector, "Events Collector", "Spring Boot, Kafka consumer", "Пакетная запись телеметрии из Kafka в ClickHouse")
+    Container(events_collector, "events-collector-service", "Spring Boot 4, Kafka consumer", "Модуль 2: events -> ClickHouse (device_events + outbox), фоновая публикация DeviceInfo в devices")
     Container(failed_processor, "Failed Events Processor", "Spring Boot, Kafka consumer", "Разбор DLT: сохраняет сбойные сообщения, повторяет обработку")
   }
 
     Boundary(kafka, "Kafka", "Message Broker") {
-        ContainerQueue(topic_events, "iot.events", "Kafka topic", "Телеметрия и события устройств (Avro)")
-        ContainerQueue(topic_device, "iot.device-id", "Kafka topic", "Появление/статус устройства")
-        ContainerQueue(topic_dlt, "iot.dlt", "Kafka topic", "Сообщения, которые не удалось обработать")
+        ContainerQueue(topic_events, "events", "Kafka topic, delete", "Сырые события устройств (Avro DeviceEvent), ключ deviceId")
+        ContainerQueue(topic_device, "devices", "Kafka topic, compact", "Обнаруженные устройства (Avro DeviceInfo), ключ deviceId")
+        ContainerQueue(topic_dlt, "iot.dlt", "Kafka topic", "Сообщения, которые не удалось обработать (следующие модули)")
     }
     Container(schema_registry, "Schema Registry", "Confluent", "Контракты Avro")
 
     ContainerDb(pg, "PostgreSQL", "Реляционная БД", "devices, device_commands; БД Keycloak и Camunda")
-    ContainerDb(redis, "Redis", "In-Memory Cache", "Кэш активных устройств")
-    ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "База CLICKHOUSE_DB:     events, dead_letters")
+    ContainerDb(redis, "Redis", "In-Memory", "outbox:lease (аренда публикатора), devices:published; кэш активных устройств")
+    ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "iot_platform: device_events, device_outbox (ReplacingMergeTree), device_publication_audit (MergeTree)")
     ContainerDb(minio, "MinIO", "Object Storage", "Бакеты iot-dlt, iot-attachments")
     Container(camunda, "Camunda", "BPM Engine", "Процесс выполнения команды: отправка, ожидание подтверждения, таймаут")
 
@@ -69,10 +69,11 @@ Rel(gateway, event_service, "Запросы телеметрии", "REST")
 Rel(device, device_collector, "T1. Телеметрия", "MQTT/HTTP", $tags="telemetry")
 Rel(device_collector, redis, "T2. Устройство известно и активно?", "Redis", $tags="telemetry")
 Rel(device_collector, topic_events, "T3. Публикация события", "Kafka, Avro", $tags="telemetry")
-Rel(device_collector, topic_device, "T3. Устройство на связи", "Kafka", $tags="telemetry")
 Rel(device_collector, schema_registry, "Схемы Avro", "HTTP")
 Rel(events_collector, topic_events, "T4. Чтение", "Kafka", $tags="telemetry")
-Rel(events_collector, clickhouse, "T5. Запись батчами", "HTTP/SQL", $tags="telemetry")
+Rel(events_collector, clickhouse, "T5. device_events + outbox, ack после записи", "JDBC/HTTP", $tags="telemetry")
+Rel(events_collector, redis, "T6. Аренда публикатора, devices:published", "Redis", $tags="telemetry")
+Rel(events_collector, topic_device, "T7. DeviceInfo (outbox)", "Kafka, Avro", $tags="telemetry")
 Rel(device_service, topic_device, "T4. Чтение: статус, last_seen", "Kafka", $tags="telemetry")
 Rel(device_service, pg, "Реестр устройств", "JDBC")
 Rel(device_service, redis, "Обновление кэша активных устройств", "Redis")
@@ -84,7 +85,7 @@ Rel(camunda, command_service, "C2. Шаг «отправить команду»"
 Rel(command_service, pg, "C3. Сохранение команды и статуса", "JDBC", $tags="command")
 Rel(command_service, device_collector, "C4. Доставить команду", "REST", $tags="command")
 Rel(device_collector, device, "C5. Команда устройству", "MQTT/HTTP", $tags="command")
-Rel(device, device_collector, "C6. Подтверждение (ack) → iot.events", "MQTT/HTTP", $tags="command")
+Rel(device, device_collector, "C6. Подтверждение (ack) → events", "MQTT/HTTP", $tags="command")
 Rel(command_service, topic_events, "C7. Чтение ack → DONE, завершение шага", "Kafka", $tags="command")
 Rel(camunda, pg, "Состояние процессов", "JDBC")
 

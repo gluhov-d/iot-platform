@@ -16,6 +16,7 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:${POSTGRES_VERSION}
+    profiles: [platform]
     container_name: iot-postgres
     <<: *default-restart
     logging: *default-logging
@@ -39,7 +40,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Redis — кэширование
+  # Redis — аренда публикатора outbox и набор опубликованных устройств
   # ---------------------------------------------------------------------------
   redis:
     image: redis:${REDIS_VERSION}
@@ -62,16 +63,17 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # ClickHouse — хранение телеметрии
+  # ClickHouse — хранение событий и outbox
   # ---------------------------------------------------------------------------
   clickhouse:
     image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}
     container_name: iot-clickhouse
+    platform: ${CLICKHOUSE_PLATFORM}
     <<: *default-restart
     logging: *default-logging
     environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
@@ -79,24 +81,26 @@ services:
       - "${CLICKHOUSE_NATIVE_PORT}:9000"
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      # 01-schema.sh выполняется entrypoint-ом только на пустом томе
       - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      # Не просто /ping: сервис должен ждать, пока init-скрипты создадут таблицы (последняя - из 02-audit.sh)
+      test: ["CMD-SHELL", "clickhouse-client --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query \"EXISTS TABLE $${CLICKHOUSE_DB}.device_publication_audit\" | grep -q 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 15
       start_period: 30s
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Kafka (KRaft, без ZooKeeper) — шина событий
+  # Kafka 4.x (KRaft, без ZooKeeper) — шина событий
   # ---------------------------------------------------------------------------
   kafka:
-    image: confluentinc/cp-kafka:${CONFLUENT_VERSION}
+    image: apache/kafka:${KAFKA_VERSION}
     container_name: iot-kafka
     <<: *default-restart
     logging: *default-logging
@@ -113,6 +117,8 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
@@ -122,18 +128,18 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:${KAFKA_INTERNAL_PORT} >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_INTERNAL_PORT} >/dev/null 2>&1 || exit 1"]
       interval: 15s
-      timeout: 10s
+      timeout: 15s
       retries: 15
-      start_period: 45s
+      start_period: 30s
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
   # Инициализация топиков — одноразовая задача
   # ---------------------------------------------------------------------------
   kafka-init:
-    image: confluentinc/cp-kafka:${CONFLUENT_VERSION}
+    image: apache/kafka:${KAFKA_VERSION}
     container_name: iot-kafka-init
     restart: "no"
     logging: *default-logging
@@ -141,30 +147,21 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      KAFKA_TOPICS: ${KAFKA_TOPICS}
-      BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -e
-        IFS=',' read -ra TOPICS <<< "$${KAFKA_TOPICS}"
-        for t in "$${TOPICS[@]}"; do
-          name=$$(echo "$$t" | cut -d: -f1)
-          parts=$$(echo "$$t" | cut -d: -f2)
-          repl=$$(echo "$$t" | cut -d: -f3)
-          echo "==> creating topic $$name (partitions=$$parts, rf=$$repl)"
-          kafka-topics --bootstrap-server "$${BOOTSTRAP}" --create --if-not-exists \
-            --topic "$$name" --partitions "$$parts" --replication-factor "$$repl"
-        done
-        echo "==> topics:"
-        kafka-topics --bootstrap-server "$${BOOTSTRAP}" --list
+      KAFKA_BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
+      KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
+      KAFKA_TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
+    volumes:
+      - ./init/kafka/init-topics.sh:/opt/init/init-topics.sh:ro
+    entrypoint: ["/bin/bash", "/opt/init/init-topics.sh"]
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
   # Schema Registry — контракты Avro
   # ---------------------------------------------------------------------------
   schema-registry:
-    image: confluentinc/cp-schema-registry:${CONFLUENT_VERSION}
+    image: confluentinc/cp-schema-registry:${SCHEMA_REGISTRY_VERSION}
     container_name: iot-schema-registry
     <<: *default-restart
     logging: *default-logging
@@ -181,11 +178,100 @@ services:
     ports:
       - "${SCHEMA_REGISTRY_PORT}:${SCHEMA_REGISTRY_PORT}"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:${SCHEMA_REGISTRY_PORT}/subjects || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${SCHEMA_REGISTRY_PORT}/subjects >/dev/null || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 40s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # events-collector-service — прием событий, ClickHouse, outbox -> devices
+  # ---------------------------------------------------------------------------
+  events-collector-service:
+    build:
+      # Контекст - корень репозитория: сборке нужны contracts/avro
+      context: ..
+      dockerfile: services/events-collector-service/Dockerfile
+    image: iot-platform/events-collector-service:${EVENTS_COLLECTOR_IMAGE_TAG}
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # APP_INSTANCE_ID намеренно не передается: у каждой реплики instanceId = hostname
+      # контейнера (HOSTNAME), иначе при --scale все реплики логировали бы один id
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP}
+      CLICKHOUSE_URL: "jdbc:clickhouse://clickhouse:8123"
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE}
+      OUTBOX_MAX_ATTEMPTS: ${OUTBOX_MAX_ATTEMPTS}
+      OUTBOX_LEASE_TTL_MS: ${OUTBOX_LEASE_TTL_MS}
+      OUTBOX_PUBLISH_INTERVAL_MS: ${OUTBOX_PUBLISH_INTERVAL_MS}
+      # Alloy поднимается профилем observability; без него трейсы просто не доставляются
+      MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
+    ports:
+      # Диапазон, а не один порт: при --scale каждая реплика получает свой порт
+      - "${EVENTS_COLLECTOR_PORTS}:8080"
+    healthcheck:
+      # В образе JRE не гарантированы curl/wget - HTTP-запрос через /dev/tcp в bash
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /actuator/health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Kafka UI — темы, сообщения (Avro через Schema Registry) и consumer group
+  # ---------------------------------------------------------------------------
+  kafka-ui:
+    image: kafbat/kafka-ui:${KAFKA_UI_VERSION}
+    container_name: iot-kafka-ui
+    profiles: [tools]
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: iot-platform
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      # Ключ - строка deviceId, значение - Avro: показываем его как JSON без ручного выбора в UI
+      KAFKA_CLUSTERS_0_DEFAULTKEYSERDE: String
+      KAFKA_CLUSTERS_0_DEFAULTVALUESERDE: SchemaRegistry
+      # Конфигурация только из переменных окружения, без правки через интерфейс
+      DYNAMIC_CONFIG_ENABLED: "false"
+      JAVA_OPTS: "-Xms128m -Xmx384m"
+    ports:
+      - "${KAFKA_UI_PORT}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- -T 3 http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
@@ -194,6 +280,7 @@ services:
   minio:
     image: minio/minio:${MINIO_VERSION}
     container_name: iot-minio
+    profiles: [platform]
     <<: *default-restart
     logging: *default-logging
     command: ["server", "/data", "--console-address", ":9001"]
@@ -218,8 +305,9 @@ services:
   # Создание бакетов — одноразовая задача
   # ---------------------------------------------------------------------------
   minio-init:
-    image: minio/mc:latest
+    image: minio/minio:${MINIO_VERSION}
     container_name: iot-minio-init
+    profiles: [platform]
     restart: "no"
     logging: *default-logging
     depends_on:
@@ -227,11 +315,13 @@ services:
         condition: service_healthy
     environment:
       MINIO_BUCKETS: ${MINIO_BUCKETS}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -e
-        mc alias set local http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
         for b in $$(echo "$${MINIO_BUCKETS}" | tr ',' ' '); do
           echo "==> creating bucket $$b"
           mc mb --ignore-existing "local/$$b"
@@ -244,6 +334,7 @@ services:
   # ---------------------------------------------------------------------------
   keycloak:
     image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}
+    profiles: [platform]
     platform: ${KEYCLOAK_PLATFORM}
     container_name: iot-keycloak
     <<: *default-restart
@@ -281,6 +372,7 @@ services:
   camunda:
     image: camunda/camunda-bpm-platform:${CAMUNDA_VERSION}
     container_name: iot-camunda
+    profiles: [platform]
     <<: *default-restart
     logging: *default-logging
     depends_on:
@@ -310,6 +402,7 @@ services:
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:${POSTGRES_EXPORTER_VERSION}
     container_name: iot-postgres-exporter
+    profiles: [platform]
     <<: *default-restart
     logging: *default-logging
     depends_on:
@@ -336,17 +429,18 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # kafka-exporter — метрики Kafka для Prometheus
+  # kafka-exporter — метрики Kafka (лаг консьюмер-групп) для Prometheus
   # ---------------------------------------------------------------------------
   kafka-exporter:
     image: danielqsj/kafka-exporter:${KAFKA_EXPORTER_VERSION}
     container_name: iot-kafka-exporter
+    profiles: [observability]
     <<: *default-restart
     logging: *default-logging
     depends_on:
       kafka:
         condition: service_healthy
-    command: ["--kafka.server=kafka:${KAFKA_INTERNAL_PORT}", "--web.listen-address=:9308"]
+    command: ["--kafka.server=kafka:${KAFKA_INTERNAL_PORT}", "--kafka.version=3.9.0", "--web.listen-address=:9308"]
     ports:
       - "${KAFKA_EXPORTER_PORT}:9308"
     healthcheck:
@@ -363,6 +457,7 @@ services:
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
     container_name: iot-prometheus
+    profiles: [observability]
     <<: *default-restart
     logging: *default-logging
     command:
@@ -389,6 +484,7 @@ services:
   loki:
     image: grafana/loki:${LOKI_VERSION}
     container_name: iot-loki
+    profiles: [observability]
     <<: *default-restart
     logging: *default-logging
     command: ["-config.file=/etc/loki/loki-config.yaml"]
@@ -412,6 +508,7 @@ services:
   tempo:
     image: grafana/tempo:${TEMPO_VERSION}
     container_name: iot-tempo
+    profiles: [observability]
     <<: *default-restart
     logging: *default-logging
     command: ["-config.file=/etc/tempo/tempo.yaml"]
@@ -437,6 +534,7 @@ services:
   alloy:
     image: grafana/alloy:${ALLOY_VERSION}
     container_name: iot-alloy
+    profiles: [observability]
     <<: *default-restart
     logging: *default-logging
     depends_on:
@@ -474,6 +572,7 @@ services:
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
     container_name: iot-grafana
+    profiles: [observability]
     <<: *default-restart
     logging: *default-logging
     depends_on:

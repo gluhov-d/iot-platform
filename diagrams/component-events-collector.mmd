@@ -1,0 +1,78 @@
+%% Компоненты events-collector-service и его окружение (модуль 2)
+flowchart LR
+    producer(["Источник событий устройств"])
+
+    subgraph kafka["Kafka 4.2 (KRaft)"]
+        events[["events<br/>ключ deviceId · 3 раздела <br/>cleanup.policy=delete"]]
+        devices[["devices<br/>ключ deviceId · 3 раздела <br/>cleanup.policy=compact"]]
+    end
+    sr[("Schema Registry 8.2<br/>DeviceEvent · DeviceInfo")]
+
+    subgraph svc["events-collector-service (N реплик, одна consumer group)"]
+        direction TB
+        listener["KafkaEventListener<br/>adapter.in.kafka"]
+        job["OutboxPublisherJob<br/>adapter.in.scheduler"]
+        ingest["EventIngestionService<br/>+ DeviceEventValidator<br/>+ DeviceEventMapper"]
+        publish["OutboxPublishingService"]
+        eventRepo["ClickHouseEventRepository"]
+        outboxRepo["ClickHouseOutboxRepository"]
+        auditRepo["ClickHousePublicationAuditRepository"]
+        lease["RedisLeaseService"]
+        store["RedisPublishedDeviceStore"]
+        kprod["KafkaDeviceInfoProducer"]
+        metrics["MetricsFacade"]
+
+        listener --> ingest
+        ingest --> eventRepo
+        ingest --> outboxRepo
+        job --> publish
+        publish --> lease
+        publish --> outboxRepo
+        publish --> store
+        publish --> kprod
+        publish --> auditRepo
+        ingest -.-> metrics
+        publish -.-> metrics
+    end
+
+    subgraph ch["ClickHouse 26.2 · iot_platform"]
+        tEvents[("device_events<br/>ReplacingMergeTree(ingested_at)")]
+        tOutbox[("device_outbox<br/>ReplacingMergeTree(state_version)")]
+        tAudit[("device_publication_audit<br/>MergeTree · TTL 30 дней")]
+    end
+
+    subgraph redis["Redis 8.6"]
+        kLease[/"outbox:lease<br/>SET NX PX · Lua extend/release"/]
+        kPublished[/"devices:published<br/>Set&lt;deviceId&gt;"/]
+    end
+
+    subgraph obs["Наблюдаемость (профиль observability)"]
+        alloy["Grafana Alloy"]
+        prom["Prometheus"]
+        loki["Loki"]
+        tempo["Tempo"]
+        grafana["Grafana"]
+    end
+
+    downstream(["Следующие сервисы<br/>(идемпотентные)"])
+
+    producer -- "DeviceEvent (Avro)" --> events
+    events -- "poll: max.poll.records=1<br/>ack после записи" --> listener
+    listener -. "схема" .- sr
+    kprod -. "схема" .- sr
+    eventRepo -- "INSERT" --> tEvents
+    outboxRepo -- "INSERT версии · SELECT FINAL" --> tOutbox
+    auditRepo -- "INSERT попытки" --> tAudit
+    lease --> kLease
+    store --> kPublished
+    kprod -- "DeviceInfo (Avro)" --> devices
+    devices --> downstream
+
+    prom -- "/actuator/prometheus" --> svc
+    svc -- "stdout JSON-логи" --> alloy
+    svc -- "OTLP HTTP :4320" --> alloy
+    alloy --> loki
+    alloy --> tempo
+    grafana --> prom
+    grafana --> loki
+    grafana --> tempo

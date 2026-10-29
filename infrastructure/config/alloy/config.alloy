@@ -11,7 +11,7 @@ discovery.docker "containers" {
   refresh_interval = "15s"
 
   // Только контейнеры текущего Compose-проекта: логи соседних проектов
-  // с такими же сервисами (postgres, kafka) не попадут в панели платформы
+  // с такими же сервисами (redis, postgres, kafka) не попадут в панели платформы
   filter {
     name    = "label"
     values  = ["com.docker.compose.project=" + sys.env("COMPOSE_PROJECT_NAME")]
@@ -37,6 +37,34 @@ loki.source.docker "containers" {
   host       = "unix:///var/run/docker.sock"
   targets    = discovery.relabel.containers.output
   labels     = { job = "docker", cluster = sys.env("COMPOSE_PROJECT_NAME") }
+  forward_to = [loki.process.json_logs.receiver]
+}
+
+// JSON-логи events-collector-service: уровень - метка (низкая кардинальность),
+// traceId/eventId/deviceId - structured metadata: по ним можно фильтровать,
+// но они не раздувают индекс Loki, как раздули бы метки.
+loki.process "json_logs" {
+  stage.match {
+    selector = "{service=\"events-collector-service\"}"
+
+    stage.json {
+      expressions = {
+        level    = "level",
+        trace_id = "traceId",
+        event_id = "eventId",
+        device_id = "deviceId",
+      }
+    }
+
+    stage.labels {
+      values = { level = "" }
+    }
+
+    stage.structured_metadata {
+      values = { trace_id = "", event_id = "", device_id = "" }
+    }
+  }
+
   forward_to = [loki.write.default.receiver]
 }
 
