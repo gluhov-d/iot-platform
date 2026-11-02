@@ -89,9 +89,11 @@
 
 ```
 iot-platform/
-├── contracts/avro/                    # Avro-контракты — единый источник для кодогенерации
-│   ├── device-event.avsc
-│   └── device-info.avsc
+├── contracts/                         # Gradle-проект :contracts -> артефакт contracts-avro (публикуется в Nexus)
+│   ├── build.gradle.kts               # генерация классов, jar со схемами, maven-publish
+│   └── avro/                          # Avro-контракты — единый источник для кодогенерации
+│       ├── device-event.avsc
+│       └── device-info.avsc
 ├── diagrams/
 │   ├── component-events-collector.mmd # компоненты сервиса и окружение
 │   ├── sequence-ingest.mmd            # приём события
@@ -120,7 +122,7 @@ iot-platform/
 │   ├── Dockerfile                     # сборка из корня репозитория (нужны contracts/ и корневой Gradle)
 │   ├── scripts/check-local.sh         # быстрая проверка стенда
 │   └── src/{main,test}/...
-├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service")
+├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service", "contracts")
 ├── Makefile
 ├── .env.example
 └── README.md
@@ -183,6 +185,24 @@ iot-platform/
 Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `SpecificRecord` генерирует задача Gradle
 `generateAvro` прямо из `contracts/avro` (схемы не копируются). `stringType = String`: иначе поля были бы
 `CharSequence`, при чтении приходил бы `org.apache.avro.util.Utf8` и `equals` со строкой ломался бы.
+
+Те же схемы собирает отдельный Gradle-проект `:contracts` — библиотека
+`com.github.gluhov.iotplatform:contracts-avro` (версия в `contracts/build.gradle.kts`, сейчас `1.0.0`):
+
+* классы генерируются одним `SchemaParser` на все файлы — схема может ссылаться на тип из другого файла
+  по имени, а повторное объявление одного полного имени (например, двух `DeviceInfo`) роняет сборку;
+* в jar рядом с классами лежат сами схемы (`avro/*.avsc`) — по ним проверяется совместимость новой версии;
+* Avro (`org.apache.avro:avro`) подключён как `api`: потребитель получает его транзитивно;
+* `publish` выкладывает jar, sources, pom и Gradle module metadata в Nexus (профиль `ci`):
+  релизы — в `maven-releases`, версии `-SNAPSHOT` — в `maven-snapshots`. Адрес — `-PnexusUrl`
+  (по умолчанию `http://localhost:8091`), учётная запись — `ORG_GRADLE_PROJECT_nexusUsername` и
+  `ORG_GRADLE_PROJECT_nexusPassword`; в репозитории их нет. Выпущенную версию Nexus перезаписать не даст.
+
+```bash
+./gradlew :contracts:build    # build/libs/contracts-avro-<версия>.jar и -sources.jar
+```
+
+Пока events-collector-service по-прежнему генерирует классы сам; переход на артефакт из Nexus — следующий шаг.
 
 Сериализация — `KafkaAvroSerializer`/`KafkaAvroDeserializer` (Schema Registry, `specific.avro.reader=true`),
 схемы регистрируются автоматически в субъектах `events-value` и `devices-value`, совместимость — `backward`.

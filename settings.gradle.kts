@@ -5,3 +5,5 @@ plugins {
 
 rootProject.name = "iot-platform"
 include("services:events-collector-service")
+// Avro-контракты: схемы contracts/avro -> jar, публикуется в Nexus
+include("contracts")
