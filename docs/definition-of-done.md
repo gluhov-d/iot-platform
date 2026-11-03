@@ -100,7 +100,8 @@
 
 - [ ] Модульные тесты: `svc:test` (`make test`) - зеленые.
 - [ ] Интеграционные тесты на Testcontainers: `svc:integrationTest` (`make integration-test`) - зеленые без запущенного стенда.
-- [ ] Покрытие строк >= 65%: `svc:check` (`make coverage`, правило `jacocoTestCoverageVerification`), Avro-классы исключены.
+- [ ] Покрытие строк >= 65%: `svc:check` (`make coverage`, правило `jacocoTestCoverageVerification`); Avro-классы приходят из `contracts-avro`
+  (Nexus) и в отчёт не входят.
 
 ## Репозиторий и документация
 

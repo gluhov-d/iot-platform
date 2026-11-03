@@ -3,7 +3,8 @@
 !gradle/**
 !settings.gradle.kts
 !build.gradle.kts
-!contracts/avro/**
+!gradle.properties
+!contracts/build.gradle.kts
 !services/events-collector-service/**
 services/events-collector-service/build
 services/events-collector-service/.gradle

@@ -91,10 +91,10 @@ tasks.processResources {
 }
 
 // ---------------------------------------------------------------- Nexus
-// Адрес Nexus и учетная запись приходят снаружи (конвейер контрактов), в репозитории их нет:
-//   -PnexusUrl=http://localhost:8091
+// Адрес Nexus и учётная запись приходят снаружи (конвейер контрактов), в репозитории их нет:
+//   nexusUrl - gradle.properties в корне (переопределяется -PnexusUrl)
 //   ORG_GRADLE_PROJECT_nexusUsername / ORG_GRADLE_PROJECT_nexusPassword
-val nexusUrl = providers.gradleProperty("nexusUrl").orElse("http://localhost:8091")
+val nexusUrl = providers.gradleProperty("nexusUrl")
 
 // ---------------------------------------------------------------- Совместимость
 // Новая версия сверяется с последней выпущенной в maven-releases. Уровень - -PcompatibilityLevel:

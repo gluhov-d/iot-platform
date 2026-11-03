@@ -190,9 +190,15 @@ services:
   # ---------------------------------------------------------------------------
   events-collector-service:
     build:
-      # Контекст - корень репозитория: сборке нужны contracts/avro
+      # Контекст - корень репозитория: сборке нужны корневые файлы Gradle
       context: ..
       dockerfile: services/events-collector-service/Dockerfile
+      # Gradle внутри сборки берёт Avro-контракты из Nexus хоста (localhost в сборке - сам контейнер);
+      # host-gateway - адрес хоста и в Docker Desktop, и в Linux
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
     image: iot-platform/events-collector-service:${EVENTS_COLLECTOR_IMAGE_TAG}
     <<: *default-restart
     logging: *default-logging

@@ -1,17 +1,22 @@
 # syntax=docker/dockerfile:1.7
-# Сборка из корня репозитория (нужны contracts/avro и корневые файлы Gradle):
-#   docker build -f services/events-collector-service/Dockerfile -t iot-platform/events-collector-service:0.1.0 .
+# Сборка из корня репозитория (нужны корневые файлы Gradle); Avro-контракты Gradle берёт из Nexus:
+#   docker build -f services/events-collector-service/Dockerfile \
+#     --add-host host.docker.internal:host-gateway --build-arg NEXUS_URL=http://host.docker.internal:8091 \
+#     -t iot-platform/events-collector-service:0.1.0 .
 
 # ---------------------------------------------------------------- сборка
 FROM eclipse-temurin:25.0.4.1_1-jdk-noble AS build
+# Nexus хоста: localhost внутри сборки - сам контейнер сборки
+ARG NEXUS_URL=http://host.docker.internal:8091
 WORKDIR /workspace
-# Многомодульная сборка: wrapper и settings.gradle.kts лежат в корне репозитория
-COPY gradlew settings.gradle.kts build.gradle.kts ./
+# Многомодульная сборка: wrapper, settings.gradle.kts и gradle.properties лежат в корне репозитория
+COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties ./
 COPY gradle gradle
-COPY contracts/avro contracts/avro
+# settings.gradle.kts подключает :contracts - нужен только его build-файл, схемы сервису не нужны
+COPY contracts/build.gradle.kts contracts/
 COPY services/events-collector-service services/events-collector-service
 RUN --mount=type=cache,target=/root/.gradle \
-    ./gradlew --no-daemon :services:events-collector-service:bootJar -x test \
+    ./gradlew --no-daemon :services:events-collector-service:bootJar -x test -PnexusUrl="${NEXUS_URL}" \
  && java -Djarmode=tools -jar services/events-collector-service/build/libs/events-collector-service.jar \
       extract --layers --launcher --destination /extracted
 

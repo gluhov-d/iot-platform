@@ -1,14 +1,3 @@
-import org.apache.avro.compiler.specific.SpecificCompiler
-import org.apache.avro.generic.GenericData
-
-buildscript {
-    repositories {mavenCentral()}
-    dependencies {
-        // Версия совпадает с Avro, которую тянет kafka-avro-serializer 8.2.x
-        classpath("org.apache.avro:avro-compiler:1.12.1")
-    }
-}
-
 plugins {
     java
     jacoco
@@ -21,7 +10,8 @@ version = "0.1.0"
 description = "events-collector-service"
 
 val confluentVersion = "8.2.4"
-val avroVersion = "1.12.1"
+// Версия Avro-контрактов (contracts-avro в Nexus); Avro приходит вместе с ними транзитивно
+val contractsVersion = "1.0.0"
 
 java {
     toolchain {
@@ -30,6 +20,20 @@ java {
 }
 
 repositories {
+    // Контракты платформы - только из Nexus: группу com.github.gluhov.iotplatform Gradle не ищет
+    // в других репозиториях, а остальные зависимости не ищет в Nexus.
+    // Адрес - свойство nexusUrl (gradle.properties в корне, переопределяется -PnexusUrl)
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "nexus"
+                url = uri("${providers.gradleProperty("nexusUrl").get()}/repository/maven-public/")
+                // Локальный Nexus работает по HTTP
+                isAllowInsecureProtocol = true
+            }
+        }
+        filter { includeGroup("com.github.gluhov.iotplatform") }
+    }
     mavenCentral()
     maven("https://packages.confluent.io/maven/")
 }
@@ -46,8 +50,7 @@ dependencies {
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
-
-    implementation("org.apache.avro:avro:$avroVersion")
+    implementation("com.github.gluhov.iotplatform:contracts-avro:$contractsVersion")
     implementation("io.confluent:kafka-avro-serializer:$confluentVersion")
     runtimeOnly("com.clickhouse:clickhouse-jdbc:0.9.9")
 
@@ -70,34 +73,6 @@ configurations.configureEach {
         selectHighestVersion()
     }
 }
-
-// ---------------------------------------------------------------- Avro
-// Классы SpecificRecord генерируются из общих контрактов contracts/avro -
-// файлы схем копируются в сервис, источник правды один.
-// rootDir - корень многомодульной сборки (корень репозитория)
-val avroContractsDir = rootDir.resolve("contracts/avro")
-val avroOutputDir = layout.buildDirectory.dir("generated-sources/avro")
-
-val generateAvro by tasks.registering {
-    group = "build"
-    description = "Генерирует Java-классы SpecificRecord из contracts/avro/*.avsc"
-    inputs.dir(avroContractsDir)
-    outputs.dir(avroOutputDir)
-    doLast {
-        val out = avroOutputDir.get().asFile
-        out.deleteRecursively()
-        val parser = org.apache.avro.Schema.Parser()
-        avroContractsDir.listFiles { f -> f.extension == "avsc" }!!.sorted().forEach { file ->
-            val compiler = SpecificCompiler(parser.parse(file))
-            // String, а не CharSequence: иначе при чтении приходит Utf8 и equals ломается
-            compiler.setStringType(GenericData.StringType.String)
-            compiler.compileToDestination(file, out)
-        }
-    }
-}
-
-sourceSets["main"].java.srcDir(avroOutputDir)
-tasks.compileJava {dependsOn(generateAvro)}
 
 // ---------------------------------------------------------------- Тесты
 // *Test — модульные (без Docker), It*Test — интеграционные (Testcontainers).
@@ -123,9 +98,8 @@ tasks.withType<Test>().configureEach {
 // ---------------------------------------------------------------- Покрытие
 jacoco { toolVersion = "0.8.14" }
 
-// Сгенерированные Avro-классы и точка входа не являются логикой сервиса
+// Точка входа не является логикой сервиса; Avro-классы приходят из contracts-avro и в отчёт не попадают
 val coverageExcludes = listOf(
-    "com/github/gluhov/iotplatform/events/avro/**",
     "com/github/gluhov/iotplatform/eventscollector/EventsCollectorApplication*",
 )
 

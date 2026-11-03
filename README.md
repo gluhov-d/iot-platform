@@ -123,10 +123,11 @@ iot-platform/
 │       └── alloy/config.alloy
 ├── services/events-collector-service/ # модуль многомодульной Gradle-сборки
 │   ├── build.gradle.kts, lombok.config
-│   ├── Dockerfile                     # сборка из корня репозитория (нужны contracts/ и корневой Gradle)
+│   ├── Dockerfile                     # сборка из корня репозитория; контракты - из Nexus хоста
 │   ├── scripts/check-local.sh         # быстрая проверка стенда
 │   └── src/{main,test}/...
 ├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service", "contracts")
+├── gradle.properties                  # nexusUrl - адрес Nexus для обоих Gradle-проектов
 ├── Makefile
 ├── .env.example
 └── README.md
@@ -186,11 +187,20 @@ iot-platform/
 | `contracts/avro/device-event.avsc` | `DeviceEvent` | `eventId`, `deviceId`, `timestampMs` (Unix ms), `eventType` |
 | `contracts/avro/device-info.avsc` | `DeviceInfo` | `deviceId`, `emittedAtMs` (время публикации) |
 
-Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `SpecificRecord` генерирует задача Gradle
-`generateAvro` прямо из `contracts/avro` (схемы не копируются). `stringType = String`: иначе поля были бы
-`CharSequence`, при чтении приходил бы `org.apache.avro.util.Utf8` и `equals` со строкой ломался бы.
+Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `SpecificRecord` сервис получает зависимостью
+`com.github.gluhov.iotplatform:contracts-avro:<contractsVersion>` из Nexus (`contractsVersion` — в
+`services/events-collector-service/build.gradle.kts`, сейчас `1.0.0`); сам он классы не генерирует.
+`stringType = String`: иначе поля были бы `CharSequence`, при чтении приходил бы `org.apache.avro.util.Utf8`
+и `equals` со строкой ломался бы.
 
-Те же схемы собирает отдельный Gradle-проект `:contracts` — библиотека
+Группа `com.github.gluhov.iotplatform` подключена через `exclusiveContent`: её Gradle ищет только в Nexus
+(`/repository/maven-public/`), а остальные зависимости — только в Maven Central и Confluent, поэтому контракт
+нельзя подменить одноимённым артефактом из публичного репозитория. Адрес Nexus — свойство `nexusUrl`
+в корневом `gradle.properties` (`http://localhost:8091`); при другом `NEXUS_PORT` — `-PnexusUrl=…` или
+`ORG_GRADLE_PROJECT_nexusUrl`. Для первой загрузки контрактов Nexus должен быть поднят (`make nexus-up`),
+дальше они лежат в кеше Gradle.
+
+Схемы собирает отдельный Gradle-проект `:contracts` — библиотека
 `com.github.gluhov.iotplatform:contracts-avro` (версия в `contracts/build.gradle.kts`, сейчас `1.0.0`):
 
 * классы генерируются одним `SchemaParser` на все файлы — схема может ссылаться на тип из другого файла
@@ -254,7 +264,6 @@ make contracts-bootstrap   # выпущенные версии из git-тего
 Выпущена `1.0.0` (тег `contracts/v1.0.0`) — схемы модуля 2. После релиза `make contracts-check` на той же версии сообщает
 «Версия … уже опубликована»: перед изменением схем поднимите `version` в `contracts/build.gradle.kts`.
 
-Пока events-collector-service по-прежнему генерирует классы сам; переход на артефакт из Nexus — следующий шаг.
 
 Сериализация — `KafkaAvroSerializer`/`KafkaAvroDeserializer` (Schema Registry, `specific.avro.reader=true`),
 схемы регистрируются автоматически в субъектах `events-value` и `devices-value`, совместимость — `backward`.
@@ -416,7 +425,8 @@ Nexus — Maven-репозиторий, в который конвейер ко�
 
 ## 11. Запуск сервиса из IDE
 
-1. Поднять стенд без сервиса:
+1. Поднять стенд без сервиса (Nexus нужен для загрузки контрактов при сборке):
+   `make nexus-up && make contracts-bootstrap`, затем
    `docker compose -f infrastructure/docker-compose.yaml up -d kafka kafka-init schema-registry clickhouse redis`
    (или остановить контейнер сервиса: `docker compose -f infrastructure/docker-compose.yaml stop events-collector-service`).
 2. Main class: `com.github.gluhov.iotplatform.eventscollector.EventsCollectorApplication`, профиль `local`
@@ -435,7 +445,10 @@ SPRING_PROFILES_ACTIVE=local ./gradlew :services:events-collector-service:bootRu
 ## 12. Запуск через Docker Compose
 
 Сервис входит в базовый профиль и собирается из `services/events-collector-service/Dockerfile`
-(контекст — корень репозитория). Пересобрать после изменений кода:
+(контекст — корень репозитория). Gradle внутри сборки берёт контракты из Nexus хоста: compose передаёт
+аргумент `NEXUS_URL=http://host.docker.internal:${NEXUS_PORT}` и `extra_hosts: host.docker.internal:host-gateway`
+(внутри сборки `localhost` — сам контейнер сборки). Поэтому перед сборкой образа Nexus должен быть поднят и
+содержать нужную версию контрактов — `make up` делает это сам. Пересобрать после изменений кода:
 
 ```bash
 docker compose -f infrastructure/docker-compose.yaml up -d --build events-collector-service
@@ -524,7 +537,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 
 Покрытие строк (JaCoCo, unit + integration): порог 65 %, фактически около 98 %; отчёт —
 `services/events-collector-service/build/reports/jacoco/test/html/index.html`.
-Сгенерированные Avro-классы и код Lombok исключены из отчёта.
+Avro-классы приходят из `contracts-avro` и в отчёт не входят; код Lombok исключён из отчёта.
 
 ## 16. Наблюдаемость
 
@@ -611,6 +624,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 |---|---|
 | Schema Registry недоступен | `make health`; `curl localhost:8081/subjects`; у сервиса `SCHEMA_REGISTRY_URL` должен указывать на `http://schema-registry:8081` внутри сети compose и на `http://localhost:8081` из IDE; SR стартует после `kafka: healthy` |
 | `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
+| сборка: `Could not resolve com.github.gluhov.iotplatform:contracts-avro` | Nexus не поднят или в нём нет версии: `make nexus-up && make contracts-bootstrap`; другой порт Nexus — `-PnexusUrl=http://localhost:<NEXUS_PORT>`. В `docker build` — `Connection refused` к `host.docker.internal`: Nexus не поднят на хосте или сборка запущена без `extra_hosts` (собирайте через compose или `--add-host host.docker.internal:host-gateway`) |
 | `make contracts-publish` / `contracts-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `contracts/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `contracts/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
