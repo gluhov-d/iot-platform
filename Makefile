@@ -27,7 +27,8 @@ WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs up-ci down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage
+        psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
+        contracts-check contracts-publish
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -191,3 +192,9 @@ integration-test: ## Интеграционные тесты сервиса (Tes
 
 coverage: ## Все тесты + проверка порога покрытия 65% + HTML-отчет
 	@$(GRADLE) $(SERVICE_PROJ):check && echo "Отчет: $(SERVICE_DIR)/build/reports/jacoco/test/html/index.html"
+
+## ----------------------------------------------------------------- Avro-контракты
+contracts-check: ## Проверить схемы и совместимость с последней версией в Nexus (без публикации)
+	@$(GRADLE) :contracts:checkContractsCompatibility -PnexusUrl=http://localhost:$(call compose_env,NEXUS_PORT)
+contracts-publish: ## Конвейер контрактов: совместимость -> сборка -> публикация в Nexus (нужен make up-ci)
+	@$(ROOT_DIR)/contracts/scripts/publish.sh

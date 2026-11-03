@@ -90,7 +90,8 @@
 ```
 iot-platform/
 ├── contracts/                         # Gradle-проект :contracts -> артефакт contracts-avro (публикуется в Nexus)
-│   ├── build.gradle.kts               # генерация классов, jar со схемами, maven-publish
+│   ├── build.gradle.kts               # генерация классов, jar со схемами, проверка совместимости, maven-publish
+│   ├── scripts/publish.sh             # конвейер публикации (make contracts-publish)
 │   └── avro/                          # Avro-контракты — единый источник для кодогенерации
 │       ├── device-event.avsc
 │       └── device-info.avsc
@@ -199,8 +200,43 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
   `ORG_GRADLE_PROJECT_nexusPassword`; в репозитории их нет. Выпущенную версию Nexus перезаписать не даст.
 
 ```bash
-./gradlew :contracts:build    # build/libs/contracts-avro-<версия>.jar и -sources.jar
+./gradlew :contracts:build    # build/libs/contracts-avro-<версия>.jar и -sources.jar; Nexus не нужен
 ```
+
+#### Конвейер публикации
+
+```bash
+make up-ci               # Nexus
+make contracts-check     # разбор схем + совместимость с последней выпущенной версией (без публикации)
+make contracts-publish   # проверка -> сборка -> публикация (contracts/scripts/publish.sh)
+```
+
+`contracts-publish` берёт порт Nexus и учётную запись публикатора (`NEXUS_PUBLISH_USER`/`NEXUS_PUBLISH_PASSWORD`)
+из `.env` в том виде, как их разбирает Compose, проверяет, что Nexus принимает запись, и запускает
+`:contracts:build :contracts:publish`. Пароль передаётся Gradle через окружение — в командной строке и выводе
+его нет. Задача `checkContractsCompatibility` встроена в `publish`, поэтому прямой
+`./gradlew :contracts:publish` её тоже не обходит. Проверка:
+
+1. разбирает все `contracts/avro/*.avsc` одним парсером;
+2. находит последнюю выпущенную версию в `maven-releases` (`maven-metadata.xml`); если её нет — первая публикация,
+   сравнивать не с чем;
+3. отклоняет версию, которая уже выпущена или не больше последней (`-SNAPSHOT` тоже должен быть больше);
+4. сверяет каждую запись со схемами `avro/*.avsc` из jar последней версии (`org.apache.avro.SchemaCompatibility`).
+
+Уровень — `-PcompatibilityLevel`, по умолчанию `FULL`: новая схема читает данные старой и наоборот. Сервисы
+переходят на новую версию контрактов независимо друг от друга, поэтому нужны оба направления; `BACKWARD` —
+только то, что проверяет Schema Registry. Совместимые изменения — новое поле с `default` (например,
+`["null", "string"]` с `null`), удаление поля, у которого был `default`. Удалённая схема или несовместимое
+изменение — ошибка с перечнем полей; пропускается оно, только если поднята старшая версия (с предупреждением).
+
+| Изменение | Версия |
+|---|---|
+| совместимое изменение схем | следующая минорная: `1.0.0` → `1.1.0` |
+| несовместимое изменение | следующая старшая: `1.x` → `2.0.0`; для Schema Registry это новый субъект/тема |
+| проба до релиза | `X.Y.Z-SNAPSHOT` — в `maven-snapshots`, можно публиковать повторно |
+
+Выпущена `1.0.0` — схемы модуля 2. После релиза `make contracts-check` на той же версии сообщает
+«Версия … уже опубликована»: перед изменением схем поднимите `version` в `contracts/build.gradle.kts`.
 
 Пока events-collector-service по-прежнему генерирует классы сам; переход на артефакт из Nexus — следующий шаг.
 
@@ -358,7 +394,8 @@ make clean                    # остановить и удалить тома
   `NEXUS_PUBLISH_USER`; при каждом запуске синхронизирует его пароль с `.env`.
 
 `maven-releases` не даёт перезаписать выпущенную версию (повторная загрузка — 409). `maven-public` объединяет
-`maven-releases`, `maven-snapshots` и прокси Maven Central.
+`maven-releases`, `maven-snapshots` и прокси Maven Central. Публикация контрактов — `make contracts-publish`
+(раздел 6).
 
 ## 11. Запуск сервиса из IDE
 
@@ -557,6 +594,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 |---|---|
 | Schema Registry недоступен | `make health`; `curl localhost:8081/subjects`; у сервиса `SCHEMA_REGISTRY_URL` должен указывать на `http://schema-registry:8081` внутри сети compose и на `http://localhost:8081` из IDE; SR стартует после `kafka: healthy` |
 | `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
+| `make contracts-publish` / `contracts-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make up-ci`, `make health`; «Версия … уже опубликована» — поднимите `version` в `contracts/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make up-ci`) |
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |
