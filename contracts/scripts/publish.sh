@@ -3,39 +3,40 @@
 #
 # contracts/scripts/publish.sh (обычно через make contracts-publish)
 #
-# Нужен поднятый Nexus (make up-ci). Адрес и учетная запись публикатора берутся из корневого .env;
-# пароль передается Gradle через окружение, в командной строке и выводе его нет.
+# Релиз (версия без -SNAPSHOT) = коммит + тег + артефакт: собирается только из закоммиченного
+# contracts/, после публикации на HEAD ставится тег contracts/vX.Y.Z. По тегам make contracts-bootstrap
+# восстанавливает версии в пустом Nexus. SNAPSHOT публикуется из рабочей папки и без тега.
 # Выход 0 - версия опубликована, иначе - причина в выводе, в Nexus ничего не попало.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_FILE="${ROOT_DIR}/.env"
-COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${ROOT_DIR}/infrastructure/docker-compose.yaml")
-
-fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
-
-[[ -f "${ENV_FILE}" ]] || fail "${ENV_FILE} not found: cp .env.example .env"
-
-# Значения в том виде, как их разбирает Compose (кавычки, экранирование) - те же, что получил nexus-init
-env_dump="$("${COMPOSE[@]}" config --environment)" || fail "docker compose config: не удалось прочитать ${ENV_FILE}"
-env_value() { sed -n "s/^$1=//p" <<<"${env_dump}"; }
-for name in NEXUS_PORT NEXUS_PUBLISH_USER NEXUS_PUBLISH_PASSWORD; do
-  [[ -n "$(env_value "${name}")" ]] || fail "${name} не задан в ${ENV_FILE}"
-done
-NEXUS_URL="http://localhost:$(env_value NEXUS_PORT)"
+# shellcheck source=nexus-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/nexus-env.sh"
+cd "${ROOT_DIR}"
 
 echo "==> Nexus ${NEXUS_URL}"
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${NEXUS_URL}/service/rest/v1/status/writable" || true)"
-[[ "${code}" == 200 ]] || fail "Nexus не готов к записи (HTTP ${code}): make up-ci"
+require_nexus
 
-cd "${ROOT_DIR}"
-version="$(./gradlew -q :contracts:properties --property version | sed -n 's/^version: //p')"
+version="$(contracts_version "${ROOT_DIR}")"
+tag="contracts/v${version}"
+release=true
+[[ "${version}" == *-SNAPSHOT ]] && release=false
+
+if ${release}; then
+  [[ -z "$(git status --porcelain -- contracts)" ]] ||
+    fail "в contracts/ есть незакоммиченные изменения: релиз ${version} собирается только из коммита"
+  if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+    fail "тег ${tag} уже есть - версия выпущена (в пустой Nexus её вернёт make contracts-bootstrap); поднимите version"
+  fi
+fi
+
 echo "==> contracts-avro ${version}: проверка совместимости, сборка, публикация"
+with_publisher ./gradlew --console=plain :contracts:build :contracts:publish -PnexusUrl="${NEXUS_URL}"
 
-ORG_GRADLE_PROJECT_nexusUsername="$(env_value NEXUS_PUBLISH_USER)" \
-ORG_GRADLE_PROJECT_nexusPassword="$(env_value NEXUS_PUBLISH_PASSWORD)" \
-  ./gradlew --console=plain :contracts:build :contracts:publish -PnexusUrl="${NEXUS_URL}"
-
-repository=maven-releases
-[[ "${version}" == *-SNAPSHOT ]] && repository=maven-snapshots
-echo "==> Опубликовано: ${NEXUS_URL}/#browse/browse:${repository}:com%2Fgithub%2Fgluhov%2Fiotplatform%2Fcontracts-avro"
+if ${release}; then
+  git tag -a "${tag}" -m "contracts-avro ${version}"
+  echo "==> Тег ${tag} поставлен на $(git rev-parse --short HEAD); отправьте его вместе с веткой: git push origin ${tag}"
+  repository=maven-releases
+else
+  repository=maven-snapshots
+fi
+echo "==> Опубликовано: ${NEXUS_URL}/#browse/browse:${repository}:${ARTIFACT_PATH//\//%2F}"

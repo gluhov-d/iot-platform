@@ -132,7 +132,7 @@ fun httpGet(client: HttpClient, url: String): HttpResponse<ByteArray> = try {
     val request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(10)).GET().build()
     client.send(request, HttpResponse.BodyHandlers.ofByteArray())
 } catch (e: IOException) {
-    throw GradleException("Nexus недоступен ($url): $e. Поднимите его: make up-ci", e)
+    throw GradleException("Nexus недоступен ($url): $e. Поднимите его: make nexus-up", e)
 }
 
 val checkContractsCompatibility by tasks.registering {

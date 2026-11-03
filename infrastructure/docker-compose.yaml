@@ -276,12 +276,11 @@ services:
 
 
   # ---------------------------------------------------------------------------
-  # Nexus - Maven-репозиторий для контрактов (профиль ci)
+  # Nexus - Maven-репозиторий для Avro-контрактов (базовый стенд: из него сборка сервисов берёт контракты)
   # ---------------------------------------------------------------------------
   nexus:
     image: sonatype/nexus3:${NEXUS_VERSION}
     container_name: iot-nexus
-    profiles: [ci]
     <<: *default-restart
     logging: *default-logging
     environment:
@@ -307,7 +306,6 @@ services:
   nexus-init:
     image: sonatype/nexus3:${NEXUS_VERSION}
     container_name: iot-nexus-init
-    profiles: [ci]
     restart: "no"
     logging: *default-logging
     depends_on:

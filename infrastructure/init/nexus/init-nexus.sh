@@ -51,7 +51,7 @@ if printf '%s' "${eula}" | grep -q '"accepted" *: *false'; then
   if [ "${NEXUS_ACCEPT_EULA:-false}" != true ]; then
     echo "!!! Nexus Community Edition работает только после принятия EULA:"
     echo "    https://links.sonatype.com/products/nxrm/ce-eula"
-    echo "    Если вы согласны с условиями, поставьте NEXUS_ACCEPT_EULA=true в .env и повторите make up-ci."
+    echo "    Если вы согласны с условиями, поставьте NEXUS_ACCEPT_EULA=true в .env и повторите make up."
     exit 1
   fi
   # API принимает тот же документ, что вернул, с accepted=true (текст disclaimer должен совпадать)

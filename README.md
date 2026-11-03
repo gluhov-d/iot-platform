@@ -71,7 +71,7 @@
 | Spring Boot | 4.0.3 (Spring Framework 7.0, Spring for Apache Kafka 4.0) |
 | Apache Kafka | 4.2.0, KRaft (`apache/kafka:4.2.0`) |
 | Kafka UI (профиль `tools`) | kafbat/kafka-ui v1.5.0 |
-| Sonatype Nexus Repository Community Edition (профиль `ci`) | 3.96.5 |
+| Sonatype Nexus Repository Community Edition (базовый стенд) | 3.96.5 |
 | Confluent Schema Registry | 8.2.4 |
 | ClickHouse | 26.2.19 (`clickhouse/clickhouse-server:26.2.19-alpine`, на Apple M4 — `linux/amd64`, см. «Типовые проблемы»), JDBC `clickhouse-jdbc` 0.9.9 |
 | Redis Open Source | 8.6.7 |
@@ -91,7 +91,10 @@
 iot-platform/
 ├── contracts/                         # Gradle-проект :contracts -> артефакт contracts-avro (публикуется в Nexus)
 │   ├── build.gradle.kts               # генерация классов, jar со схемами, проверка совместимости, maven-publish
-│   ├── scripts/publish.sh             # конвейер публикации (make contracts-publish)
+│   ├── scripts/
+│   │   ├── publish.sh                 # конвейер публикации (make contracts-publish), ставит тег релиза
+│   │   ├── bootstrap.sh               # выпущенные версии из тегов contracts/v* -> Nexus (make contracts-bootstrap)
+│   │   └── nexus-env.sh               # общая часть: адрес Nexus и публикатор из .env (source)
 │   └── avro/                          # Avro-контракты — единый источник для кодогенерации
 │       ├── device-event.avsc
 │       └── device-info.avsc
@@ -104,7 +107,7 @@ iot-platform/
 │   ├── definition-of-done.md          # критерии приёмки со ссылками на файлы и тесты
 │   └── screenshots/                   # дашборд Grafana и трейсы Tempo (раздел 22 задания)
 ├── infrastructure/
-│   ├── docker-compose.yaml            # стенд: базовый + профили observability, platform, tools, ci
+│   ├── docker-compose.yaml            # стенд: базовый + профили observability, platform, tools
 │   ├── .env -> ../.env                # симлинк на корневой .env (сам .env в Git не хранится)
 │   ├── init/
 │   │   ├── kafka/init-topics.sh       # создание тем events, devices, events.DLT (контейнер kafka-init)
@@ -194,7 +197,7 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
   по имени, а повторное объявление одного полного имени (например, двух `DeviceInfo`) роняет сборку;
 * в jar рядом с классами лежат сами схемы (`avro/*.avsc`) — по ним проверяется совместимость новой версии;
 * Avro (`org.apache.avro:avro`) подключён как `api`: потребитель получает его транзитивно;
-* `publish` выкладывает jar, sources, pom и Gradle module metadata в Nexus (профиль `ci`):
+* `publish` выкладывает jar, sources, pom и Gradle module metadata в Nexus:
   релизы — в `maven-releases`, версии `-SNAPSHOT` — в `maven-snapshots`. Адрес — `-PnexusUrl`
   (по умолчанию `http://localhost:8091`), учётная запись — `ORG_GRADLE_PROJECT_nexusUsername` и
   `ORG_GRADLE_PROJECT_nexusPassword`; в репозитории их нет. Выпущенную версию Nexus перезаписать не даст.
@@ -206,9 +209,10 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
 #### Конвейер публикации
 
 ```bash
-make up-ci               # Nexus
-make contracts-check     # разбор схем + совместимость с последней выпущенной версией (без публикации)
-make contracts-publish   # проверка -> сборка -> публикация (contracts/scripts/publish.sh)
+make nexus-up              # только Nexus (make up поднимает его сам)
+make contracts-check       # разбор схем + совместимость с последней выпущенной версией (без публикации)
+make contracts-publish     # проверка -> сборка -> публикация (contracts/scripts/publish.sh)
+make contracts-bootstrap   # выпущенные версии из git-тегов, которых нет в Nexus (make up вызывает сам)
 ```
 
 `contracts-publish` берёт порт Nexus и учётную запись публикатора (`NEXUS_PUBLISH_USER`/`NEXUS_PUBLISH_PASSWORD`)
@@ -235,7 +239,19 @@ make contracts-publish   # проверка -> сборка -> публикац�
 | несовместимое изменение | следующая старшая: `1.x` → `2.0.0`; для Schema Registry это новый субъект/тема |
 | проба до релиза | `X.Y.Z-SNAPSHOT` — в `maven-snapshots`, можно публиковать повторно |
 
-Выпущена `1.0.0` — схемы модуля 2. После релиза `make contracts-check` на той же версии сообщает
+**Релиз = коммит + тег + артефакт.** Версия без `-SNAPSHOT` собирается только из закоммиченного `contracts/`
+(иначе — «незакоммиченные изменения»), после публикации `contracts-publish` ставит на `HEAD` аннотированный тег
+`contracts/vX.Y.Z`; если тег уже есть — версия выпущена, нужно поднять `version`. Тег отправляется вместе
+с веткой: `git push origin contracts/vX.Y.Z`. `-SNAPSHOT` публикуется из рабочей папки и без тега.
+
+История релизов хранится в git, Nexus — только хранилище артефактов. `make contracts-bootstrap` (его вызывает
+`make up`) проходит по тегам `contracts/v*` по возрастанию версий и каждую версию, которой нет в
+`maven-releases`, собирает во временном `git worktree` на её теге и публикует — с той же проверкой
+совместимости. Поэтому на чистом клоне и после `make clean` в Nexus снова оказываются все выпущенные версии,
+от которых зависят сервисы. Уже опубликованные версии пропускаются; тег, в котором `version` не совпадает
+с именем тега, — ошибка.
+
+Выпущена `1.0.0` (тег `contracts/v1.0.0`) — схемы модуля 2. После релиза `make contracts-check` на той же версии сообщает
 «Версия … уже опубликована»: перед изменением схем поднимите `version` в `contracts/build.gradle.kts`.
 
 Пока events-collector-service по-прежнему генерирует классы сам; переход на артефакт из Nexus — следующий шаг.
@@ -355,12 +371,12 @@ docker compose -f infrastructure/docker-compose.yaml up -d --scale events-collec
 
 ## 10. Запуск инфраструктуры
 
-Нужны Docker (Compose v2) и ≥ 4 ГБ памяти для базового стенда (≥ 6 ГБ с профилями).
+Нужны Docker (Compose v2) и ≥ 5 ГБ памяти для базового стенда — около 1 ГБ из них занимает Nexus (≥ 7 ГБ с профилями).
 
 ```bash
 cp .env.example .env          # при необходимости поменяйте пароли и порты
 
-# базовый стенд: kafka, kafka-init, schema-registry, clickhouse, redis, events-collector-service
+# базовый стенд: nexus, nexus-init, kafka, kafka-init, schema-registry, clickhouse, redis, events-collector-service
 docker compose -f infrastructure/docker-compose.yaml up -d
 
 # со стеком наблюдаемости: + prometheus, grafana, loki, tempo, alloy, kafka-exporter
@@ -370,10 +386,10 @@ docker compose -f infrastructure/docker-compose.yaml --profile observability up 
 То же через Makefile — с ожиданием healthy и понятным кодом выхода:
 
 ```bash
-make up                       # базовый стенд
+make up                       # базовый стенд: Nexus -> контракты из тегов -> сборка и запуск остального
+make nexus-up                 # только Nexus (http://localhost:8091)
 make up-obs                   # с observability
 make up PROFILES=tools        # плюс Kafka UI (http://localhost:8090)
-make up-ci                    # плюс Nexus (http://localhost:8091), то же, что make up PROFILES=ci
 make up PROFILES="observability platform"   # плюс окружение модуля 1 (Postgres, Keycloak, Camunda, MinIO)
 make health | make topics | make urls | make logs S=events-collector-service
 make down                     # остановить (тома сохраняются)
@@ -382,12 +398,13 @@ make clean                    # остановить и удалить тома
 
 Профиль `platform` — окружение модуля 1, в модуле 2 не используется.
 
-Профиль `ci` — Nexus, Maven-репозиторий, в который конвейер контрактов публикует собранные Avro-классы.
-Одноразовый `nexus-init` (`infrastructure/init/nexus/init-nexus.sh`) после `nexus: healthy`:
+Nexus — Maven-репозиторий, в который конвейер контрактов публикует собранные Avro-классы. Он входит в базовый
+стенд: `make up` сначала поднимает его (`make nexus-up`), затем публикует выпущенные версии контрактов из тегов
+(`make contracts-bootstrap`, раздел 6) и только потом собирает и запускает остальные сервисы. Одноразовый `nexus-init` (`infrastructure/init/nexus/init-nexus.sh`) после `nexus: healthy`:
 
 * заменяет сгенерированный пароль `admin` на `NEXUS_ADMIN_PASSWORD`;
 * принимает EULA Community Edition — только если в `.env` стоит `NEXUS_ACCEPT_EULA=true`. Без этого Nexus отвечает
-  403 на любую загрузку и скачивание, поэтому `nexus-init` завершается с кодом 1, а `make up-ci` — с ошибкой.
+  403 на любую загрузку и скачивание, поэтому `nexus-init` завершается с кодом 1, а `make nexus-up` и `make up` — с ошибкой и его логом.
   Условия: https://links.sonatype.com/products/nxrm/ce-eula — прочитайте и примите решение сами;
 * включает анонимное чтение: контракты не секретны, сервисы скачивают их без пароля;
 * создаёт роль `contracts-publisher` (запись только в `maven-releases` и `maven-snapshots`) и пользователя
@@ -594,7 +611,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 |---|---|
 | Schema Registry недоступен | `make health`; `curl localhost:8081/subjects`; у сервиса `SCHEMA_REGISTRY_URL` должен указывать на `http://schema-registry:8081` внутри сети compose и на `http://localhost:8081` из IDE; SR стартует после `kafka: healthy` |
 | `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
-| `make contracts-publish` / `contracts-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make up-ci`, `make health`; «Версия … уже опубликована» — поднимите `version` в `contracts/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make up-ci`) |
+| `make contracts-publish` / `contracts-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `contracts/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `contracts/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |

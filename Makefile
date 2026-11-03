@@ -26,9 +26,9 @@ INIT_SERVICES := kafka-init minio-init nexus-init
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-obs up-ci down stop start restart ps logs health urls pull build clean reset kafka-reset \
+.PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        contracts-check contracts-publish
+        contracts-check contracts-publish contracts-bootstrap
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -41,6 +41,8 @@ help: ## Показать список команд
 ## ------------------------------------------------------------ Жизненный цикл
 up: ## Поднять всю инфраструктуру (PROFILES=observability - с наблюдаемостью) и дождаться готовности
 	@echo "==> Запуск инфраструктуры IoT Platform (профили: $(if $(PROFILES),$(PROFILES),базовый))"
+	@$(MAKE) --no-print-directory nexus-up
+	@$(MAKE) --no-print-directory contracts-bootstrap
 	@$(COMPOSE) up -d --build --remove-orphans
 	@$(MAKE) --no-print-directory wait
 	@$(MAKE) --no-print-directory urls
@@ -48,8 +50,11 @@ up: ## Поднять всю инфраструктуру (PROFILES=observabilit
 up-obs: ## То же, что make up PROFILES=observability
 	@$(MAKE) --no-print-directory up PROFILES=observability
 
-up-ci: ## То же, что make up PROFILES=ci (базовый стенд + Nexus)
-	@$(MAKE) --no-print-directory up PROFILES=ci
+nexus-up: ## Поднять только Nexus и дождаться его настройки (nexus-init)
+	@echo "==> Nexus: запуск и настройка (первый старт - 1-2 минуты)"
+	@$(COMPOSE) up -d nexus-init
+	@$(COMPOSE) wait nexus-init >/dev/null || { \
+	  echo "!!! nexus-init завершился с ошибкой:"; $(COMPOSE) logs --no-log-prefix --tail=15 nexus-init; exit 1; }
 
 down: ## Остановить и удалить контейнеры всех профилей (тома сохраняются)
 	@echo "==> Остановка инфраструктуры"
@@ -139,10 +144,9 @@ urls: ## Показать адреса всех сервисов
 	echo "  Schema Registry           http://localhost:$$(v SCHEMA_REGISTRY_PORT)"; \
 	echo "  ClickHouse                http://localhost:$$(v CLICKHOUSE_HTTP_PORT)  (native: $$(v CLICKHOUSE_NATIVE_PORT))"; \
 	echo "  Redis                     redis://localhost:$$(v REDIS_PORT)"; \
+	echo "  Nexus                     http://localhost:$$(v NEXUS_PORT)  (maven-public: /repository/maven-public/)"; \
 	echo "  --- профиль tools"; \
 	echo "  Kafka UI                  http://localhost:$$(v KAFKA_UI_PORT)"; \
-	echo "  --- профиль ci"; \
-	echo "  Nexus                     http://localhost:$$(v NEXUS_PORT)  (maven-public: /repository/maven-public/)"; \
 	echo "  --- профиль observability"; \
 	echo "  Grafana                   http://localhost:$$(v GRAFANA_PORT)"; \
 	echo "  Prometheus                http://localhost:$$(v PROMETHEUS_PORT)"; \
@@ -196,5 +200,7 @@ coverage: ## Все тесты + проверка порога покрытия 
 ## ----------------------------------------------------------------- Avro-контракты
 contracts-check: ## Проверить схемы и совместимость с последней версией в Nexus (без публикации)
 	@$(GRADLE) :contracts:checkContractsCompatibility -PnexusUrl=http://localhost:$(call compose_env,NEXUS_PORT)
-contracts-publish: ## Конвейер контрактов: совместимость -> сборка -> публикация в Nexus (нужен make up-ci)
+contracts-publish: ## Конвейер контрактов: совместимость -> сборка -> публикация в Nexus (нужен make nexus-up)
 	@$(ROOT_DIR)/contracts/scripts/publish.sh
+contracts-bootstrap: ## Вернуть в Nexus выпущенные версии контрактов из git-тегов contracts/v* (make up вызывает сам)
+	@$(ROOT_DIR)/contracts/scripts/bootstrap.sh
