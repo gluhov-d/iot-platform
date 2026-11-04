@@ -62,8 +62,15 @@ ok "container healthy"
 
 # ------------------------------------------------------------------------------
 next "Send DeviceEvent to topic events (Avro + Schema Registry, key deviceId)"
-SCHEMA="$(tr -d '\n ' < "${ROOT_DIR}/contracts/avro/device-event.avsc")"
-PAYLOAD="{\"eventId\":\"${EVENT_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":${TIMESTAMP_MS},\"eventType\":\"CHECK_LOCAL\"}"
+# Схема DeviceEvent для консольного продюсера: тип DeviceSnapshot объявлен в отдельном файле,
+# поэтому ссылка на него по имени заменяется самим объявлением
+SNAPSHOT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-snapshot.avsc")"
+EVENT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-event.avsc")"
+before="${EVENT_SCHEMA%%\"DeviceSnapshot\"*}"
+after="${EVENT_SCHEMA#*\"DeviceSnapshot\"}"
+SCHEMA="${before}${SNAPSHOT_SCHEMA}${after}"
+# Avro JSON: все поля перечислены явно, новые поля 1.1.0 - null (событие без снимка, как в модуле 2)
+PAYLOAD="{\"eventId\":\"${EVENT_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":${TIMESTAMP_MS},\"eventType\":\"CHECK_LOCAL\",\"device\":null,\"sourceSystem\":null,\"payload\":null}"
 printf '%s|%s\n' "${DEVICE_ID}" "${PAYLOAD}" | "${COMPOSE[@]}" exec -T schema-registry \
   kafka-avro-console-producer \
     --bootstrap-server kafka:9092 \

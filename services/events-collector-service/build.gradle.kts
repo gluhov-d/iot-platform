@@ -11,7 +11,7 @@ description = "events-collector-service"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-контрактов (contracts-avro в Nexus); Avro приходит вместе с ними транзитивно
-val contractsVersion = "1.0.0"
+val contractsVersion = "1.1.0"
 
 java {
     toolchain {
