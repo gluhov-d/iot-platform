@@ -1,0 +1,114 @@
+{
+  "type": "record",
+  "name": "DeviceSnapshot",
+  "namespace": "com.github.gluhov.iotplatform.events.avro",
+  "doc": "Снимок текущего состояния устройства. Общий тип тем events (DeviceEvent.device) и devices (DeviceInfo.device).",
+  "fields": [
+    {
+      "name": "deviceId",
+      "type": "string",
+      "doc": "Идентификатор устройства; совпадает с ключом сообщения и с deviceId события."
+    },
+    {
+      "name": "tenantId",
+      "type": "string",
+      "doc": "Арендатор (клиент платформы), которому принадлежит устройство."
+    },
+    {
+      "name": "ownerId",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Владелец устройства внутри арендатора."
+    },
+    {
+      "name": "deviceType",
+      "type": "string",
+      "doc": "Тип устройства, например thermostat или gateway."
+    },
+    {
+      "name": "serialNumber",
+      "type": ["null", "string"],
+      "default": null
+    },
+    {
+      "name": "manufacturer",
+      "type": ["null", "string"],
+      "default": null
+    },
+    {
+      "name": "model",
+      "type": ["null", "string"],
+      "default": null
+    },
+    {
+      "name": "firmwareVersion",
+      "type": ["null", "string"],
+      "default": null
+    },
+    {
+      "name": "status",
+      "type": {
+        "type": "enum",
+        "name": "DeviceStatus",
+        "doc": "Жизненный цикл устройства. default на уровне типа: читатель старой версии получит UNKNOWN вместо ошибки, если писатель добавит новое значение.",
+        "symbols": ["UNKNOWN", "NEW", "ACTIVE", "INACTIVE", "MAINTENANCE", "BLOCKED", "DELETED"],
+        "default": "UNKNOWN"
+      },
+      "default": "UNKNOWN"
+    },
+    {
+      "name": "registeredAtMs",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Время регистрации устройства в миллисекундах Unix-времени."
+    },
+    {
+      "name": "lastSeenAtMs",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Время последней активности устройства в миллисекундах Unix-времени."
+    },
+    {
+      "name": "settings",
+      "type": {"type": "map", "values": "string"},
+      "default": {},
+      "doc": "Настройки устройства (ключ - значение)."
+    },
+    {
+      "name": "sensors",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "SensorSnapshot",
+          "doc": "Состояние одного сенсора устройства.",
+          "fields": [
+            {"name": "sensorId", "type": "string"},
+            {"name": "sensorType", "type": "string"},
+            {"name": "unit", "type": ["null", "string"], "default": null},
+            {"name": "value", "type": ["null", "string"], "default": null},
+            {"name": "measuredAtMs", "type": ["null", "long"], "default": null},
+            {
+              "name": "status",
+              "type": {
+                "type": "enum",
+                "name": "SensorStatus",
+                "symbols": ["UNKNOWN", "OK", "WARNING", "ERROR", "DISABLED"],
+                "default": "UNKNOWN"
+              },
+              "default": "UNKNOWN"
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "Сенсоры устройства; приходят и сохраняются вместе со снимком."
+    },
+    {
+      "name": "attributes",
+      "type": {"type": "map", "values": "string"},
+      "default": {},
+      "doc": "Произвольные атрибуты устройства."
+    }
+  ]
+}

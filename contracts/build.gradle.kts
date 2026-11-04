@@ -28,7 +28,7 @@ plugins {
 // Версия контрактов: несовместимое изменение схем - новая старшая версия.
 // Выпущенную версию maven-releases перезаписать не даст.
 group = "com.github.gluhov.iotplatform"
-version = "1.0.0"
+version = "1.1.0"
 description = "Avro-контракты IoT Platform: схемы и сгенерированные классы SpecificRecord"
 
 val avroVersion = "1.12.1"

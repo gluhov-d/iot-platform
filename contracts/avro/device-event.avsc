@@ -2,6 +2,7 @@
   "type": "record",
   "name": "DeviceEvent",
   "namespace": "com.github.gluhov.iotplatform.events.avro",
+  "doc": "Исходное событие устройства в теме events. Сохраняется в ClickHouse и служит основой производного события в теме devices.",
   "fields": [
     {
       "name": "eventId",
@@ -13,11 +14,30 @@
     },
     {
       "name": "timestampMs",
-      "type": "long"
+      "type": "long",
+      "doc": "Время возникновения события в миллисекундах Unix-времени."
     },
     {
       "name": "eventType",
       "type": "string"
+    },
+    {
+      "name": "device",
+      "type": ["null", "DeviceSnapshot"],
+      "default": null,
+      "doc": "Снимок устройства, если событие сообщает его состояние (с версии 1.1.0); null - телеметрия без снимка."
+    },
+    {
+      "name": "sourceSystem",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Система-источник события (с версии 1.1.0)."
+    },
+    {
+      "name": "payload",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Сырая полезная нагрузка исходного события, если её нужно сохранить для аудита (с версии 1.1.0)."
     }
   ]
 }
