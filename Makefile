@@ -182,7 +182,8 @@ check: ## Проверить корректность docker-compose.yaml
 
 diagrams: ## Отрендерить C4-диаграммы в PNG (нужен plantuml)
 	@command -v plantuml >/dev/null 2>&1 || { echo "plantuml не установлен: brew install plantuml"; exit 1; }
-	@plantuml -tpng -o . $(ROOT_DIR)/diagrams/*.puml && echo "PNG сохранены в diagrams/"
+	@# Лимит по умолчанию - 4096 px: шире PlantUML обрезает картинку
+	@PLANTUML_LIMIT_SIZE=12000 plantuml -tpng -o . $(ROOT_DIR)/diagrams/*.puml && echo "PNG сохранены в diagrams/"
 
 ## ----------------------------------------------------------------- events-collector-service
 check-local: ## Быстрая проверка поднятого стенда (scripts/check-local.sh)

@@ -1,0 +1,37 @@
+%% device-collector-service: новое событие устройства (первое появление или новее сохранённого)
+sequenceDiagram
+    autonumber
+    participant K as Kafka (devices)
+    participant SR as Schema Registry
+    participant L as DeviceInfoListener
+    participant S as DeviceRegistryService
+    participant V as DeviceInfoValidator
+    participant P as ShardingSphere-Proxy
+    participant DB as PostgreSQL shard_N
+
+    K->>L: poll (max.poll.records=1, enable.auto.commit=false), заголовок traceparent
+    L->>SR: схема по id (KafkaAvroDeserializer, кешируется)
+    SR-->>L: DeviceInfo (SpecificRecord)
+    L->>L: MDC: topic, partition, offset, deviceId · спан продолжает трейс модуля 2
+    L->>S: process(record)
+    S->>V: validate(key, DeviceInfo)
+    V-->>S: ok
+    S->>S: eventKey = eventId (иначе emitted:emittedAtMs)<br/>eventAt = eventTimeMs (иначе emittedAtMs) → Instant
+    S->>P: BEGIN
+    S->>P: SELECT current_database(), status, last_event_at, … FROM devices<br/>WHERE device_id = ? FOR UPDATE
+    P->>DB: маршрут |hashCode(device_id)| % 2
+    DB-->>S: нет строки или last_event_at <= eventAt
+    S->>P: INSERT INTO processed_device_events (…, outcome = APPLIED)<br/>ON CONFLICT (device_id, event_key) DO NOTHING
+    P->>DB: тот же шард (связанные таблицы)
+    DB-->>S: 1 строка - событие новое
+    alt устройства нет
+        S->>P: INSERT INTO devices (снимок, seen_count = 1, first_seen_at) RETURNING current_database()
+    else устройство есть
+        S->>P: UPDATE devices SET снимок, seen_count = seen_count + 1, last_event_* RETURNING current_database()
+    end
+    Note over S,DB: eventType = DELETED или снимок со status = DELETED → status = DELETED, deleted_at (мягкое удаление)<br/>device = null (контракт 1.0.0, событие без снимка) → только seen_count, last_event_*, last_seen_at
+    DB-->>S: shard_N
+    S->>P: COMMIT
+    S-->>L: APPLIED, shard_N
+    Note over S: devices_messages_received_total++ (только первая доставка, kafka_deliveryAttempt = 1),<br/>devices_messages_processed_total{outcome=applied}++<br/>devices_db_write_seconds{shard, result=success}, лог status=APPLIED, shard
+    L->>K: ack.acknowledge() - commit offset после COMMIT

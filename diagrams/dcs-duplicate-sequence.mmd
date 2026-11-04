@@ -1,0 +1,30 @@
+%% device-collector-service: повторная доставка и устаревшее событие
+sequenceDiagram
+    autonumber
+    participant K as Kafka (devices)
+    participant L as DeviceInfoListener
+    participant S as DeviceRegistryService
+    participant P as ShardingSphere-Proxy
+    participant DB as PostgreSQL shard_N
+
+    K->>L: то же сообщение ещё раз (commit offset не дошёл)<br/>или другое событие устройства, более старое
+    L->>S: process(record)
+    S->>S: валидация, eventKey, eventAt
+    S->>P: BEGIN
+    S->>P: SELECT current_database(), status, last_event_at, last_state_at, … FROM devices<br/>WHERE device_id = ? FOR UPDATE
+    P->>DB: маршрут |hashCode(device_id)| % 2
+    DB-->>S: shard_N, last_event_at, last_state_at
+    S->>S: снимок или DELETED: outcome = eventAt < last_state_at ? STALE : APPLIED<br/>событие без снимка: eventAt < last_event_at ? STALE : APPLIED
+    S->>P: INSERT INTO processed_device_events (…, outcome)<br/>ON CONFLICT (device_id, event_key) DO NOTHING
+    alt повтор: event_key уже в журнале
+        DB-->>S: 0 строк
+        S->>P: COMMIT без изменений - devices не меняется, seen_count прежний
+        Note over S: devices_messages_duplicate_total++, лог status=DUPLICATE, shard
+    else устаревшее событие: новый event_key, STALE
+        DB-->>S: 1 строка
+        S->>P: UPDATE devices SET seen_count = seen_count + 1,<br/>first_seen_at = LEAST(first_seen_at, eventAt) - снимок не меняется
+        S->>P: COMMIT
+        Note over S: devices_messages_processed_total{outcome=stale}++, лог status=STALE, shard
+    end
+    L->>K: ack.acknowledge()
+    Note over S,DB: ON CONFLICT DO UPDATE на devices не защищает от повтора: seen_count увеличился бы.<br/>Защищает первичный ключ журнала на том же шарде, в той же транзакции
