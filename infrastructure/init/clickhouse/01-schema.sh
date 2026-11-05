@@ -1,7 +1,8 @@
 #!/bin/bash
 # Схема ClickHouse для events-collector-service (модуль 2): база и таблицы
 # device_events и device_outbox. DDL — из задания, имя базы подставляется.
-# Выполняется entrypoint-ом образа один раз - на пустом томе clickhouse-data.
+# Выполняется entrypoint-ом образа на пустом томе clickhouse-data и одноразовым clickhouse-init
+# на каждом запуске стенда (IF NOT EXISTS - повторный запуск безопасен).
 #
 # База — из CLICKHOUSE_DB (compose передаёт её из CLICKHOUSE_DATABASE в .env).
 # Значение по умолчанию iot_platform нужно для Testcontainers: там CLICKHOUSE_DB
@@ -11,7 +12,7 @@ set -euo pipefail
 DB="${CLICKHOUSE_DB:-iot_platform}"
 
 ch() {
-  clickhouse-client --host 127.0.0.1 \
+  clickhouse-client --host "${CLICKHOUSE_HOST:-127.0.0.1}" \
     --user "${CLICKHOUSE_USER:-default}" --password "${CLICKHOUSE_PASSWORD:-}" "$@"
 }
 

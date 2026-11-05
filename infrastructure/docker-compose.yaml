@@ -97,6 +97,41 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
+  # Изменения схемы ClickHouse на уже инициализированном томе — одноразовая задача.
+  # Те же скрипты init/clickhouse/*.sh, что entrypoint выполняет на пустом томе; все идемпотентны
+  # (CREATE ... IF NOT EXISTS, ADD COLUMN IF NOT EXISTS), поэтому выполняются на каждом запуске стенда
+  # ---------------------------------------------------------------------------
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}
+    container_name: iot-clickhouse-init
+    platform: ${CLICKHOUSE_PLATFORM}
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - ./init/clickhouse:/opt/init/clickhouse:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # healthy у clickhouse наступает ещё во время init-сервера entrypoint-а, который слушает только localhost:
+        # ждём, пока основной сервер начнёт принимать соединения по сети
+        for _ in $$(seq 1 30); do
+          clickhouse-client --host clickhouse --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" \
+            --query 'SELECT 1' >/dev/null 2>&1 && break
+          sleep 2
+        done
+        set -e
+        for f in /opt/init/clickhouse/*.sh; do bash "$$f"; done
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
   # Kafka 4.x (KRaft, без ZooKeeper) — шина событий
   # ---------------------------------------------------------------------------
   kafka:
@@ -207,8 +242,8 @@ services:
         condition: service_completed_successfully
       schema-registry:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:

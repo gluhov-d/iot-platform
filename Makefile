@@ -22,7 +22,7 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
-INIT_SERVICES := kafka-init minio-init nexus-init
+INIT_SERVICES := kafka-init minio-init nexus-init clickhouse-init
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
