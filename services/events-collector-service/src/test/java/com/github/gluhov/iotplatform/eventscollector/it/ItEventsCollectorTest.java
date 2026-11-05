@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.eventscollector.adapter.out.kafka.DeviceInfoPublishException;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
@@ -11,6 +12,7 @@ import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceInfoP
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.PublishedDeviceStore;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceSnapshotJson;
 import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
@@ -41,6 +43,7 @@ import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.Re
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.PUBLISHED_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.config.SchemaRegistryTestContainerConfig.schemaRegistryUrl;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.EVENT_TYPE;
+import static com.github.gluhov.iotplatform.eventscollector.data.TestData.eventWithSnapshot;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.unique;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -110,7 +113,31 @@ class ItEventsCollectorTest extends AbstractItTest {
                 .containsEntry("attempts", 0L)
                 .containsEntry("source_timestamp_ms", timestampMs);
     }
-    
+
+    @Test
+    @DisplayName("Send event with device snapshot then snapshot stored in device_events and outbox")
+    void givenEventWithSnapshot_whenIngest_thenSnapshotStoredInEventsAndOutbox() {
+        String eventId = unique("evt");
+        String deviceId = unique("dev");
+        DeviceEvent event = eventWithSnapshot(eventId, deviceId, Instant.now().toEpochMilli(), DeviceStatus.ACTIVE);
+
+        send(event);
+        awaitOutbox(eventId);
+
+        String stored = jdbcClient.sql("SELECT device_snapshot FROM device_events FINAL WHERE event_id = :id")
+                .param("id", eventId).query(String.class).single();
+        assertThat(DeviceSnapshotJson.fromJson(stored)).isEqualTo(event.getDevice());
+        assertThat(jdbcClient.sql("SELECT source_system FROM device_events FINAL WHERE event_id = :id")
+                .param("id", eventId).query(String.class).single()).isEqualTo("gateway-7");
+        assertThat(jdbcClient.sql("SELECT device_snapshot FROM device_outbox FINAL WHERE event_id = :id")
+                .param("id", eventId).query(String.class).single()).as("outbox carries the same snapshot").isEqualTo(stored);
+        assertThat(jdbcClient.sql("SELECT device_snapshot_schema FROM device_outbox FINAL WHERE event_id = :id")
+                .param("id", eventId).query(String.class).single()).as("writer schema stored with the snapshot")
+                .isEqualTo(DeviceSnapshotJson.writerSchema());
+    }
+
+
+
     @Test
     @DisplayName("Publish outbox then DeviceInfo in devices, SENT version and lease released")
     void givenNewDevice_whenPublish_thenDeviceInfoSentAndSecondEventSkipped() {
@@ -223,20 +250,23 @@ class ItEventsCollectorTest extends AbstractItTest {
     }
 
     private static void send(String eventId, String deviceId, long timestampMs) {
-        DeviceEvent event = DeviceEvent.newBuilder()
+        send(DeviceEvent.newBuilder()
                 .setEventId(eventId)
                 .setDeviceId(deviceId)
                 .setTimestampMs(timestampMs)
                 .setEventType(EVENT_TYPE)
-                .build();
-        
+                .build());
+    }
+
+    private static void send(DeviceEvent event) {
         try {
-            producer.send(new ProducerRecord<>(EVENTS_TOPIC, deviceId, event)).get();
+            producer.send(new ProducerRecord<>(EVENTS_TOPIC, event.getDeviceId(), event)).get();
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
     }
-    
+
+
     private void awaitOutbox(String eventId) {
         await().atMost(WAIT).untilAsserted(() -> assertThat(outboxRowCount(eventId)).isEqualTo(1));
     }

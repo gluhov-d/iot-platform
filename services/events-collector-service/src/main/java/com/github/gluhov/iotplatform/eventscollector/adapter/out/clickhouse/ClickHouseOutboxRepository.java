@@ -21,11 +21,11 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
     private static final String INSERT = """
             INSERT INTO device_outbox
                 (event_id, device_id, source_timestamp_ms, created_at, updated_at,
-                state_version, status, attempts, last_error, trace_id, span_id)
+                state_version, status, attempts, last_error, trace_id, span_id, device_snapshot, device_snapshot_schema)
             VALUES (:eventId, :deviceId, :sourceTimestampMs,
                     fromUnixTimestamp64Milli(:createdAtMs, 'UTC'),
                     fromUnixTimestamp64Milli(:updatedAtMs, 'UTC'),
-                    :stateVersion, :status, :attempts, :lastError, :traceId, :spanId)
+                    :stateVersion, :status, :attempts, :lastError, :traceId, :spanId, :deviceSnapshot, :deviceSnapshotSchema)
             """;
 
     private static final String SELECT_PENDING = """
@@ -40,11 +40,13 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
                 attempts,
                 last_error,
                 trace_id,
-                span_id
+                span_id,
+                device_snapshot,
+                device_snapshot_schema
             FROM device_outbox FINAL
             WHERE status IN ('NEW', 'FAILED')
                 AND attempts < :maxAttempts
-            ORDER BY created_at
+            ORDER BY created_at, source_timestamp_ms, event_id
             LIMIT :limit
             """;
 
@@ -71,6 +73,8 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
                 .param("lastError", record.lastError())
                 .param("traceId", record.traceRef().traceId())
                 .param("spanId", record.traceRef().spanId())
+                .param("deviceSnapshot", record.deviceSnapshot())
+                .param("deviceSnapshotSchema", record.deviceSnapshotSchema())
                 .update();
     }
 
@@ -103,7 +107,9 @@ public class ClickHouseOutboxRepository implements OutboxRepository {
                 resultSet.getInt("attempts"),
                 resultSet.getString("last_error"),
                 new TraceRef(resultSet.getString("trace_id"),
-                resultSet.getString("span_id"))
+                resultSet.getString("span_id")),
+                resultSet.getString("device_snapshot"),
+                resultSet.getString("device_snapshot_schema")
         );
     }
 }

@@ -20,11 +20,16 @@ public class DeviceEventMapper {
                 eventDate(event.getTimestampMs()),
                 event.getTimestampMs(),
                 event.getEventType(),
-                ingestedAt);
+                ingestedAt,
+                DeviceSnapshotJson.toJson(event.getDevice()),
+                event.getSourceSystem() == null ? "" : event.getSourceSystem(),
+                event.getPayload());
     }
 
+    // Снимок переносится в outbox целиком: публикатор собирает DeviceInfo без чтения device_events
     public OutboxRecord toInitialOutbox(DeviceEvent event, Instant now, TraceRef trace) {
-        return OutboxRecord.initial(event.getEventId(), event.getDeviceId(), event.getTimestampMs(), now, trace);
+        return OutboxRecord.initial(event.getEventId(), event.getDeviceId(), event.getTimestampMs(), now, trace,
+                DeviceSnapshotJson.toJson(event.getDevice()), DeviceSnapshotJson.writerSchema());
     }
 
     /**

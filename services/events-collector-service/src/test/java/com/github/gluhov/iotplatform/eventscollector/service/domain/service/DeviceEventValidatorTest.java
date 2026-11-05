@@ -1,6 +1,8 @@
 package com.github.gluhov.iotplatform.eventscollector.service.domain.service;
 
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
+import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
+import com.github.gluhov.iotplatform.events.avro.SensorSnapshot;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.InvalidEventException;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceEventValidator;
 import org.junit.jupiter.api.DisplayName;
@@ -8,6 +10,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.ZoneOffset;
+import java.util.List;
 
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.*;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -51,4 +54,47 @@ class DeviceEventValidatorTest {
                 .isInstanceOf(InvalidEventException.class)
                 .hasMessageContaining("future");
     }
+
+    @Test
+    @DisplayName("Validate event with full snapshot of the same device then accept")
+    void givenSnapshotOfSameDevice_whenValidate_thenAccept() {
+        DeviceEvent event = eventWithSnapshot(EVENT_ID, DEVICE_ID, NOW.toEpochMilli(), DeviceStatus.ACTIVE);
+
+        assertThatCode(() -> validator.validate(event)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("Validate snapshot of another device then exception")
+    void givenSnapshotOfAnotherDevice_whenValidate_thenThrowException() {
+        DeviceEvent event = eventWithSnapshot(EVENT_ID, DEVICE_ID, NOW.toEpochMilli(), DeviceStatus.ACTIVE);
+        event.getDevice().setDeviceId("dev-other");
+
+        assertThatThrownBy(() -> validator.validate(event))
+                .isInstanceOf(InvalidEventException.class)
+                .hasMessageContaining("device.deviceId");
+    }
+
+    @Test
+    @DisplayName("Validate snapshot without tenant then exception")
+    void givenSnapshotWithoutTenant_whenValidate_thenThrowException() {
+        DeviceEvent event = eventWithSnapshot(EVENT_ID, DEVICE_ID, NOW.toEpochMilli(), DeviceStatus.ACTIVE);
+        event.getDevice().setTenantId(" ");
+
+        assertThatThrownBy(() -> validator.validate(event))
+                .isInstanceOf(InvalidEventException.class)
+                .hasMessageContaining("device.tenantId");
+    }
+
+    @Test
+    @DisplayName("Validate snapshot with duplicate sensor ids then exception")
+    void givenDuplicateSensors_whenValidate_thenThrowException() {
+        DeviceEvent event = eventWithSnapshot(EVENT_ID, DEVICE_ID, NOW.toEpochMilli(), DeviceStatus.ACTIVE);
+        SensorSnapshot sensor = event.getDevice().getSensors().getFirst();
+        event.getDevice().setSensors(List.of(sensor, SensorSnapshot.newBuilder(sensor).build()));
+
+        assertThatThrownBy(() -> validator.validate(event))
+                .isInstanceOf(InvalidEventException.class)
+                .hasMessageContaining("duplicate sensorId");
+    }
+
 }
