@@ -3,9 +3,10 @@
 #
 # services/events-collector-service/scripts/check-local.sh
 #
-# Отправляет один DeviceEvent в тему events и проверяет всю цепочку:
-# device_events -> device_outbox -> публикация (SENT) -> DeviceInfo в теме devices
-# -> /actuator/health. Выход 0 - все в порядке, иначе номер упавшего шага в выводе.
+# Отправляет в тему events событие со снимком нового устройства и проверяет всю цепочку:
+# device_events (со снимком) -> device_outbox -> публикация (SENT) -> DeviceInfo CREATED со снимком в теме devices;
+# затем телеметрию того же устройства без снимка -> пропуск публикации (SKIPPED) -> /actuator/health.
+# Выход 0 - все в порядке, иначе номер упавшего шага в выводе.
 #
 # Все выполняется внутри контейнеров стенда (docker compose exec): на хосте нужны
 # только docker и bash. Пароли берутся из окружения контейнеров, а не из командной строки.
@@ -18,6 +19,7 @@ COMPOSE=(docker compose --env-file "${ROOT_DIR}/.env" -f "${ROOT_DIR}/infrastruc
 TIMEOUT="${CHECK_TIMEOUT:-60}"
 
 EVENT_ID="check-$(date +%s)-${RANDOM}"
+TELEMETRY_ID="${EVENT_ID}-telemetry"
 # Уникальное устройство: иначе публикация была бы пропущена из-за devices:published
 DEVICE_ID="check-device-$(date +%s)-${RANDOM}"
 TIMESTAMP_MS="$(( $(date +%s) * 1000 ))"
@@ -42,7 +44,29 @@ wait_for() {
 clickhouse() {
   "${COMPOSE[@]}" exec -T clickhouse sh -c \
     'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" "$@"' _ \
-    --param_eid="${EVENT_ID}" --query "$1"
+    --param_eid="${EVENT_ID}" --param_tid="${TELEMETRY_ID}" --query "$1"
+}
+
+# Схема DeviceEvent для консольного продюсера: тип DeviceSnapshot объявлен в отдельном файле,
+# поэтому ссылка на него по имени заменяется самим объявлением
+SNAPSHOT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-snapshot.avsc")"
+EVENT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-event.avsc")"
+before="${EVENT_SCHEMA%%\"DeviceSnapshot\"*}"
+after="${EVENT_SCHEMA#*\"DeviceSnapshot\"}"
+SCHEMA="${before}${SNAPSHOT_SCHEMA}${after}"
+
+# $1 - значение DeviceEvent в Avro JSON
+send_event() {
+  printf '%s|%s\n' "${DEVICE_ID}" "$1" | "${COMPOSE[@]}" exec -T schema-registry \
+    kafka-avro-console-producer \
+      --bootstrap-server kafka:9092 \
+      --topic events \
+      --property schema.registry.url=http://localhost:8081 \
+      --property value.schema="${SCHEMA}" \
+      --property parse.key=true \
+      --property key.separator='|' \
+      --property key.serializer=org.apache.kafka.common.serialization.StringSerializer \
+    >/dev/null 2>&1
 }
 
 echo "==> events-collector-service: local stand quick check"
@@ -61,33 +85,18 @@ state="$("${COMPOSE[@]}" ps --format '{{.Health}}' events-collector-service 2>/d
 ok "container healthy"
 
 # ------------------------------------------------------------------------------
-next "Send DeviceEvent to topic events (Avro + Schema Registry, key deviceId)"
-# Схема DeviceEvent для консольного продюсера: тип DeviceSnapshot объявлен в отдельном файле,
-# поэтому ссылка на него по имени заменяется самим объявлением
-SNAPSHOT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-snapshot.avsc")"
-EVENT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-event.avsc")"
-before="${EVENT_SCHEMA%%\"DeviceSnapshot\"*}"
-after="${EVENT_SCHEMA#*\"DeviceSnapshot\"}"
-SCHEMA="${before}${SNAPSHOT_SCHEMA}${after}"
-# Avro JSON: все поля перечислены явно, новые поля 1.1.0 - null (событие без снимка, как в модуле 2)
-PAYLOAD="{\"eventId\":\"${EVENT_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":${TIMESTAMP_MS},\"eventType\":\"CHECK_LOCAL\",\"device\":null,\"sourceSystem\":null,\"payload\":null}"
-printf '%s|%s\n' "${DEVICE_ID}" "${PAYLOAD}" | "${COMPOSE[@]}" exec -T schema-registry \
-  kafka-avro-console-producer \
-    --bootstrap-server kafka:9092 \
-    --topic events \
-    --property schema.registry.url=http://localhost:8081 \
-    --property value.schema="${SCHEMA}" \
-    --property parse.key=true \
-    --property key.separator='|' \
-    --property key.serializer=org.apache.kafka.common.serialization.StringSerializer \
-  >/dev/null 2>&1 || fail "failed to send message (are Kafka and Schema Registry available?)"
+next "Send DeviceEvent with device snapshot to topic events (Avro + Schema Registry, key deviceId)"
+# Avro JSON: значения union-полей - в обёртке с именем типа, все поля перечислены явно
+SNAPSHOT="{\"com.github.gluhov.iotplatform.events.avro.DeviceSnapshot\":{\"deviceId\":\"${DEVICE_ID}\",\"tenantId\":\"check-tenant\",\"ownerId\":null,\"deviceType\":\"check-sensor\",\"serialNumber\":null,\"manufacturer\":null,\"model\":null,\"firmwareVersion\":{\"string\":\"1.0.0\"},\"status\":\"ACTIVE\",\"registeredAtMs\":null,\"lastSeenAtMs\":{\"long\":${TIMESTAMP_MS}},\"settings\":{\"mode\":\"check\"},\"sensors\":[],\"attributes\":{}}}"
+send_event "{\"eventId\":\"${EVENT_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":${TIMESTAMP_MS},\"eventType\":\"CHECK_LOCAL\",\"device\":${SNAPSHOT},\"sourceSystem\":{\"string\":\"check-local\"},\"payload\":null}" \
+  || fail "failed to send message (are Kafka and Schema Registry available?)"
 ok "message sent"
 
 #------------------------------------------------------------------------------
 next "Event stored in iot_platform.device_events"
-wait_for 1 clickhouse "SELECT count() FROM iot_platform.device_events FINAL WHERE event_id = {eid:String}" \
-  || fail "no row in device_events within ${TIMEOUT}s, check service logs"
-ok "device_events: 1 row"
+wait_for 1 clickhouse "SELECT count() FROM iot_platform.device_events FINAL WHERE event_id = {eid:String} AND device_snapshot != ''" \
+  || fail "no row with device_snapshot in device_events within ${TIMEOUT}s (column missing? see clickhouse-init), check service logs"
+ok "device_events: 1 row with device snapshot"
 
 # ------------------------------------------------------------------------------
 next "Outbox record created in iot_platform.device_outbox"
@@ -108,7 +117,7 @@ wait_for PUBLISHED clickhouse "SELECT toString(outcome) FROM iot_platform.device
 ok "device_publication_audit: PUBLISHED"
 
 # ------------------------------------------------------------------------------
-next "DeviceInfo published to topic devices"
+next "DeviceInfo CREATED with device snapshot published to topic devices"
 found="$("${COMPOSE[@]}" exec -T schema-registry \
   kafka-avro-console-consumer \
     --bootstrap-server kafka:9092 \
@@ -119,9 +128,17 @@ found="$("${COMPOSE[@]}" exec -T schema-registry \
     --property print.key=true \
     --property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer \
     --group "check-local-${EVENT_ID}" \
-  2>/dev/null | grep -c "\"deviceId\":\"${DEVICE_ID}\"" || true)"
-[[ "${found}" -ge 1 ]] || fail "DeviceInfo for ${DEVICE_ID} not found in topic devices"
-ok "devices: DeviceInfo for ${DEVICE_ID}"
+  2>/dev/null | grep "\"deviceId\":\"${DEVICE_ID}\"" | grep "\"eventType\":\"CREATED\"" | grep -c "\"tenantId\":\"check-tenant\"" || true)"
+[[ "${found}" -ge 1 ]] || fail "DeviceInfo CREATED with snapshot for ${DEVICE_ID} not found in topic devices"
+ok "devices: DeviceInfo CREATED for ${DEVICE_ID}"
+
+# ------------------------------------------------------------------------------
+next "Telemetry without snapshot for the known device is not published (SKIPPED)"
+send_event "{\"eventId\":\"${TELEMETRY_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":$(( TIMESTAMP_MS + 1 )),\"eventType\":\"CHECK_LOCAL\",\"device\":null,\"sourceSystem\":null,\"payload\":null}" \
+  || fail "failed to send telemetry"
+wait_for SKIPPED clickhouse "SELECT toString(outcome) FROM iot_platform.device_publication_audit WHERE event_id = {tid:String} ORDER BY occurred_at DESC LIMIT 1" \
+  || fail "telemetry of a known device was not SKIPPED"
+ok "device_publication_audit: SKIPPED"
 
 # ------------------------------------------------------------------------------
 next "/actuator/health returns UP"

@@ -5,14 +5,15 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
+import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
 import com.github.gluhov.iotplatform.eventscollector.adapter.out.kafka.DeviceInfoPublishException;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceInfoPublisher;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.OutboxRepository;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.PublishedDeviceStore;
-import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceSnapshotJson;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
 import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
@@ -54,11 +55,11 @@ class ItEventsCollectorTest extends AbstractItTest {
     private static final Duration WAIT = Duration.ofSeconds(30);
     private static final String EVENTS_TOPIC = "events";
     private static final String DEVICES_TOPIC = "devices";
-    
+
     private static KafkaProducer<String, DeviceEvent> producer;
     private static KafkaConsumer<String, DeviceInfo> deviceInfoKafkaConsumer;
     private static final List<ConsumerRecord<String, DeviceInfo>> devicesSeen = new ArrayList<>();
-    
+
     @Autowired
     private JdbcClient jdbcClient;
     @Autowired
@@ -71,7 +72,7 @@ class ItEventsCollectorTest extends AbstractItTest {
     private OutboxRepository outboxRepository;
     @MockitoSpyBean
     private PublishedDeviceStore publishedDeviceStore;
-    
+
     @BeforeAll
     static void createClients() {
         producer = new KafkaProducer<>(Map.of(
@@ -89,22 +90,22 @@ class ItEventsCollectorTest extends AbstractItTest {
                 "specific.avro.reader", true));
         deviceInfoKafkaConsumer.subscribe(List.of(DEVICES_TOPIC));
     }
-    
+
     @AfterAll
     static void closeClients() {
         producer.close();
         deviceInfoKafkaConsumer.close();
     }
-    
+
     @Test
     @DisplayName("Send event then row in device_events and initial outbox record")
     void givenEvent_whenIngest_thenStoredWithInitialOutbox() {
         String eventId = unique("evt");
         String deviceId = unique("dev");
         long timestampMs = Instant.now().toEpochMilli();
-        
+
         send(eventId, deviceId, timestampMs);
-        
+
         await().atMost(WAIT).untilAsserted(() -> assertThat(eventRows(eventId)).isEqualTo(1));
         assertThat(outboxRow(eventId))
                 .containsEntry("device_id", deviceId)
@@ -136,44 +137,76 @@ class ItEventsCollectorTest extends AbstractItTest {
                 .isEqualTo(DeviceSnapshotJson.writerSchema());
     }
 
-
-
     @Test
     @DisplayName("Publish outbox then DeviceInfo in devices, SENT version and lease released")
     void givenNewDevice_whenPublish_thenDeviceInfoSentAndSecondEventSkipped() {
         String eventId = unique("evt");
         String deviceId = unique("dev");
         long timestampMs = Instant.now().toEpochMilli();
-        
+
         send(eventId, deviceId, timestampMs);
-        
+
         awaitOutbox(eventId);
 
         BatchResult result = publishOutbox.publishPendingBatch();
-        
+
         assertThat(result.leaseAcquired()).isTrue();
         assertThat(outboxRow(eventId))
                 .containsEntry("status", "SENT")
                 .containsEntry("state_version", 2L);
         assertThat(redisTemplate.opsForSet().isMember(PUBLISHED_KEY, deviceId)).isTrue();
         await().atMost(WAIT).untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).isNotEmpty());
+        DeviceInfo created = publishedDeviceInfo(deviceId).getFirst();
+        assertThat(created.getEventType()).isEqualTo(DeviceUpsertEventType.CREATED);
+        assertThat(created.getEventId()).as("idempotency key = outbox event id").isEqualTo(eventId);
+        assertThat(created.getEventTimeMs()).isEqualTo(timestampMs);
         assertThat(redisTemplate.hasKey(LEASE_KEY)).as("lease released").isFalse();
         assertThat(auditTrail(eventId)).containsExactly("PUBLISHED/1/it");
         // Сквозной трейс: DeviceInfo отправлен в том же трейсе, в котором событие было принято
         String ingestionTraceId = String.valueOf(outboxRow(eventId).get("trace_id"));
         assertThat(ingestionTraceId).hasSize(32);
         assertThat(publishedTraceIds(deviceId)).containsExactly(ingestionTraceId);
-        
+
         // Второе событие того же устройства: публикации нет, только версия SENT
         String secondEventId = unique("evt");
         send(secondEventId, deviceId, Instant.now().toEpochMilli());
         awaitOutbox(secondEventId);
         publishOutbox.publishPendingBatch();
-        
+
         assertThat(outboxRow(secondEventId)).containsEntry("status", "SENT");
         assertThat(auditTrail(secondEventId)).containsExactly("SKIPPED/1/it");
         await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).hasSize(1));
+    }
+
+    @Test
+    @DisplayName("Known device sends snapshot then UPDATED with the model, DELETED status then DELETED")
+    void givenKnownDeviceSnapshots_whenPublish_thenUpdatedAndDeleted() {
+        String deviceId = unique("dev");
+        String created = unique("evt");
+        String updated = unique("evt");
+        String deleted = unique("evt");
+        long t0 = Instant.now().toEpochMilli();
+
+        // По одной пачке на событие: порядок в пачке задаёт created_at, у соседних событий он может совпасть
+        send(eventWithSnapshot(created, deviceId, t0, DeviceStatus.ACTIVE));
+        awaitOutbox(created);
+        publishOutbox.publishPendingBatch();
+        send(eventWithSnapshot(updated, deviceId, t0 + 1, DeviceStatus.MAINTENANCE));
+        awaitOutbox(updated);
+        publishOutbox.publishPendingBatch();
+        send(eventWithSnapshot(deleted, deviceId, t0 + 2, DeviceStatus.DELETED));
+        awaitOutbox(deleted);
+        publishOutbox.publishPendingBatch();
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).hasSize(3));
+        List<DeviceInfo> published = publishedDeviceInfo(deviceId);
+        assertThat(published).extracting(DeviceInfo::getEventType).containsExactly(
+                DeviceUpsertEventType.CREATED, DeviceUpsertEventType.UPDATED, DeviceUpsertEventType.DELETED);
+        assertThat(published).extracting(DeviceInfo::getEventId).containsExactly(created, updated, deleted);
+        assertThat(published.get(1).getDevice().getStatus()).isEqualTo(DeviceStatus.MAINTENANCE);
+        assertThat(published.get(1).getDevice().getSensors()).hasSize(1);
+        assertThat(auditTrail(updated)).containsExactly("PUBLISHED/1/it");
     }
 
     @Test
@@ -208,7 +241,7 @@ class ItEventsCollectorTest extends AbstractItTest {
         String retriedDevice = unique("dev");
         doThrow(new DeviceInfoPublishException("broker unavailable", null))
                 .doCallRealMethod()
-                .when(deviceInfoPublisher).publish(eq(retriedDevice), anyLong());
+                .when(deviceInfoPublisher).publish(forDevice(retriedDevice));
 
         send(retriedEvent, retriedDevice, Instant.now().toEpochMilli());
         awaitOutbox(retriedEvent);
@@ -235,7 +268,7 @@ class ItEventsCollectorTest extends AbstractItTest {
         String brokenEvent = unique("evt");
         String brokenDevice = unique("dev");
         doThrow(new DeviceInfoPublishException("still broken", null))
-                .when(deviceInfoPublisher).publish(eq(brokenDevice), anyLong());
+                .when(deviceInfoPublisher).publish(forDevice(brokenDevice));
         send(brokenEvent, brokenDevice, Instant.now().toEpochMilli());
         awaitOutbox(brokenEvent);
 
@@ -266,21 +299,20 @@ class ItEventsCollectorTest extends AbstractItTest {
         }
     }
 
-
     private void awaitOutbox(String eventId) {
         await().atMost(WAIT).untilAsserted(() -> assertThat(outboxRowCount(eventId)).isEqualTo(1));
     }
-    
+
     private long eventRows(String eventId) {
         return jdbcClient.sql("SELECT count() FROM device_events FINAL WHERE event_id = :id")
                 .param("id", eventId).query(Long.class).single();
     }
-    
+
     private long outboxRowCount(String eventId) {
         return jdbcClient.sql("SELECT count() FROM device_outbox FINAL WHERE event_id = :id")
                 .param("id", eventId).query(Long.class).single();
     }
-    
+
     private Map<String, Object> outboxRow(String eventId) {
         return jdbcClient.sql("""
                         SELECT device_id, source_timestamp_ms, toString(status) AS status,
@@ -320,7 +352,7 @@ class ItEventsCollectorTest extends AbstractItTest {
 
             assertThat(result.leaseLost()).isTrue();
             assertThat(result.published()).isZero();
-            verify(deviceInfoPublisher, never()).publish(eq(deviceId), anyLong());
+            verify(deviceInfoPublisher, never()).publish(forDevice(deviceId));
             assertThat(outboxRow(eventId)).as("no new outbox version")
                     .containsEntry("status", "NEW")
                     .containsEntry("state_version", 1L);
@@ -373,7 +405,11 @@ class ItEventsCollectorTest extends AbstractItTest {
                 .query(String.class)
                 .list();
     }
-    
+
+    private static DeviceInfo forDevice(String deviceId) {
+        return argThat(info -> info != null && deviceId.equals(info.getDeviceId()));
+    }
+
     private static List<DeviceInfo> publishedDeviceInfo(String deviceId) {
         deviceInfoKafkaConsumer.poll(Duration.ofMillis(500)).forEach(devicesSeen::add);
         return devicesSeen.stream()

@@ -2,8 +2,14 @@ package com.github.gluhov.iotplatform.eventscollector.service.domain.service;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
+import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
+import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.eventscollector.domain.exception.PublisherUnavailableException;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.*;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceSnapshotJson;
 import com.github.gluhov.iotplatform.eventscollector.domain.service.OutboxPublishingService;
 import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
 import io.micrometer.observation.ObservationRegistry;
@@ -23,6 +29,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -80,7 +87,8 @@ class OutboxPublishingServiceTest {
         BatchResult result = service.publishPendingBatch();
 
         InOrder order = inOrder(publisher, publishedDeviceStore, outboxRepository, lease);
-        order.verify(publisher).publish(DEVICE_ID, NOW.toEpochMilli());
+        ArgumentCaptor<DeviceInfo> info = ArgumentCaptor.forClass(DeviceInfo.class);
+        order.verify(publisher).publish(info.capture());
         order.verify(publishedDeviceStore).markPublished(DEVICE_ID);
         OutboxRecord sent = captureInsert(order);
         order.verify(lease).release(TOKEN);
@@ -91,6 +99,78 @@ class OutboxPublishingServiceTest {
         assertThat(sent.createdAt()).isEqualTo(pending.createdAt());
         assertThat(result.published()).isEqualTo(1);
         verify(metrics).publishSucceeded();
+        // Телеметрия без снимка у нового устройства: CREATED без модели устройства
+        assertThat(info.getValue().getDeviceId()).isEqualTo(DEVICE_ID);
+        assertThat(info.getValue().getEventType()).isEqualTo(DeviceUpsertEventType.CREATED);
+        assertThat(info.getValue().getEmittedAtMs()).isEqualTo(NOW.toEpochMilli());
+        assertThat(info.getValue().getEventId()).isEqualTo(EVENT_ID);
+        assertThat(info.getValue().getEventTimeMs()).isEqualTo(1_000L);
+        assertThat(info.getValue().getDevice()).isNull();
+    }
+
+    @Test
+    @DisplayName("New device with snapshot then CREATED with the full device model")
+    void givenNewDeviceWithSnapshot_whenPublishBatch_thenCreatedWithSnapshot() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+
+        service.publishPendingBatch();
+
+        DeviceInfo info = capturePublished();
+        assertThat(info.getEventType()).isEqualTo(DeviceUpsertEventType.CREATED);
+        assertThat(info.getDevice()).isEqualTo(snapshot);
+    }
+
+    @Test
+    @DisplayName("Known device with snapshot then UPDATED is published, not skipped")
+    void givenKnownDeviceWithSnapshot_whenPublishBatch_thenUpdated() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.MAINTENANCE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+
+        BatchResult result = service.publishPendingBatch();
+
+        DeviceInfo info = capturePublished();
+        assertThat(info.getEventType()).isEqualTo(DeviceUpsertEventType.UPDATED);
+        assertThat(info.getDevice().getStatus()).isEqualTo(DeviceStatus.MAINTENANCE);
+        assertThat(result.published()).isEqualTo(1);
+        assertThat(result.skipped()).isZero();
+        assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
+    }
+
+    @Test
+    @DisplayName("Snapshot with status DELETED then DELETED for known and for new device")
+    void givenDeletedSnapshot_whenPublishBatch_thenDeleted() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.DELETED)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true, false);
+
+        service.publishPendingBatch();
+        service.publishPendingBatch();
+
+        ArgumentCaptor<DeviceInfo> info = ArgumentCaptor.forClass(DeviceInfo.class);
+        verify(publisher, times(2)).publish(info.capture());
+        assertThat(info.getAllValues()).extracting(DeviceInfo::getEventType)
+                .containsExactly(DeviceUpsertEventType.DELETED, DeviceUpsertEventType.DELETED);
+    }
+
+    @Test
+    @DisplayName("Kafka send fails then FAILED log carries the change type in MDC")
+    void givenKafkaFailure_whenPublishBatch_thenFailedLogHasEventType() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(forDevice(DEVICE_ID));
+
+        ILoggingEvent warn;
+        try (LogCapture logs = LogCapture.of(OutboxPublishingService.class)) {
+            service.publishPendingBatch();
+            warn = logs.single(Level.WARN, "DeviceInfo publish failed: IllegalStateException: broker unavailable");
+        }
+
+        assertThat(warn.getMDCPropertyMap())
+                .containsEntry("eventType", "UPDATED")
+                .containsEntry("status", "FAILED")
+                .containsEntry("eventId", EVENT_ID);
     }
 
     @Test
@@ -100,7 +180,7 @@ class OutboxPublishingServiceTest {
 
         BatchResult result = service.publishPendingBatch();
 
-        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(publisher, never()).publish(any());
         verify(publishedDeviceStore, never()).markPublished(anyString());
         OutboxRecord sent = captureInsert(inOrder(outboxRepository));
         assertThat(sent.status()).isEqualTo(OutboxStatus.SENT);
@@ -114,7 +194,7 @@ class OutboxPublishingServiceTest {
     @DisplayName("Kafka send fails then append FAILED version with incremented attempts")
     void givenKafkaFailure_whenPublishBatch_thenFailedVersionWithIncrementedAttempts() {
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
-        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(eq(DEVICE_ID), anyLong());
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(forDevice(DEVICE_ID));
 
         BatchResult result = service.publishPendingBatch();
 
@@ -153,7 +233,7 @@ class OutboxPublishingServiceTest {
 
         assertThat(result.leaseAcquired()).isFalse();
         verify(outboxRepository, never()).findPending(anyInt(), anyInt());
-        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(publisher, never()).publish(any());
         verify(lease, never()).release(anyString());
     }
 
@@ -179,7 +259,7 @@ class OutboxPublishingServiceTest {
 
         assertThat(result.errors()).isEqualTo(1);
         assertThat(result.published()).isEqualTo(1);
-        verify(publisher).publish(eq("dev-2"), anyLong());
+        verify(publisher).publish(forDevice("dev-2"));
     }
 
     @Test
@@ -260,7 +340,7 @@ class OutboxPublishingServiceTest {
         order.verify(outboxRepository).findPending(MAX_ATTEMPTS, BATCH_SIZE);
         for (String deviceId : List.of(DEVICE_ID, "dev-2", "dev-3")) {
             order.verify(lease).extend(TOKEN, TTL);
-            order.verify(publisher).publish(eq(deviceId), anyLong());
+            order.verify(publisher).publish(forDevice(deviceId));
             order.verify(lease).extend(TOKEN, TTL);
             order.verify(outboxRepository).insert(argThat(r -> deviceId.equals(r.deviceId())));
         }
@@ -282,9 +362,9 @@ class OutboxPublishingServiceTest {
 
         BatchResult result = service.publishPendingBatch();
 
-        verify(publisher).publish(eq(DEVICE_ID), anyLong());
+        verify(publisher).publish(forDevice(DEVICE_ID));
         verify(outboxRepository).insert(argThat(r -> EVENT_ID.equals(r.eventId())));
-        verify(publisher, never()).publish(eq("dev-2"), anyLong());
+        verify(publisher, never()).publish(forDevice("dev-2"));
         verify(outboxRepository, never()).insert(argThat(r -> "evt-2".equals(r.eventId())));
         verify(lease).release(TOKEN);
         assertThat(result.leaseLost()).isTrue();
@@ -300,7 +380,7 @@ class OutboxPublishingServiceTest {
         BatchResult result = service.publishPendingBatch();
 
         verify(publishedDeviceStore, never()).isPublished(anyString());
-        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(publisher, never()).publish(any());
         verify(outboxRepository, never()).insert(any());
         verify(publicationAuditRepository, never()).insert(any());
         verify(lease).release(TOKEN);
@@ -331,7 +411,7 @@ class OutboxPublishingServiceTest {
     @DisplayName("Lease lost after Kafka failure then no FAILED version written")
     void givenLeaseLostAfterKafkaFailure_whenPublishBatch_thenNoFailedVersion() {
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
-        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(eq(DEVICE_ID), anyLong());
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(forDevice(DEVICE_ID));
         when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
 
         BatchResult result = service.publishPendingBatch();
@@ -349,7 +429,7 @@ class OutboxPublishingServiceTest {
 
         BatchResult result = service.publishPendingBatch();
 
-        verify(publisher, never()).publish(anyString(), anyLong());
+        verify(publisher, never()).publish(any());
         verify(outboxRepository, never()).insert(any());
         verify(lease).release(TOKEN);
         assertThat(result.leaseLost()).isTrue();
@@ -375,7 +455,7 @@ class OutboxPublishingServiceTest {
         doAnswer(call -> {
             traceAtSend.set(activeTrace.get());
             return null;
-        }).when(publisher).publish(eq(DEVICE_ID), anyLong());
+        }).when(publisher).publish(forDevice(DEVICE_ID));
 
         service.publishPendingBatch();
 
@@ -410,7 +490,7 @@ class OutboxPublishingServiceTest {
     @DisplayName("Kafka send fails then audit FAILED with error text")
     void givenKafkaFailure_whenPublishBatch_thenAuditFailedWithError() {
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
-        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(eq(DEVICE_ID), anyLong());
+        doThrow(new IllegalStateException("broker unavailable")).when(publisher).publish(forDevice(DEVICE_ID));
 
         service.publishPendingBatch();
 
@@ -433,6 +513,98 @@ class OutboxPublishingServiceTest {
         verify(publishedDeviceStore).markPublished(DEVICE_ID);
         assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
         verify(metrics).publishSucceeded();
+    }
+
+    @Test
+    @DisplayName("Kafka unavailable then DEFERRED: no FAILED version, attempts not spent, no audit, batch stopped")
+    void givenPublisherUnavailable_whenPublishBatch_thenDeferredWithoutAttempt() {
+        OutboxRecord second = OutboxRecord.initial("evt-2", "dev-2", 2_000L, NOW, TraceRef.NONE);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, second));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        doThrow(new PublisherUnavailableException("No Kafka acknowledgement within PT5S", null))
+                .when(publisher).publish(forDevice(DEVICE_ID));
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(outboxRepository, never()).insert(any());
+        verify(publicationAuditRepository, never()).insert(any());
+        verify(publisher, never()).publish(forDevice("dev-2"));
+        assertThat(result.deferred()).isEqualTo(2);
+        assertThat(result.failed()).isZero();
+    }
+
+    @Test
+    @DisplayName("Record of a device failed then later records of the same device wait for the next iteration")
+    void givenFailedRecord_whenSameDeviceLaterInBatch_thenDeferred() {
+        OutboxRecord later = OutboxRecord.initial("evt-2", DEVICE_ID, 2_000L, NOW, TraceRef.NONE);
+        OutboxRecord other = OutboxRecord.initial("evt-3", "dev-3", 3_000L, NOW, TraceRef.NONE);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending, later, other));
+        when(publishedDeviceStore.isPublished(anyString())).thenReturn(false);
+        doThrow(new IllegalStateException("record too large")).when(publisher).publish(forDevice(DEVICE_ID));
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, times(1)).publish(forDevice(DEVICE_ID));
+        verify(publisher).publish(forDevice("dev-3"));
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.deferred()).isEqualTo(1);
+        assertThat(result.published()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Snapshot older than the published one then SKIPPED: the topic keeps the latest device state")
+    void givenOlderSnapshot_whenPublishBatch_thenSkipped() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(5_000L));
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, never()).publish(any());
+        assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
+        assertThat(result.skipped()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Snapshot published then its event time remembered for the device")
+    void givenSnapshotPublished_whenPublishBatch_thenSnapshotTimeStored() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(500L));
+
+        service.publishPendingBatch();
+
+        verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
+    }
+
+    @Test
+    @DisplayName("Stored snapshot unreadable then FAILED with attempts + 1, not an ERROR every iteration")
+    void givenBrokenSnapshot_whenPublishBatch_thenFailed() {
+        givenPending("{\"deviceId\":");
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, never()).publish(any());
+        OutboxRecord failed = captureInsert(inOrder(outboxRepository));
+        assertThat(failed.status()).isEqualTo(OutboxStatus.FAILED);
+        assertThat(failed.attempts()).isEqualTo(1);
+        assertThat(result.failed()).isEqualTo(1);
+    }
+
+    private void givenPending(String snapshotJson) {
+        pending = OutboxRecord.initial(EVENT_ID, DEVICE_ID, 1_000L, NOW.minusSeconds(5), TraceRef.NONE, snapshotJson);
+        when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending));
+    }
+
+    private DeviceInfo capturePublished() {
+        ArgumentCaptor<DeviceInfo> captor = ArgumentCaptor.forClass(DeviceInfo.class);
+        verify(publisher).publish(captor.capture());
+        return captor.getValue();
+    }
+
+    private static DeviceInfo forDevice(String deviceId) {
+        return argThat(info -> info != null && deviceId.equals(info.getDeviceId()));
     }
 
     private PublicationAuditRecord captureAudit() {

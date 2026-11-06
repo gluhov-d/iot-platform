@@ -4,5 +4,7 @@ public enum PublishOutcome {
     PUBLISHED,
     SKIPPED,
     FAILED,
-    ERROR
+    ERROR,
+    /** Kafka или Schema Registry временно недоступны: попытка не засчитана, пачка остановлена. Не пишется в аудит. */
+    DEFERRED
 }

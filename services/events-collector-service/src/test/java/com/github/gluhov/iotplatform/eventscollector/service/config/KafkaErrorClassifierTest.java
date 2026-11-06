@@ -43,6 +43,16 @@ class KafkaErrorClassifierTest {
     }
 
     @Test
+    @DisplayName("Avro body truncated (decoder EOFException) then poison pill, not an endless retry")
+    void givenTruncatedAvroBody_whenClassify_thenPoison() {
+        Exception error = deserialization(new SerializationException("Error deserializing Avro message for id 1",
+                new java.io.EOFException()));
+
+        assertThat(KafkaErrorClassifier.isTransient(error)).isFalse();
+        assertThat(KafkaErrorClassifier.isPoisonPill(error)).isTrue();
+    }
+
+    @Test
     @DisplayName("Storage error in listener then not a poison pill, retried by default")
     void givenStorageError_whenClassify_thenNotPoison() {
         Exception error = new ListenerExecutionFailedException("listener failed",
