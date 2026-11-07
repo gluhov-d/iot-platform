@@ -22,13 +22,13 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
-INIT_SERVICES := kafka-init minio-init nexus-init clickhouse-init
+INIT_SERVICES := kafka-init minio-init nexus-init clickhouse-init db-migrator
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        contracts-check contracts-publish contracts-bootstrap
+        contracts-check contracts-publish contracts-bootstrap proxy-sql shard-of
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -175,6 +175,14 @@ clickhouse-cli: ## Открыть clickhouse-client
 
 topics: ## Описание топиков Kafka (разделы, cleanup, policy)
 	@$(COMPOSE) exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:$(call compose_env,KAFKA_INTERNAL_PORT) --describe --exclude-internal
+
+## ------------------------------------------------------------ Реестр устройств
+proxy-sql: ## psql к логической базе devices через ShardingSphere-Proxy (SQL="..." - выполнить и выйти)
+	@$(INFRA_DIR)/config/shardingsphere/proxy-sql.sh $(if $(SQL),-c "$(SQL)")
+
+shard-of: ## На какой шард попадает устройство: make shard-of ID=<deviceId> (PREVIEW в Proxy)
+	@[ -n "$(ID)" ] || { echo "Укажите устройство: make shard-of ID=<deviceId>"; exit 1; }
+	@$(INFRA_DIR)/config/shardingsphere/proxy-sql.sh -c "PREVIEW SELECT * FROM devices WHERE device_id = '$(ID)'"
 
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml

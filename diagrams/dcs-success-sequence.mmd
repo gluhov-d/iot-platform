@@ -12,7 +12,7 @@ sequenceDiagram
     K->>L: poll (max.poll.records=1, enable.auto.commit=false), заголовок traceparent
     L->>SR: схема по id (KafkaAvroDeserializer, кешируется)
     SR-->>L: DeviceInfo (SpecificRecord)
-    L->>L: MDC: topic, partition, offset, deviceId · спан продолжает трейс модуля 2
+    L->>L: MDC: topic, partition, offset, deviceId · спан продолжает трейс приёма событий
     L->>S: process(record)
     S->>V: validate(key, DeviceInfo)
     V-->>S: ok

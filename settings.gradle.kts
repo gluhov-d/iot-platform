@@ -7,3 +7,5 @@ rootProject.name = "iot-platform"
 include("services:events-collector-service")
 // Avro-контракты: схемы contracts/avro -> jar, публикуется в Nexus
 include("contracts")
+include("services:db-migrator")
+findProject(":services:db-migrator")?.name = "db-migrator"

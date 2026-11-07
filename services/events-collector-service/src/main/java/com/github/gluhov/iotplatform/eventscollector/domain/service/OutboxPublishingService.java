@@ -170,7 +170,7 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         }
     }
 
-    // Правило публикации (модуль 3):
+    // Правило публикации (реестр устройств):
     //   устройства нет в devices:published          -> CREATED (со снимком, если он есть);
     //   устройство есть, у события есть снимок      -> UPDATED;
     //   снимок со статусом DELETED                   -> DELETED (в том числе для нового устройства);

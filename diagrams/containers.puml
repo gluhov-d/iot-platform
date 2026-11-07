@@ -27,8 +27,8 @@ System_Boundary(platform, "IoT Platform") {
     Container(event_service, "Event Service", "Spring Boot", "Чтение телеметрии и событий для API")
 
     Container(device_gateway, "Device Gateway", "Spring Boot, MQTT/HTTP adapter", "Протокольный шлюз устройств: принимает MQTT/HTTP, проверяет устройство, публикует в Kafka; доставляет команды устройству")
-    Container(events_collector, "events-collector-service", "Spring Boot 4, Kafka consumer", "Модуль 2: events -> ClickHouse (device_events со снимком устройства + outbox), публикация DeviceInfo в devices")
-    Container(device_collector, "device-collector-service", "Spring Boot 4, Kafka consumer", "Модуль 3: реестр устройств. devices -> PostgreSQL через ShardingSphere-Proxy, идемпотентно; чтение по deviceId")
+    Container(events_collector, "events-collector-service", "Spring Boot 4, Kafka consumer", "Приём событий: events -> ClickHouse (device_events со снимком устройства + outbox), публикация DeviceInfo в devices")
+    Container(device_collector, "device-collector-service", "Spring Boot 4, Kafka consumer", "Реестр устройств: devices -> PostgreSQL через ShardingSphere-Proxy, идемпотентно; чтение по deviceId")
     Container(failed_processor, "Failed Events Processor", "Spring Boot, Kafka consumer", "Разбор DLT: сохраняет сбойные сообщения, повторяет обработку")
   }
 
@@ -37,12 +37,12 @@ System_Boundary(platform, "IoT Platform") {
     ContainerQueue(topic_device, "devices", "Kafka topic, compact", "Производные события устройств (Avro DeviceInfo: CREATED / UPDATED / DELETED, снимок устройства), ключ deviceId")
     ContainerQueue(topic_events_dlt, "events.DLT", "Kafka topic, delete", "Не Avro / невалидные события events")
     ContainerQueue(topic_devices_dlt, "devices-dlt", "Kafka topic, delete", "Невалидные DeviceInfo и сообщения, не записанные в PostgreSQL после повторов")
-    ContainerQueue(topic_dlt, "iot.dlt", "Kafka topic", "Отклонённые шлюзом сообщения устройств (следующие модули)")
+    ContainerQueue(topic_dlt, "iot.dlt", "Kafka topic", "Отклонённые шлюзом сообщения устройств (шлюз пока не реализован)")
   }
   Container(schema_registry, "Schema Registry", "Confluent", "Avro-схемы тем: events-value, devices-value (BACKWARD)")
   Container(nexus, "Nexus", "Sonatype Nexus 3, Maven", "Артефакт contracts-avro: версии из git-тегов contracts/vX.Y.Z, проверка совместимости при публикации")
 
-  Boundary(registry, "Реестр устройств (модуль 3)") {
+  Boundary(registry, "Реестр устройств") {
     Container(proxy, "ShardingSphere-Proxy", "Apache ShardingSphere 5.5.3, PostgreSQL protocol", "Логическая база devices: маршрутизация по |hashCode(device_id)| % 2, связанные таблицы")
     ContainerDb(shard0, "postgres-shard-0", "PostgreSQL 18, база shard_0", "devices, processed_device_events — часть устройств")
     ContainerDb(shard1, "postgres-shard-1", "PostgreSQL 18, база shard_1", "devices, processed_device_events — остальные устройства")

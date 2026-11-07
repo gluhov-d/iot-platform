@@ -1,5 +1,5 @@
 #!/bin/bash
-# Схема ClickHouse для events-collector-service (модуль 2): база и таблицы
+# Схема ClickHouse для events-collector-service (приём событий): база и таблицы
 # device_events и device_outbox. DDL — из задания, имя базы подставляется.
 # Выполняется entrypoint-ом образа на пустом томе clickhouse-data и одноразовым clickhouse-init
 # на каждом запуске стенда (IF NOT EXISTS - повторный запуск безопасен).

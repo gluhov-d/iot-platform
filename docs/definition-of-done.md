@@ -1,4 +1,4 @@
-# Definition of Done - модуль 2, events-collector-service
+# Definition of Done - приём событий, events-collector-service
 
 Отметка ставится, когда пункт подтвержден указанной проверкой.
 Пути - от корня репозитория. `dc` = `docker compose -f infrastructure/docker-compose.yaml`

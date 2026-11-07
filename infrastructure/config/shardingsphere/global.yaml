@@ -1,0 +1,16 @@
+# ShardingSphere-Proxy 5.5.3: пользователи Proxy и общие свойства.
+# Шаблон: ${ИМЯ} подставляет render-config.sh из окружения контейнера при старте (Proxy 5.5.3 сам переменные
+# окружения в YAML не раскрывает); значения в одинарных кавычках YAML - пароль может содержать любые символы.
+authority:
+  users:
+    # Учётная запись приложения: device-collector-service подключается к Proxy как к обычному PostgreSQL
+    - user: '${SHARDING_PROXY_USER}@%'
+      password: '${SHARDING_PROXY_PASSWORD}'
+  privilege:
+    type: ALL_PERMITTED
+
+props:
+  proxy-frontend-database-protocol-type: PostgreSQL
+  # В журнал Proxy пишется логический и фактический SQL с именем шарда («Actual SQL: shard_0 ::: ...»):
+  # так видно, куда ушёл запрос. На учебном стенде - включено; в журнал попадают значения параметров
+  sql-show: true

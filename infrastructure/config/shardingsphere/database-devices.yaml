@@ -1,0 +1,58 @@
+# ShardingSphere-Proxy 5.5.3: логическая база devices поверх двух шардов PostgreSQL 18.
+# Шаблон: ${ИМЯ} подставляет render-config.sh из окружения контейнера при старте.
+databaseName: devices
+
+dataSources:
+  # Имена источников = имена баз шардов: RETURNING current_database() в ответе сервиса и PREVIEW дают одно значение
+  shard_0:
+    # stringtype=unspecified: Proxy при перезаписи INSERT ... VALUES теряет приведение у параметров (?::jsonb -> ?),
+    #   поэтому строки уходят на шард без типа и PostgreSQL выводит его по колонке (jsonb, text);
+    # statement_timeout / lock_timeout: отмена запроса клиентом (setQueryTimeout) через Proxy не работает,
+    #   поэтому зависший запрос или ожидание блокировки прерывает сам шард
+    url: jdbc:postgresql://postgres-shard-0:5432/shard_0?stringtype=unspecified&options=-c%20statement_timeout%3D5000%20-c%20lock_timeout%3D3000
+    username: '${SHARD_DB_USER}'
+    password: '${SHARD_DB_PASSWORD}'
+    # Шард недоступен - через 3 с ошибка «Connection is not available» (SQLState 08*), а не долгое ожидание
+    connectionTimeoutMilliseconds: 3000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 10
+    minPoolSize: 1
+  shard_1:
+    url: jdbc:postgresql://postgres-shard-1:5432/shard_1?stringtype=unspecified&options=-c%20statement_timeout%3D5000%20-c%20lock_timeout%3D3000
+    username: '${SHARD_DB_USER}'
+    password: '${SHARD_DB_PASSWORD}'
+    connectionTimeoutMilliseconds: 3000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 10
+    minPoolSize: 1
+
+rules:
+  - !SHARDING
+    tables:
+      # Таблицы одинаковы на шардах (db-migrator), шард выбирается по device_id; таблица на шарде одна
+      devices:
+        actualDataNodes: shard_0.devices,shard_1.devices
+        databaseStrategy:
+          standard:
+            shardingColumn: device_id
+            shardingAlgorithmName: device_id_hash
+      processed_device_events:
+        actualDataNodes: shard_0.processed_device_events,shard_1.processed_device_events
+        databaseStrategy:
+          standard:
+            shardingColumn: device_id
+            shardingAlgorithmName: device_id_hash
+    # Связанные таблицы: журнал устройства всегда на шарде устройства, запросы к обеим - на один узел
+    bindingTables:
+      - devices,processed_device_events
+    shardingAlgorithms:
+      # Хеш по device_id: |hashCode| % 2 - тот же расчёт, что у встроенного HASH_MOD.
+      # HASH_MOD в 5.5.3 разрешён только для autoTables (они дают таблицы devices_0/devices_1 - разную схему шардов),
+      # поэтому INLINE. Выражение без классов JDK (Math.abs и т. п.): в образе 5.5.3 Groovy 4.0.22 на JDK 25
+      # падает «Unsupported class file major version 69», а abs() из GDK работает
+      device_id_hash:
+        type: INLINE
+        props:
+          algorithm-expression: shard_${(device_id.hashCode() % 2).abs()}

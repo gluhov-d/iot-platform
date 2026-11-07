@@ -282,6 +282,111 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
+  # Шарды реестра устройств: PostgreSQL 18, одинаковая схема (db-migrator), данные разные.
+  # Порты на хост не публикуются: приложение ходит только через ShardingSphere-Proxy,
+  # db-migrator и скрипты бэкапа - по сети compose и через docker compose exec
+  # ---------------------------------------------------------------------------
+  postgres-shard-0:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-0
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: shard_0
+      POSTGRES_USER: ${SHARD_DB_USER}
+      POSTGRES_PASSWORD: ${SHARD_DB_PASSWORD}
+    volumes:
+      # PostgreSQL 18: данные в /var/lib/postgresql/18/docker, том монтируется на /var/lib/postgresql
+      - postgres-shard-0-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_0"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [iot-net]
+
+  postgres-shard-1:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-1
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: shard_1
+      POSTGRES_USER: ${SHARD_DB_USER}
+      POSTGRES_PASSWORD: ${SHARD_DB_PASSWORD}
+    volumes:
+      - postgres-shard-1-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Миграции Flyway на каждый шард — одноразовая задача (services/db-migrator).
+  # Схема шардов меняется только здесь: сервис миграций не выполняет и адресов шардов не знает
+  # ---------------------------------------------------------------------------
+  db-migrator:
+    build:
+      context: ..
+      dockerfile: services/db-migrator/Dockerfile
+    image: iot-platform/db-migrator:${DB_MIGRATOR_IMAGE_TAG}
+    container_name: iot-db-migrator
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+    environment:
+      DB_SHARDS: shard_0,shard_1
+      DB_SHARD_0_URL: jdbc:postgresql://postgres-shard-0:5432/shard_0
+      DB_SHARD_1_URL: jdbc:postgresql://postgres-shard-1:5432/shard_1
+      DB_USER: ${SHARD_DB_USER}
+      DB_PASSWORD: ${SHARD_DB_PASSWORD}
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # ShardingSphere-Proxy — логическая база devices (PostgreSQL-протокол) поверх шардов.
+  # Конфигурация - шаблоны infrastructure/config/shardingsphere, пароли подставляет render-config.sh.
+  # Стартует после миграций: метаданные таблиц Proxy загружает при запуске
+  # ---------------------------------------------------------------------------
+  shardingsphere-proxy:
+    image: apache/shardingsphere-proxy:${SHARDINGSPHERE_PROXY_VERSION}
+    container_name: iot-shardingsphere-proxy
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      db-migrator:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3307
+      # Без этого start.sh в контейнере не задаёт кучу, и JVM берёт до четверти памяти Docker
+      CGROUP_MEM_OPTS: "-Xms256m -Xmx512m"
+      SHARD_DB_USER: ${SHARD_DB_USER}
+      SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      SHARDING_PROXY_USER: ${SHARDING_PROXY_USER}
+      SHARDING_PROXY_PASSWORD: ${SHARDING_PROXY_PASSWORD}
+    entrypoint: ["/bin/bash", "/opt/init/render-config.sh"]
+    ports:
+      - "${SHARDING_PROXY_PORT}:3307"
+    volumes:
+      - ./config/shardingsphere:/opt/init/conf:ro
+      - ./config/shardingsphere/render-config.sh:/opt/init/render-config.sh:ro
+    healthcheck:
+      # Порт Proxy открывается после загрузки конфигурации и метаданных таблиц; curl/psql в образе нет
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3307"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
   # Kafka UI — темы, сообщения (Avro через Schema Registry) и consumer group
   # ---------------------------------------------------------------------------
   kafka-ui:
@@ -709,3 +814,5 @@ volumes:
   alloy-data:
   grafana-data:
   nexus-data:
+  postgres-shard-0-data:
+  postgres-shard-1-data:

@@ -1,7 +1,7 @@
 # IoT Platform — events-collector-service
 
 Учебная микросервисная платформа сбора телеметрии IoT-устройств.
-Модуль 2: сервис **events-collector-service** — приём событий из Kafka, хранение в ClickHouse
+Приём событий: сервис **events-collector-service** — приём событий из Kafka, хранение в ClickHouse
 и публикация производного потока устройств через outbox.
 
 ---
@@ -114,7 +114,7 @@ iot-platform/
 │   │   ├── nexus/init-nexus.sh        # пароль admin, EULA, пользователь публикации контрактов (контейнер nexus-init)
 │   │   ├── clickhouse/01-schema.sh    # база iot_platform, таблицы device_events и device_outbox
 │   │   ├── clickhouse/02-audit.sh     # таблица аудита публикаций device_publication_audit
-│   │   └── postgres/                  # профиль platform (окружение модуля 1)
+│   │   └── postgres/                  # профиль platform (окружение платформы)
 │   └── config/
 │       ├── prometheus/prometheus.yml
 │       ├── grafana/{provisioning,dashboards}
@@ -133,7 +133,7 @@ iot-platform/
 └── README.md
 ```
 
-**Расположение относительно задания.** Раскладка `infrastructure/` сохранена из модуля 1, поэтому часть путей
+**Расположение относительно задания.** Раскладка `infrastructure/` сохранена из окружения платформы, поэтому часть путей
 отличается от разделов 5 и 22 задания:
 
 | В задании | В репозитории |
@@ -261,7 +261,7 @@ make contracts-bootstrap   # выпущенные версии из git-тего
 от которых зависят сервисы. Уже опубликованные версии пропускаются; тег, в котором `version` не совпадает
 с именем тега, — ошибка.
 
-Выпущена `1.0.0` (тег `contracts/v1.0.0`) — схемы модуля 2. После релиза `make contracts-check` на той же версии сообщает
+Выпущена `1.0.0` (тег `contracts/v1.0.0`) — схемы приёма событий. После релиза `make contracts-check` на той же версии сообщает
 «Версия … уже опубликована»: перед изменением схем поднимите `version` в `contracts/build.gradle.kts`.
 
 
@@ -399,13 +399,13 @@ make up                       # базовый стенд: Nexus -> контра
 make nexus-up                 # только Nexus (http://localhost:8091)
 make up-obs                   # с observability
 make up PROFILES=tools        # плюс Kafka UI (http://localhost:8090)
-make up PROFILES="observability platform"   # плюс окружение модуля 1 (Postgres, Keycloak, Camunda, MinIO)
+make up PROFILES="observability platform"   # плюс окружение платформы (Postgres, Keycloak, Camunda, MinIO)
 make health | make topics | make urls | make logs S=events-collector-service
 make down                     # остановить (тома сохраняются)
 make clean                    # остановить и удалить тома
 ```
 
-Профиль `platform` — окружение модуля 1, в модуле 2 не используется.
+Профиль `platform` — окружение платформы, приёмом событий не используется.
 
 Nexus — Maven-репозиторий, в который конвейер контрактов публикует собранные Avro-классы. Он входит в базовый
 стенд: `make up` сначала поднимает его (`make nexus-up`), затем публикует выпущенные версии контрактов из тегов
@@ -611,10 +611,18 @@ metadata (не метки, чтобы не раздувать индекс). С�
 
 ## 17. Диаграммы
 
-* `diagrams/component-events-collector.mmd` — компоненты сервиса, Kafka, ClickHouse, Redis, наблюдаемость;
-* `diagrams/sequence-ingest.mmd` — последовательность приёма события и ветки ошибок;
-* `diagrams/sequence-outbox-publish.mmd` — последовательность публикации outbox;
-* `diagrams/containers.puml` (+ `Containers.png`, `make diagrams`) — C4 платформы.
+* `diagrams/containers.puml` (+ `Containers.png`, `make diagrams`) — C4 платформы: приём событий и реестр устройств, Nexus,
+  ShardingSphere-Proxy, шарды PostgreSQL, db-migrator, темы DLT;
+* events-collector-service (приём событий):
+  * `diagrams/component-events-collector.mmd` — компоненты сервиса, Kafka, ClickHouse, Redis, наблюдаемость;
+  * `diagrams/sequence-ingest.mmd` — приём события (снимок устройства, DLT, повторы);
+  * `diagrams/sequence-outbox-publish.mmd` — публикация outbox: `DeviceInfo` с `CREATED` / `UPDATED` / `DELETED`;
+* device-collector-service (реестр устройств):
+  * `diagrams/component-device-collector.mmd` — компоненты сервиса, Proxy, шарды, db-migrator;
+  * `diagrams/dcs-success-sequence.mmd` — новое событие устройства;
+  * `diagrams/dcs-duplicate-sequence.mmd` — повторная доставка и устаревшее событие;
+  * `diagrams/dcs-error-sequence.mmd` — невалидное сообщение, недоступный шард, DLT;
+  * PNG последовательностей — `diagrams/dcs-*.png` (рендер mermaid-cli);
 
 GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин Mermaid; также можно вставить на https://mermaid.live.
 
@@ -645,4 +653,4 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | ClickHouse падает (`Exited (132)`, в `clickhouse-server.err.log` — `Illegal instruction`) на `SELECT ... FINAL` | Apple M4 + Docker Desktop: arm64-сборка ClickHouse 26.2 получает SIGILL, amd64-образ через Rosetta работает. В `.env` задано `CLICKHOUSE_PLATFORM=linux/amd64`; интеграционные тесты на macOS с Apple Silicon тоже берут amd64 (переопределяется переменной `CLICKHOUSE_PLATFORM`). На Linux/x86 amd64 — нативная платформа |
 | `No space left on device` в логах Kafka/ClickHouse | заполнен диск VM Docker (`docker system df`) — освободить место или увеличить Disk usage limit в Docker Desktop, затем пересоздать том Kafka (`make kafka-reset`): брокер помечает каталог логов как сбойный |
 
-Модуль 1 (C4, окружение Postgres/Keycloak/Camunda/MinIO) описан в истории Git и в профиле `platform`.
+Окружение платформы (C4, Postgres/Keycloak/Camunda/MinIO) описано в истории Git и в профиле `platform`.
