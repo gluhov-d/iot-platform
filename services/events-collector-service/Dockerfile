@@ -16,6 +16,7 @@ COPY gradle gradle
 COPY contracts/build.gradle.kts contracts/
 # Остальные модули сборки: для конфигурации Gradle нужны только их build-файлы
 COPY services/db-migrator/build.gradle.kts services/db-migrator/
+COPY services/device-collector-service/build.gradle.kts services/device-collector-service/
 COPY services/events-collector-service services/events-collector-service
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon :services:events-collector-service:bootJar -x test -PnexusUrl="${NEXUS_URL}" \

@@ -9,3 +9,7 @@ include("services:events-collector-service")
 include("contracts")
 include("services:db-migrator")
 findProject(":services:db-migrator")?.name = "db-migrator"
+include("services:device-collector-service")
+findProject(":services:device-collector-service")?.name = "device-collector-service"
+// Реестр устройств: приём DeviceInfo из Kafka и запись через ShardingSphere-Proxy
+include("services:device-collector-service")

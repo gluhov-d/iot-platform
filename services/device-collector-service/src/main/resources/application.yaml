@@ -1,0 +1,120 @@
+# Общие настройки. Все подключения - только из переменных окружения;
+# значения для запуска из IDE - в application-local.yaml, для контейнера - в docker-compose.yaml
+spring:
+  application:
+    name: device-collector-service
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    properties:
+      schema.registry.url: ${SCHEMA_REGISTRY_URL}
+    consumer:
+      # Своя группа: тему devices читает только этот сервис
+      group-id: ${DEVICE_COLLECTOR_CONSUMER_GROUP:device-collector}
+      auto-offset-reset: earliest
+      # Offset подтверждается вручную: после COMMIT в PostgreSQL или после записи в devices-dlt
+      enable-auto-commit: false
+      # Строго по одному сообщению за poll
+      max-poll-records: 1
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
+        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # SpecificRecord (сгенерированный DeviceInfo), а не GenericRecord
+        specific.avro.reader: true
+    # Продюсер нужен только для devices-dlt
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 15000
+    listener:
+      type: single
+      ack-mode: manual_immediate
+      observation-enabled: true
+    template:
+      observation-enabled: true
+
+  # Логическая база devices в ShardingSphere-Proxy: адресов шардов сервис не знает
+  datasource:
+    url: ${DEVICES_DB_URL}
+    username: ${DEVICES_DB_USERNAME}
+    password: ${DEVICES_DB_PASSWORD}
+    hikari:
+      pool-name: sharding-proxy
+      maximum-pool-size: 5
+      # Proxy не выдал соединение за 2 с - ошибка, а не долгое ожидание
+      connection-timeout: 2000
+      # Не падать при старте, если Proxy ещё не готов: запись повторит обработчик ошибок
+      initialization-fail-timeout: -1
+
+app:
+  # Пусто или не задано -> hostname контейнера
+  instance-id: ${APP_INSTANCE_ID:${HOSTNAME:local}}
+  kafka:
+    devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
+    dlt-topic: ${KAFKA_DEVICES_DLT_TOPIC:devices-dlt}
+  processing:
+    # Ошибка хранилища: 3 попытки с паузами 1 с и 2 с, затем devices-dlt
+    max-attempts: ${DEVICES_MAX_ATTEMPTS:3}
+    retry-interval: ${DEVICES_RETRY_INTERVAL:1s}
+    retry-multiplier: 2.0
+    max-future-skew: 1d
+    shard-cache-ttl: 5m
+
+# Только технические точки: health, metrics, prometheus
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # Статус каждого компонента (db - соединение с Proxy) без подробностей
+      show-components: always
+  metrics:
+    # Не "instance": эту метку Prometheus ставит сам (адрес цели)
+    tags:
+      service: ${spring.application.name}
+      instance_id: ${app.instance-id}
+    # Бакеты гистограмм для панелей p95 в Grafana
+    distribution:
+      percentiles-histogram:
+        devices.processing: true
+        devices.db.write: true
+  tracing:
+    sampling:
+      probability: 1.0
+  opentelemetry:
+    resource-attributes:
+      service.instance.id: ${app.instance-id}
+    tracing:
+      export:
+        otlp:
+          endpoint: ${MANAGEMENT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+  # Метрики отдаются только через /actuator/prometheus, логи - в stdout (их собирает Alloy)
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
+
+# Формат (logstash JSON) задан в logback-spring.xml; здесь - дополнительные поля
+logging:
+  structured:
+    json:
+      add:
+        service: ${spring.application.name}
+        instanceId: ${app.instance-id}
+  level:
+    root: INFO

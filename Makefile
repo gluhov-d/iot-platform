@@ -7,6 +7,9 @@ SERVICE_DIR   := $(ROOT_DIR)/services/events-collector-service
 # Многомодульная сборка: wrapper в корне, задачи сервиса - по пути Gradle-проекта
 GRADLE        := cd $(ROOT_DIR) && ./gradlew
 SERVICE_PROJ  := :services:events-collector-service
+# device-collector-service (реестр устройств)
+DCS_DIR       := $(ROOT_DIR)/services/device-collector-service
+DCS_PROJ      := :services:device-collector-service
 
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
@@ -28,7 +31,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        contracts-check contracts-publish contracts-bootstrap proxy-sql shard-of
+        contracts-check contracts-publish contracts-bootstrap proxy-sql shard-of dcs-test dcs-it dcs-coverage
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -76,7 +79,7 @@ clean: ## Удалить контейнеры всех профилей вмес
 
 reset: clean up ## Полный пересоздание окружения с нуля
 
-KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service
+KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service device-collector-service
 
 kafka-reset: ## Пересоздать только том Kafka (сообщения, офсеты и схемы будут потеряны)
 	@echo "!!! Будут удалены ВСЕ данные Kafka: сообщения во всех топиках, офсеты"
@@ -140,6 +143,9 @@ urls: ## Показать адреса всех сервисов
 	echo "  ------------------------  ------------------------------------------------"; \
 	port=$$($(COMPOSE) port events-collector-service 8080 2>/dev/null | head -1 | sed 's/.*://'); \
 	echo "  events-collector-service  http://localhost:$${port:-<не запущен>}/actuator/health  (/actuator/prometheus; порт из диапазона $$(v EVENTS_COLLECTOR_PORTS))"; \
+	dport=$$($(COMPOSE) port device-collector-service 8080 2>/dev/null | head -1 | sed 's/.*://'); \
+    echo "  device-collector-service  http://localhost:$${dport:-<не запущен>}/actuator/health  (GET /api/v1/devices/{deviceId}; порт из диапазона $$(v DEVICE_COLLECTOR_PORTS))"; \
+    echo "  ShardingSphere-Proxy      postgresql://localhost:$$(v SHARDING_PROXY_PORT)/devices  (make proxy-sql, make shard-of ID=<deviceId>)"; \
 	echo "  Kafka                     localhost:$$(v KAFKA_EXTERNAL_PORT)"; \
 	echo "  Schema Registry           http://localhost:$$(v SCHEMA_REGISTRY_PORT)"; \
 	echo "  ClickHouse                http://localhost:$$(v CLICKHOUSE_HTTP_PORT)  (native: $$(v CLICKHOUSE_NATIVE_PORT))"; \
@@ -205,6 +211,16 @@ integration-test: ## Интеграционные тесты сервиса (Tes
 
 coverage: ## Все тесты + проверка порога покрытия 65% + HTML-отчет
 	@$(GRADLE) $(SERVICE_PROJ):check && echo "Отчет: $(SERVICE_DIR)/build/reports/jacoco/test/html/index.html"
+
+## ----------------------------------------------------------------- device-collector-service (реестр устройств)
+dcs-test: ## Модульные тесты device-collector-service (Docker не нужен)
+	@$(GRADLE) $(DCS_PROJ):test
+
+dcs-it: ## Интеграционные тесты device-collector-service (Testcontainers, нужен Docker)
+	@$(GRADLE) $(DCS_PROJ):integrationTest
+
+dcs-coverage: ## Все тесты device-collector-service + порог покрытия 70% + HTML-отчёт
+	@$(GRADLE) $(DCS_PROJ):check && echo "Отчёт: $(DCS_DIR)/build/reports/jacoco/test/html/index.html"
 
 ## ----------------------------------------------------------------- Avro-контракты
 contracts-check: ## Проверить схемы и совместимость с последней версией в Nexus (без публикации)

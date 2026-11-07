@@ -10,6 +10,7 @@ COPY gradle gradle
 # settings.gradle.kts подключает все модули: для конфигурации нужны только их build-файлы
 COPY contracts/build.gradle.kts contracts/
 COPY services/events-collector-service/build.gradle.kts services/events-collector-service/
+COPY services/device-collector-service/build.gradle.kts services/device-collector-service/
 COPY services/db-migrator services/db-migrator
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon :services:db-migrator:installDist -x test

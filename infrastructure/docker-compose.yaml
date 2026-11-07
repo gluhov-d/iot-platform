@@ -185,6 +185,7 @@ services:
       KAFKA_BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
       KAFKA_TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
     volumes:
@@ -385,6 +386,53 @@ services:
       retries: 30
       start_period: 20s
     networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # device-collector-service — реестр устройств: devices -> ShardingSphere-Proxy -> шарды PostgreSQL
+  # ---------------------------------------------------------------------------
+  device-collector-service:
+    build:
+      context: ..
+      dockerfile: services/device-collector-service/Dockerfile
+      # Gradle внутри сборки берёт Avro-контракты из Nexus хоста (как у events-collector-service)
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: iot-platform/device-collector-service:${DEVICE_COLLECTOR_IMAGE_TAG}
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      shardingsphere-proxy:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
+      # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml)
+      DEVICES_DB_URL: "jdbc:postgresql://shardingsphere-proxy:3307/devices?connectTimeout=3&socketTimeout=15"
+      DEVICES_DB_USERNAME: ${SHARDING_PROXY_USER}
+      DEVICES_DB_PASSWORD: ${SHARDING_PROXY_PASSWORD}
+      # Alloy поднимается профилем observability; без него трейсы просто не доставляются
+      MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
+    ports:
+      # Диапазон, а не один порт: при --scale каждая реплика получает свой порт
+      - "${DEVICE_COLLECTOR_PORTS}:8080"
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /actuator/health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
   # Kafka UI — темы, сообщения (Avro через Schema Registry) и consumer group

@@ -11,3 +11,6 @@ services/events-collector-service/.gradle
 !services/db-migrator/**
 services/db-migrator/build
 services/db-migrator/.gradle
+!services/device-collector-service/**
+services/device-collector-service/build
+services/device-collector-service/.gradle
