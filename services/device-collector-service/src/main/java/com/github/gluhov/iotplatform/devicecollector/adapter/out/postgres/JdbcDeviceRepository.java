@@ -52,17 +52,19 @@ public class JdbcDeviceRepository implements DeviceRepository {
             ON CONFLICT (device_id, event_key) DO NOTHING""";
     private static final String INSERT = """
             INSERT INTO devices (device_id, tenant_id, owner_id, device_type, serial_number, manufacturer, model,
-                                 firmware_version, status, registered_at, last_seen_at, settings, attributes, sensors,
-                                 seen_count, first_seen_at, last_event_at, last_event_id, last_event_type, last_state_at,
-                                 deleted_at)
+                                 firmware_version, name, os_name, os_version, status, registered_at, last_seen_at,
+                                 settings, attributes, sensors, seen_count, first_seen_at, last_event_at,
+                                 last_event_id, last_event_type, last_state_at, deleted_at)
             VALUES (:deviceId, :tenantId, :ownerId, :deviceType, :serialNumber, :manufacturer, :model,
-                    :firmwareVersion, :status, :registeredAt, :lastSeenAt, :settings, :attributes, :sensors,
-                    1, :eventAt, :eventAt, :eventId, :eventType, :stateAt, :deletedAt)
+                    :firmwareVersion, :name, :osName, :osVersion, :status, :registeredAt, :lastSeenAt,
+                    :settings, :attributes, :sensors, 1, :eventAt, :eventAt, :eventId, :eventType, :stateAt,
+                    :deletedAt)
             RETURNING current_database()""";
     private static final String UPDATE_WITH_STATE = """
             UPDATE devices SET tenant_id = :tenantId, owner_id = :ownerId, device_type = :deviceType,
                    serial_number = :serialNumber, manufacturer = :manufacturer, model = :model,
-                   firmware_version = :firmwareVersion, status = :status, registered_at = :registeredAt,
+                   firmware_version = :firmwareVersion, name = :name, os_name = :osName, os_version = :osVersion,
+                   status = :status, registered_at = :registeredAt,
                    last_seen_at = :lastSeenAt, settings = :settings, attributes = :attributes, sensors = :sensors,
                    last_state_at = :stateAt, deleted_at = :deletedAt,
             """ + COUNT_EVENT + """
@@ -81,8 +83,9 @@ public class JdbcDeviceRepository implements DeviceRepository {
             RETURNING current_database()""";
     private static final String FIND = """
             SELECT current_database() AS shard, device_id, tenant_id, owner_id, device_type, serial_number,
-                   manufacturer, model, firmware_version, status, registered_at, last_seen_at, settings, attributes,
-                   sensors, seen_count, first_seen_at, last_event_at, last_event_id, last_event_type, deleted_at
+                   manufacturer, model, firmware_version, name, os_name, os_version, status, registered_at,
+                   last_seen_at, settings, attributes, sensors, seen_count, first_seen_at, last_event_at,
+                   last_event_id, last_event_type, deleted_at
             FROM devices WHERE device_id = :deviceId""";
 
     private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() {};
@@ -164,6 +167,9 @@ public class JdbcDeviceRepository implements DeviceRepository {
                 .param("manufacturer", state == null ? null : state.manufacturer(), Types.VARCHAR)
                 .param("model", state == null ? null : state.model(), Types.VARCHAR)
                 .param("firmwareVersion", state == null ? null : state.firmwareVersion(), Types.VARCHAR)
+                .param("name", state == null ? null : state.name(), Types.VARCHAR)
+                .param("osName", state == null ? null : state.osName(), Types.VARCHAR)
+                .param("osVersion", state == null ? null : state.osVersion(), Types.VARCHAR)
                 .param("registeredAt", state == null ? null : timestamp(state.registeredAt()), Types.TIMESTAMP_WITH_TIMEZONE)
                 .param("settings", toJson(state == null ? Map.of() : state.settings()), Types.VARCHAR)
                 .param("attributes", toJson(state == null ? Map.of() : state.attributes()), Types.VARCHAR)
@@ -189,9 +195,10 @@ public class JdbcDeviceRepository implements DeviceRepository {
         DeviceState state = new DeviceState(rs.getString("device_id"), rs.getString("tenant_id"),
                 rs.getString("owner_id"), rs.getString("device_type"), rs.getString("serial_number"),
                 rs.getString("manufacturer"), rs.getString("model"), rs.getString("firmware_version"),
+                rs.getString("name"), rs.getString("os_name"), rs.getString("os_version"),
                 rs.getString("status"), instant(rs, "registered_at"), instant(rs, "last_seen_at"),
-                json.readValue(rs.getString("settings"), STRING_MAP), json.readValue(rs.getString("attributes"), STRING_MAP),
-                sensors);
+                json.readValue(rs.getString("settings"), STRING_MAP),
+                json.readValue(rs.getString("attributes"), STRING_MAP), sensors);
         return new DeviceView(state, rs.getLong("seen_count"), instant(rs, "first_seen_at"), instant(rs, "last_event_at"),
                 rs.getString("last_event_id"), rs.getString("last_event_type"), instant(rs, "deleted_at"),
                 rs.getString("shard"));

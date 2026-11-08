@@ -79,12 +79,30 @@ class DeviceInfoMapperTest {
         assertThat(state.manufacturer()).isEqualTo("Acme");
         assertThat(state.model()).isEqualTo("T-1000");
         assertThat(state.firmwareVersion()).isEqualTo("1.0.0");
+        assertThat(state.name()).isEqualTo("Boiler room sensor");
+        assertThat(state.osName()).isEqualTo("Linux");
+        assertThat(state.osVersion()).isEqualTo("6.1");
         assertThat(state.status()).isEqualTo("ACTIVE");
         assertThat(state.registeredAt()).isNull();
         assertThat(state.lastSeenAt()).isEqualTo(T0);
         assertThat(state.settings()).isEqualTo(Map.of("mode", "eco"));
         assertThat(state.attributes()).isEqualTo(Map.of("floor", "3"));
         assertThat(state.sensors()).containsExactly(new SensorState("t1", "TEMPERATURE", "C", "21.5", T0, "OK"));
+    }
+
+    @Test
+    @DisplayName("Snapshot without name and OS (producer of version 1.1.0): the fields are null, nothing fails")
+    void givenSnapshotWithoutProfile_whenMap_thenProfileFieldsNull() {
+        DeviceInfo message = info("dev-1", "evt-1", DeviceUpsertEventType.CREATED, T0)
+                .setDevice(snapshot("dev-1").setName(null).setOsName(null).setOsVersion(null).build())
+                .build();
+
+        DeviceState state = mapper.toChange(message, POSITION).state();
+
+        assertThat(state.name()).isNull();
+        assertThat(state.osName()).isNull();
+        assertThat(state.osVersion()).isNull();
+        assertThat(state.firmwareVersion()).isEqualTo("1.0.0");
     }
 
     @Test

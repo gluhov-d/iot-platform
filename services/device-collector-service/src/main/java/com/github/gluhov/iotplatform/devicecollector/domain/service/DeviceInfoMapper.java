@@ -44,8 +44,9 @@ public class DeviceInfoMapper {
                 .toList();
         return new DeviceState(device.getDeviceId(), device.getTenantId(), device.getOwnerId(), device.getDeviceType(),
                 device.getSerialNumber(), device.getManufacturer(), device.getModel(), device.getFirmwareVersion(),
-                device.getStatus().name(), toInstantOrNull(device.getRegisteredAtMs()),
-                toInstantOrNull(device.getLastSeenAtMs()), copy(device.getSettings()), copy(device.getAttributes()), sensors);
+                device.getName(), device.getOsName(), device.getOsVersion(), device.getStatus().name(),
+                toInstantOrNull(device.getRegisteredAtMs()), toInstantOrNull(device.getLastSeenAtMs()),
+                copy(device.getSettings()), copy(device.getAttributes()), sensors);
     }
 
     private static Instant toInstantOrNull(Long epochMs) {

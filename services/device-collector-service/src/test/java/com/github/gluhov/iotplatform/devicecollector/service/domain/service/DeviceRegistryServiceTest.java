@@ -122,13 +122,17 @@ class DeviceRegistryServiceTest {
         process(info(DEVICE, "evt-1", DeviceUpsertEventType.CREATED, T0).build());
 
         ProcessingResult result = process(info(DEVICE, "evt-2", DeviceUpsertEventType.UPDATED, T0.plusSeconds(60))
-                .setDevice(snapshot(DEVICE).setFirmwareVersion("2.0.0").setStatus(DeviceStatus.MAINTENANCE).build())
+                .setDevice(snapshot(DEVICE).setFirmwareVersion("2.0.0").setName("Renamed").setOsVersion("6.2")
+                        .setStatus(DeviceStatus.MAINTENANCE).build())
                 .build());
 
         assertThat(result.outcome()).isEqualTo(ProcessingOutcome.APPLIED);
         InMemoryDeviceRepository.Row row = store.device(DEVICE);
         assertThat(row.seenCount).isEqualTo(2);
         assertThat(row.state.firmwareVersion()).isEqualTo("2.0.0");
+        assertThat(row.state.name()).isEqualTo("Renamed");
+        assertThat(row.state.osName()).isEqualTo("Linux");
+        assertThat(row.state.osVersion()).isEqualTo("6.2");
         assertThat(row.status).isEqualTo("MAINTENANCE");
         assertThat(row.lastEventAt).isEqualTo(T0.plusSeconds(60));
         assertThat(row.lastEventId).isEqualTo("evt-2");

@@ -17,6 +17,9 @@ public record DeviceResponse(String deviceId,
                              String manufacturer,
                              String model,
                              String firmwareVersion,
+                             String name,
+                             String osName,
+                             String osVersion,
                              String status,
                              Instant registeredAt,
                              Instant lastSeenAt,
@@ -34,9 +37,10 @@ public record DeviceResponse(String deviceId,
     static DeviceResponse from(DeviceView view) {
         DeviceState device = view.device();
         return new DeviceResponse(device.deviceId(), device.tenantId(), device.ownerId(), device.deviceType(),
-                device.serialNumber(), device.manufacturer(), device.model(), device.firmwareVersion(), device.status(),
-                device.registeredAt(), device.lastSeenAt(), device.settings(), device.attributes(), device.sensors(),
-                view.seenCount(), view.firstSeenAt(), view.lastEventAt(), view.lastEventId(), view.lastEventType(),
-                view.deletedAt(), view.shard());
+                    device.serialNumber(), device.manufacturer(), device.model(), device.firmwareVersion(),
+                    device.name(), device.osName(), device.osVersion(), device.status(),
+                    device.registeredAt(), device.lastSeenAt(), device.settings(), device.attributes(), device.sensors(),
+                    view.seenCount(), view.firstSeenAt(), view.lastEventAt(), view.lastEventId(), view.lastEventType(),
+                    view.deletedAt(), view.shard());
     }
 }

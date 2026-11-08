@@ -11,7 +11,7 @@ description = "device-collector-service"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-схем (артефакт avros в Nexus); Avro приходит вместе с ними транзитивно
-val avrosVersion = "1.1.0"
+val avrosVersion = "1.2.0"
 // Flyway в тестах (через db-migrator) - той же версии, что и в самом db-migrator, а не из BOM Spring Boot
 extra["flyway.version"] = "12.11.0"
 

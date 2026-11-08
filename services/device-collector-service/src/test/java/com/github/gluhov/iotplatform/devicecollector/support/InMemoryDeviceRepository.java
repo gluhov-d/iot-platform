@@ -152,11 +152,11 @@ public final class InMemoryDeviceRepository implements DeviceRepository, Transac
         // Как toView в JdbcDeviceRepository: статус и last_seen_at - из колонок, их меняют и события без снимка
         DeviceState s = row.state;
         DeviceState state = s == null
-                ? new DeviceState(deviceId, null, null, null, null, null, null, null, row.status, null, row.lastSeenAt,
-                Map.of(), Map.of(), List.of())
+                ? new DeviceState(deviceId, null, null, null, null, null, null, null, null, null, null, row.status,
+                null, row.lastSeenAt, Map.of(), Map.of(), List.of())
                 : new DeviceState(s.deviceId(), s.tenantId(), s.ownerId(), s.deviceType(), s.serialNumber(),
-                s.manufacturer(), s.model(), s.firmwareVersion(), row.status, s.registeredAt(), row.lastSeenAt,
-                s.settings(), s.attributes(), s.sensors());
+                s.manufacturer(), s.model(), s.firmwareVersion(), s.name(), s.osName(), s.osVersion(), row.status,
+                s.registeredAt(), row.lastSeenAt, s.settings(), s.attributes(), s.sensors());
         return Optional.of(new DeviceView(state, row.seenCount, row.firstSeenAt, row.lastEventAt, row.lastEventId,
                 row.lastEventType, row.deletedAt, shardOf(deviceId)));
     }

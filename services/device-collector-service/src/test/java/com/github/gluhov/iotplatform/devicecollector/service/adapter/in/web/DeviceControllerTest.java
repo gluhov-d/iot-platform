@@ -33,6 +33,7 @@ class DeviceControllerTest {
     @DisplayName("Known device: 200 with the model, counters and the shard that returned the row")
     void givenKnownDevice_whenGet_thenDevice() throws Exception {
         DeviceState state = new DeviceState("dev-1", "tenant-1", null, "thermometer", null, null, null, "1.0.0",
+                "Boiler room sensor", "Linux", "6.1",
                 "ACTIVE", null, T0, Map.of("mode", "eco"), Map.of(),
                 List.of(new SensorState("t1", "TEMPERATURE", "C", "21.5", T0, "OK")));
         when(findDevice.find("dev-1")).thenReturn(Optional.of(
@@ -42,6 +43,9 @@ class DeviceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.deviceId").value("dev-1"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.name").value("Boiler room sensor"))
+                .andExpect(jsonPath("$.osName").value("Linux"))
+                .andExpect(jsonPath("$.osVersion").value("6.1"))
                 .andExpect(jsonPath("$.settings.mode").value("eco"))
                 .andExpect(jsonPath("$.sensors[0].sensorId").value("t1"))
                 .andExpect(jsonPath("$.seenCount").value(3))

@@ -47,12 +47,15 @@ class ItDeviceCollectorTest extends AbstractItTest {
         awaitCommitted(sent);
         assertThat(onShard(1, "SELECT seen_count, tenant_id, status, settings->>'mode', jsonb_array_length(sensors), "
                 + "last_event_type FROM devices WHERE device_id = '" + id + "'")).isEqualTo("1|tenant-1|ACTIVE|eco|1|CREATED");
+        assertThat(onShard(1, "SELECT name, os_name, os_version, firmware_version FROM devices "
+                + "WHERE device_id = '" + id + "'")).isEqualTo("Boiler room sensor|Linux|6.1|1.0.0");
         assertThat(onShard(1, "SELECT outcome, kafka_topic, kafka_partition, kafka_offset FROM processed_device_events "
                 + "WHERE device_id = '" + id + "'")).isEqualTo("APPLIED|devices|" + sent.partition() + "|" + sent.offset());
         assertThat(assertOnlyOnExpectedShard(id)).isEqualTo(1);
         HttpResponse<String> device = get("/api/v1/devices/" + id);
         assertThat(device.statusCode()).isEqualTo(200);
-        assertThat(device.body()).contains("\"shard\":\"shard_1\"", "\"seenCount\":1", "\"sensorId\":\"t1\"");
+        assertThat(device.body()).contains("\"shard\":\"shard_1\"", "\"seenCount\":1", "\"sensorId\":\"t1\"",
+                "\"name\":\"Boiler room sensor\"", "\"osName\":\"Linux\"", "\"osVersion\":\"6.1\"");
     }
 
     @Test
