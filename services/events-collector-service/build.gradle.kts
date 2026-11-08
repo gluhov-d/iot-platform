@@ -10,8 +10,8 @@ version = "0.1.0"
 description = "events-collector-service"
 
 val confluentVersion = "8.2.4"
-// Версия Avro-контрактов (contracts-avro в Nexus); Avro приходит вместе с ними транзитивно
-val contractsVersion = "1.1.0"
+// Версия Avro-схем (артефакт avros в Nexus); Avro приходит вместе с ними транзитивно
+val avrosVersion = "1.1.0"
 
 java {
     toolchain {
@@ -50,7 +50,7 @@ dependencies {
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
-    implementation("com.github.gluhov.iotplatform:contracts-avro:$contractsVersion")
+    implementation("com.github.gluhov.iotplatform:avros:$avrosVersion")
     implementation("io.confluent:kafka-avro-serializer:$confluentVersion")
     runtimeOnly("com.clickhouse:clickhouse-jdbc:0.9.9")
 
@@ -98,7 +98,7 @@ tasks.withType<Test>().configureEach {
 // ---------------------------------------------------------------- Покрытие
 jacoco { toolVersion = "0.8.14" }
 
-// Точка входа не является логикой сервиса; Avro-классы приходят из contracts-avro и в отчёт не попадают
+// Точка входа не является логикой сервиса; Avro-классы приходят из avros и в отчёт не попадают
 val coverageExcludes = listOf(
     "com/github/gluhov/iotplatform/eventscollector/EventsCollectorApplication*",
 )

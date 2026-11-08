@@ -49,8 +49,8 @@ clickhouse() {
 
 # Схема DeviceEvent для консольного продюсера: тип DeviceSnapshot объявлен в отдельном файле,
 # поэтому ссылка на него по имени заменяется самим объявлением
-SNAPSHOT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-snapshot.avsc")"
-EVENT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/contracts/avro/device-event.avsc")"
+SNAPSHOT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/avros/avro/device-snapshot.avsc")"
+EVENT_SCHEMA="$(tr -d '\n' < "${ROOT_DIR}/avros/avro/device-event.avsc")"
 before="${EVENT_SCHEMA%%\"DeviceSnapshot\"*}"
 after="${EVENT_SCHEMA#*\"DeviceSnapshot\"}"
 SCHEMA="${before}${SNAPSHOT_SCHEMA}${after}"

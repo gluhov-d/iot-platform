@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Общая часть скриптов контрактов (подключается через source, сама не запускается):
+# Общая часть скриптов avros (подключается через source, сама не запускается):
 # адрес Nexus и учётная запись публикатора из корневого .env.
 #
 # Значения берутся в том виде, как их разбирает Compose (кавычки, экранирование) - те же,
@@ -8,7 +8,7 @@
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
 COMPOSE=(docker compose --env-file "${ENV_FILE}" -f "${ROOT_DIR}/infrastructure/docker-compose.yaml")
-ARTIFACT_PATH="com/github/gluhov/iotplatform/contracts-avro"
+ARTIFACT_PATH="com/github/gluhov/iotplatform/avros"
 
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
 
@@ -30,12 +30,12 @@ require_nexus() {
 # HTTP-код pom выпущенной версии: 200 - есть в maven-releases, 404 - нет
 release_status() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-    "${NEXUS_URL}/repository/maven-releases/${ARTIFACT_PATH}/$1/contracts-avro-$1.pom" || true
+    "${NEXUS_URL}/repository/maven-releases/${ARTIFACT_PATH}/$1/avros-$1.pom" || true
 }
 
-# Версия contracts-avro из contracts/build.gradle.kts в каталоге $1
-contracts_version() {
-  (cd "$1" && ./gradlew -q :contracts:properties --property version | sed -n 's/^version: //p')
+# Версия avros из avros/build.gradle.kts в каталоге $1
+avros_version() {
+  (cd "$1" && ./gradlew -q :avros:properties --property version | sed -n 's/^version: //p')
 }
 
 # Команда с учётной записью публикатора: пароль - только в окружении процесса Gradle

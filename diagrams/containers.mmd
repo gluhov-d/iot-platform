@@ -23,7 +23,7 @@ flowchart LR
             topic_dlt[/"<b>iot.dlt</b><br/><i>Kafka topic</i><br/>Отклонённые шлюзом сообщения устройств<br/>(шлюз пока не реализован)"/]
         end
         schema_registry["<b>Schema Registry</b><br/><i>Confluent</i><br/>Avro-схемы тем: events-value,<br/>devices-value (BACKWARD)"]
-        nexus["<b>Nexus</b><br/><i>Sonatype Nexus 3, Maven</i><br/>Артефакт contracts-avro: версии из<br/>git-тегов contracts/vX.Y.Z, проверка<br/>совместимости при публикации"]
+        nexus["<b>Nexus</b><br/><i>Sonatype Nexus 3, Maven</i><br/>Артефакт avros: версии из<br/>git-тегов avros/vX.Y.Z, проверка<br/>совместимости при публикации"]
         subgraph registry["Реестр устройств"]
             proxy["<b>ShardingSphere-Proxy</b><br/><i>Apache ShardingSphere 5.5.3, PostgreSQL protocol</i><br/>Логическая база devices: маршрутизация по<br/>#124;hashCode(device_id)#124; % 2,<br/>связанные таблицы"]
             shard0[("<b>postgres-shard-0</b><br/><i>PostgreSQL 18, база shard_0</i><br/>devices, processed_device_events — часть<br/>устройств")]
@@ -72,8 +72,8 @@ flowchart LR
     device_collector -- "Схемы Avro · HTTP" --> schema_registry
     event_service -- "Выборки телеметрии · HTTP/SQL" --> clickhouse
     %% B: сборка и схема БД
-    events_collector -. "B1. Сборка: contracts-avro · Maven" .-> nexus
-    device_collector -. "B1. Сборка: contracts-avro · Maven" .-> nexus
+    events_collector -. "B1. Сборка: avros · Maven" .-> nexus
+    device_collector -. "B1. Сборка: avros · Maven" .-> nexus
     db_migrator -. "B2. Flyway migrate · JDBC" .-> shard0
     db_migrator -. "B2. Flyway migrate · JDBC" .-> shard1
     %% C: выполнение команд

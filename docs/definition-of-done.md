@@ -6,7 +6,7 @@
 
 ## Контракты и Kafka
 
-- [ ] `contracts/avro/device-event.avsc` и `contracts/avro/device-info.avsc` есть; поля и типы - как в схемах задания
+- [ ] `avros/avro/device-event.avsc` и `avros/avro/device-info.avsc` есть; поля и типы - как в схемах задания
   (namespace - `com.github.gluhov.iotplatform.events.avro`, см. README, раздел 4).
 - [ ] Входная тема `events`, выходная `devices` (`.env.example`: `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`).
 - [ ] Ключ обеих тем - `deviceId`: `DeviceEvent` отправляется с ключом `deviceId` (`check-local.sh`, `ItEventsCollectorTest`),
@@ -100,7 +100,7 @@
 
 - [ ] Модульные тесты: `svc:test` (`make test`) - зеленые.
 - [ ] Интеграционные тесты на Testcontainers: `svc:integrationTest` (`make integration-test`) - зеленые без запущенного стенда.
-- [ ] Покрытие строк >= 65%: `svc:check` (`make coverage`, правило `jacocoTestCoverageVerification`); Avro-классы приходят из `contracts-avro`
+- [ ] Покрытие строк >= 65%: `svc:check` (`make coverage`, правило `jacocoTestCoverageVerification`); Avro-классы приходят из `avros`
   (Nexus) и в отчёт не входят.
 
 ## Репозиторий и документация

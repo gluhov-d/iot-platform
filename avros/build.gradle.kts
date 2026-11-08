@@ -25,16 +25,16 @@ plugins {
     `maven-publish`
 }
 
-// Версия контрактов: несовместимое изменение схем - новая старшая версия.
+// Версия схем: несовместимое изменение схем - новая старшая версия.
 // Выпущенную версию maven-releases перезаписать не даст.
 group = "com.github.gluhov.iotplatform"
 version = "1.1.0"
-description = "Avro-контракты IoT Platform: схемы и сгенерированные классы SpecificRecord"
+description = "Avro-схемы IoT Platform: .avsc всех топиков и сгенерированные классы SpecificRecord"
 
 val avroVersion = "1.12.1"
 
 // Имя jar совпадает с artifactId публикации
-base.archivesName = "contracts-avro"
+base.archivesName = "avros"
 
 java {
     toolchain {
@@ -58,7 +58,7 @@ val avroOutputDir = layout.buildDirectory.dir("generated-sources/avro")
 
 val generateAvro by tasks.registering {
     group = "build"
-    description = "Генерирует Java-классы SpecificRecord из contracts/avro/*.avsc"
+    description = "Генерирует Java-классы SpecificRecord из avros/avro/*.avsc"
     inputs.dir(avroSchemasDir)
     outputs.dir(avroOutputDir)
     doLast {
@@ -91,7 +91,7 @@ tasks.processResources {
 }
 
 // ---------------------------------------------------------------- Nexus
-// Адрес Nexus и учётная запись приходят снаружи (конвейер контрактов), в репозитории их нет:
+// Адрес Nexus и учётная запись приходят снаружи (конвейер avros), в репозитории их нет:
 //   nexusUrl - gradle.properties в корне (переопределяется -PnexusUrl)
 //   ORG_GRADLE_PROJECT_nexusUsername / ORG_GRADLE_PROJECT_nexusPassword
 val nexusUrl = providers.gradleProperty("nexusUrl")
@@ -99,11 +99,11 @@ val nexusUrl = providers.gradleProperty("nexusUrl")
 // ---------------------------------------------------------------- Совместимость
 // Новая версия сверяется с последней выпущенной в maven-releases. Уровень - -PcompatibilityLevel:
 //   FULL (по умолчанию) - новая схема читает старые данные, а старая - новые. Сервисы переходят
-//                         на новую версию контрактов независимо, поэтому нужны оба направления;
+//                         на новую версию схем независимо, поэтому нужны оба направления;
 //   BACKWARD            - только новая читает старые (режим Schema Registry);
 //   FORWARD             - только старая читает новые.
 val compatibilityLevel = providers.gradleProperty("compatibilityLevel").orElse("FULL")
-val artifactPath = "${project.group.toString().replace('.', '/')}/contracts-avro"
+val artifactPath = "${project.group.toString().replace('.', '/')}/avros"
 
 data class SemVer(val major: Int, val minor: Int, val patch: Int, val snapshot: Boolean) : Comparable<SemVer> {
     override fun compareTo(other: SemVer) = compareValuesBy(this, other, { it.major }, { it.minor }, { it.patch })
@@ -135,9 +135,9 @@ fun httpGet(client: HttpClient, url: String): HttpResponse<ByteArray> = try {
     throw GradleException("Nexus недоступен ($url): $e. Поднимите его: make nexus-up", e)
 }
 
-val checkContractsCompatibility by tasks.registering {
+val checkAvrosCompatibility by tasks.registering {
     group = "verification"
-    description = "Сверяет схемы contracts/avro с последней выпущенной версией contracts-avro в Nexus"
+    description = "Сверяет схемы avros/avro с последней выпущенной версией avros в Nexus"
     // Результат зависит от содержимого Nexus, поэтому задача выполняется при каждом запуске
     outputs.upToDateWhen { false }
     val current = version.toString()
@@ -170,22 +170,22 @@ val checkContractsCompatibility by tasks.registering {
         }
         val latest = released.maxOrNull()
         if (latest == null) {
-            logger.lifecycle("Выпущенных версий contracts-avro нет: первая публикация, сравнивать не с чем")
+            logger.lifecycle("Выпущенных версий avros нет: первая публикация, сравнивать не с чем")
             return@doLast
         }
         if (!currentVersion.snapshot && currentVersion in released) {
             throw GradleException(
                 "Версия $current уже опубликована: выпущенную версию не перезаписать, " +
-                    "поднимите version в contracts/build.gradle.kts"
+                    "поднимите version в avros/build.gradle.kts"
             )
         }
         if (currentVersion <= latest) {
             throw GradleException("Версия $current должна быть больше последней выпущенной $latest")
         }
 
-        val jar = httpGet(client, "$base/$latest/contracts-avro-$latest.jar")
+        val jar = httpGet(client, "$base/$latest/avros-$latest.jar")
         if (jar.statusCode() != 200) {
-            throw GradleException("contracts-avro-$latest.jar: HTTP ${jar.statusCode()}")
+            throw GradleException("avros-$latest.jar: HTTP ${jar.statusCode()}")
         }
         val oldTexts = mutableMapOf<String, String>()
         ZipInputStream(jar.body().inputStream()).use { zip ->
@@ -194,7 +194,7 @@ val checkContractsCompatibility by tasks.registering {
                 .forEach { oldTexts[it.name] = String(zip.readBytes()) }
         }
         if (oldTexts.isEmpty()) {
-            throw GradleException("В contracts-avro-$latest.jar нет схем avro/*.avsc")
+            throw GradleException("В avros-$latest.jar нет схем avro/*.avsc")
         }
         val oldSchemas = parseSchemas(oldTexts)
 
@@ -236,11 +236,11 @@ val checkContractsCompatibility by tasks.registering {
 // ---------------------------------------------------------------- Публикация
 publishing {
     publications {
-        create<MavenPublication>("contracts") {
-            artifactId = "contracts-avro"
+        create<MavenPublication>("avros") {
+            artifactId = "avros"
             from(components["java"])
             pom {
-                name = "IoT Platform Avro contracts"
+                name = "IoT Platform Avro schemas"
                 description = project.description
             }
         }
@@ -260,5 +260,5 @@ publishing {
 
 // В Nexus попадает только версия, прошедшая проверку совместимости - даже при прямом вызове publish
 tasks.withType<PublishToMavenRepository>().configureEach {
-    dependsOn(checkContractsCompatibility)
+    dependsOn(checkAvrosCompatibility)
 }

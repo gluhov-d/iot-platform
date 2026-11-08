@@ -5,8 +5,8 @@ plugins {
 
 rootProject.name = "iot-platform"
 include("services:events-collector-service")
-// Avro-контракты: схемы contracts/avro -> jar, публикуется в Nexus
-include("contracts")
+// Avro-схемы платформы: avros/avro -> jar с классами, публикуется в Nexus
+include("avros")
 include("services:db-migrator")
 findProject(":services:db-migrator")?.name = "db-migrator"
 include("services:device-collector-service")

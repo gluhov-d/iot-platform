@@ -12,8 +12,8 @@ WORKDIR /workspace
 # Многомодульная сборка: wrapper, settings.gradle.kts и gradle.properties лежат в корне репозитория
 COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties ./
 COPY gradle gradle
-# settings.gradle.kts подключает :contracts - нужен только его build-файл, схемы сервису не нужны
-COPY contracts/build.gradle.kts contracts/
+# settings.gradle.kts подключает :avros - нужен только его build-файл, схемы сервису не нужны
+COPY avros/build.gradle.kts avros/
 # Остальные модули сборки: для конфигурации Gradle нужны только их build-файлы
 COPY services/db-migrator/build.gradle.kts services/db-migrator/
 COPY services/device-collector-service/build.gradle.kts services/device-collector-service/

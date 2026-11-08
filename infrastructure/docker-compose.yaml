@@ -229,7 +229,7 @@ services:
       # Контекст - корень репозитория: сборке нужны корневые файлы Gradle
       context: ..
       dockerfile: services/events-collector-service/Dockerfile
-      # Gradle внутри сборки берёт Avro-контракты из Nexus хоста (localhost в сборке - сам контейнер);
+      # Gradle внутри сборки берёт avros из Nexus хоста (localhost в сборке - сам контейнер);
       # host-gateway - адрес хоста и в Docker Desktop, и в Linux
       args:
         NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
@@ -239,6 +239,8 @@ services:
     <<: *default-restart
     logging: *default-logging
     depends_on:
+      avros-publish:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       schema-registry:
@@ -343,6 +345,8 @@ services:
         condition: service_healthy
       postgres-shard-1:
         condition: service_healthy
+      avros-publish:
+        condition: service_completed_successfully
     environment:
       DB_SHARDS: shard_0,shard_1
       DB_SHARD_0_URL: jdbc:postgresql://postgres-shard-0:5432/shard_0
@@ -394,7 +398,7 @@ services:
     build:
       context: ..
       dockerfile: services/device-collector-service/Dockerfile
-      # Gradle внутри сборки берёт Avro-контракты из Nexus хоста (как у events-collector-service)
+      # Gradle внутри сборки берёт avros из Nexus хоста (как у events-collector-service)
       args:
         NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
       extra_hosts:
@@ -470,7 +474,7 @@ services:
 
 
   # ---------------------------------------------------------------------------
-  # Nexus - Maven-репозиторий для Avro-контрактов (базовый стенд: из него сборка сервисов берёт контракты)
+  # Nexus - Maven-репозиторий для avros (Avro-схемы платформы): из него сборка сервисов берёт схемы
   # ---------------------------------------------------------------------------
   nexus:
     image: sonatype/nexus3:${NEXUS_VERSION}
@@ -517,6 +521,29 @@ services:
       - ./init/nexus/init-nexus.sh:/opt/init/init-nexus.sh:ro
     entrypoint: ["/bin/sh", "/opt/init/init-nexus.sh"]
     networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Публикация avros - одноразовая задача: собирает Avro-схемы платформы (avros/) и кладёт версию
+  # в Nexus. Версия уже в Nexus с теми же схемами - пропускает; с другими схемами - ошибка.
+  # Сервисы собираются только после неё: их сборка берёт avros из Nexus с явной версией
+  # ---------------------------------------------------------------------------
+  avros-publish:
+    build:
+      context: ..
+      dockerfile: avros/Dockerfile
+    image: iot-platform/avros-publish:${AVROS_IMAGE_TAG}
+    container_name: iot-avros-publish
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      nexus-init:
+        condition: service_completed_successfully
+    environment:
+      NEXUS_URL: http://nexus:8081
+      NEXUS_PUBLISH_USER: ${NEXUS_PUBLISH_USER}
+      NEXUS_PUBLISH_PASSWORD: ${NEXUS_PUBLISH_PASSWORD}
+    networks: [ iot-net ]
+
   # ---------------------------------------------------------------------------
   # MinIO — объектное хранилище (DLT + вложения)
   # ---------------------------------------------------------------------------

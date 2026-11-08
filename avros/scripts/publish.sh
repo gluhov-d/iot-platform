@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Конвейер Avro-контрактов: разбор схем и проверка совместимости -> сборка -> публикация в Nexus
+# Конвейер avros (Avro-схемы платформы): разбор схем и проверка совместимости -> сборка -> публикация в Nexus
 #
-# contracts/scripts/publish.sh (обычно через make contracts-publish)
+# avros/scripts/publish.sh (обычно через make avros-release)
 #
 # Релиз (версия без -SNAPSHOT) = коммит + тег + артефакт: собирается только из закоммиченного
-# contracts/, после публикации на HEAD ставится тег contracts/vX.Y.Z. По тегам make contracts-bootstrap
+# avros/, после публикации на HEAD ставится тег avros/vX.Y.Z. По тегам make avros-bootstrap
 # восстанавливает версии в пустом Nexus. SNAPSHOT публикуется из рабочей папки и без тега.
 # Выход 0 - версия опубликована, иначе - причина в выводе, в Nexus ничего не попало.
 set -euo pipefail
@@ -16,24 +16,24 @@ cd "${ROOT_DIR}"
 echo "==> Nexus ${NEXUS_URL}"
 require_nexus
 
-version="$(contracts_version "${ROOT_DIR}")"
-tag="contracts/v${version}"
+version="$(avros_version "${ROOT_DIR}")"
+tag="avros/v${version}"
 release=true
 [[ "${version}" == *-SNAPSHOT ]] && release=false
 
 if ${release}; then
-  [[ -z "$(git status --porcelain -- contracts)" ]] ||
-    fail "в contracts/ есть незакоммиченные изменения: релиз ${version} собирается только из коммита"
+  [[ -z "$(git status --porcelain -- avros)" ]] ||
+    fail "в avros/ есть незакоммиченные изменения: релиз ${version} собирается только из коммита"
   if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-    fail "тег ${tag} уже есть - версия выпущена (в пустой Nexus её вернёт make contracts-bootstrap); поднимите version"
+    fail "тег ${tag} уже есть - версия выпущена (в пустой Nexus её вернёт make avros-bootstrap); поднимите version"
   fi
 fi
 
-echo "==> contracts-avro ${version}: проверка совместимости, сборка, публикация"
-with_publisher ./gradlew --console=plain :contracts:build :contracts:publish -PnexusUrl="${NEXUS_URL}"
+echo "==> avros ${version}: проверка совместимости, сборка, публикация"
+with_publisher ./gradlew --console=plain :avros:build :avros:publish -PnexusUrl="${NEXUS_URL}"
 
 if ${release}; then
-  git tag -a "${tag}" -m "contracts-avro ${version}"
+  git tag -a "${tag}" -m "avros ${version}"
   echo "==> Тег ${tag} поставлен на $(git rev-parse --short HEAD); отправьте его вместе с веткой: git push origin ${tag}"
   repository=maven-releases
 else

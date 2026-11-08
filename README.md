@@ -89,11 +89,11 @@
 
 ```
 iot-platform/
-├── contracts/                         # Gradle-проект :contracts -> артефакт contracts-avro (публикуется в Nexus)
+ ├── avros/# Gradle-проект :avros -> артефакт avros (публикуется в Nexus)
 │   ├── build.gradle.kts               # генерация классов, jar со схемами, проверка совместимости, maven-publish
 │   ├── scripts/
-│   │   ├── publish.sh                 # конвейер публикации (make contracts-publish), ставит тег релиза
-│   │   ├── bootstrap.sh               # выпущенные версии из тегов contracts/v* -> Nexus (make contracts-bootstrap)
+│   │   ├── publish.sh                 # конвейер публикации (make avros-release), ставит тег релиза
+│   │   ├── bootstrap.sh               # выпущенные версии из тегов avros/v* -> Nexus (make avros-bootstrap)
 │   │   └── nexus-env.sh               # общая часть: адрес Nexus и публикатор из .env (source)
 │   └── avro/                          # Avro-контракты — единый источник для кодогенерации
 │       ├── device-event.avsc
@@ -126,7 +126,7 @@ iot-platform/
 │   ├── Dockerfile                     # сборка из корня репозитория; контракты - из Nexus хоста
 │   ├── scripts/check-local.sh         # быстрая проверка стенда
 │   └── src/{main,test}/...
-├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service", "contracts")
+├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service", "avros")
 ├── gradle.properties                  # nexusUrl - адрес Nexus для обоих Gradle-проектов
 ├── Makefile
 ├── .env.example
@@ -180,15 +180,15 @@ iot-platform/
   после `kafka: service_healthy`; сервис стартует только после `kafka-init: service_completed_successfully`.
   Автосоздание тем брокером выключено (`KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`).
 
-## 6. Avro-контракты
+## 6. Avro-схемы (avros)
 
 | Файл | Запись | Поля |
 |---|---|---|
-| `contracts/avro/device-event.avsc` | `DeviceEvent` | `eventId`, `deviceId`, `timestampMs` (Unix ms), `eventType` |
-| `contracts/avro/device-info.avsc` | `DeviceInfo` | `deviceId`, `emittedAtMs` (время публикации) |
+| `avros/avro/device-event.avsc` | `DeviceEvent` | `eventId`, `deviceId`, `timestampMs` (Unix ms), `eventType` |
+| `avros/avro/device-info.avsc` | `DeviceInfo` | `deviceId`, `emittedAtMs` (время публикации) |
 
 Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `SpecificRecord` сервис получает зависимостью
-`com.github.gluhov.iotplatform:contracts-avro:<contractsVersion>` из Nexus (`contractsVersion` — в
+`com.github.gluhov.iotplatform:avros:<avrosVersion>` из Nexus (`avrosVersion` — в
 `services/events-collector-service/build.gradle.kts`, сейчас `1.0.0`); сам он классы не генерирует.
 `stringType = String`: иначе поля были бы `CharSequence`, при чтении приходил бы `org.apache.avro.util.Utf8`
 и `equals` со строкой ломался бы.
@@ -200,8 +200,8 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
 `ORG_GRADLE_PROJECT_nexusUrl`. Для первой загрузки контрактов Nexus должен быть поднят (`make nexus-up`),
 дальше они лежат в кеше Gradle.
 
-Схемы собирает отдельный Gradle-проект `:contracts` — библиотека
-`com.github.gluhov.iotplatform:contracts-avro` (версия в `contracts/build.gradle.kts`, сейчас `1.0.0`):
+Схемы собирает отдельный Gradle-проект `:avros` — библиотека
+`com.github.gluhov.iotplatform:avros` (версия в `avros/build.gradle.kts`, сейчас `1.0.0`):
 
 * классы генерируются одним `SchemaParser` на все файлы — схема может ссылаться на тип из другого файла
   по имени, а повторное объявление одного полного имени (например, двух `DeviceInfo`) роняет сборку;
@@ -213,25 +213,25 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
   `ORG_GRADLE_PROJECT_nexusPassword`; в репозитории их нет. Выпущенную версию Nexus перезаписать не даст.
 
 ```bash
-./gradlew :contracts:build    # build/libs/contracts-avro-<версия>.jar и -sources.jar; Nexus не нужен
+./gradlew :avros:build    # build/libs/avros-<версия>.jar и -sources.jar; Nexus не нужен
 ```
 
 #### Конвейер публикации
 
 ```bash
 make nexus-up              # только Nexus (make up поднимает его сам)
-make contracts-check       # разбор схем + совместимость с последней выпущенной версией (без публикации)
-make contracts-publish     # проверка -> сборка -> публикация (contracts/scripts/publish.sh)
-make contracts-bootstrap   # выпущенные версии из git-тегов, которых нет в Nexus (make up вызывает сам)
+make avros-check       # разбор схем + совместимость с последней выпущенной версией (без публикации)
+make avros-release     # проверка -> сборка -> публикация (avros/scripts/publish.sh)
+make avros-bootstrap   # выпущенные версии из git-тегов, которых нет в Nexus (make up вызывает сам)
 ```
 
-`contracts-publish` берёт порт Nexus и учётную запись публикатора (`NEXUS_PUBLISH_USER`/`NEXUS_PUBLISH_PASSWORD`)
+`avros-release` берёт порт Nexus и учётную запись публикатора (`NEXUS_PUBLISH_USER`/`NEXUS_PUBLISH_PASSWORD`)
 из `.env` в том виде, как их разбирает Compose, проверяет, что Nexus принимает запись, и запускает
-`:contracts:build :contracts:publish`. Пароль передаётся Gradle через окружение — в командной строке и выводе
-его нет. Задача `checkContractsCompatibility` встроена в `publish`, поэтому прямой
-`./gradlew :contracts:publish` её тоже не обходит. Проверка:
+`:avros:build :avros:publish`. Пароль передаётся Gradle через окружение — в командной строке и выводе
+его нет. Задача `checkAvrosCompatibility` встроена в `publish`, поэтому прямой
+`./gradlew :avros:publish` её тоже не обходит. Проверка:
 
-1. разбирает все `contracts/avro/*.avsc` одним парсером;
+1. разбирает все `avros/avro/*.avsc` одним парсером;
 2. находит последнюю выпущенную версию в `maven-releases` (`maven-metadata.xml`); если её нет — первая публикация,
    сравнивать не с чем;
 3. отклоняет версию, которая уже выпущена или не больше последней (`-SNAPSHOT` тоже должен быть больше);
@@ -249,20 +249,20 @@ make contracts-bootstrap   # выпущенные версии из git-тего
 | несовместимое изменение | следующая старшая: `1.x` → `2.0.0`; для Schema Registry это новый субъект/тема |
 | проба до релиза | `X.Y.Z-SNAPSHOT` — в `maven-snapshots`, можно публиковать повторно |
 
-**Релиз = коммит + тег + артефакт.** Версия без `-SNAPSHOT` собирается только из закоммиченного `contracts/`
-(иначе — «незакоммиченные изменения»), после публикации `contracts-publish` ставит на `HEAD` аннотированный тег
-`contracts/vX.Y.Z`; если тег уже есть — версия выпущена, нужно поднять `version`. Тег отправляется вместе
-с веткой: `git push origin contracts/vX.Y.Z`. `-SNAPSHOT` публикуется из рабочей папки и без тега.
+**Релиз = коммит + тег + артефакт.** Версия без `-SNAPSHOT` собирается только из закоммиченного `avros/`
+(иначе — «незакоммиченные изменения»), после публикации `avros-release` ставит на `HEAD` аннотированный тег
+`avros/vX.Y.Z`; если тег уже есть — версия выпущена, нужно поднять `version`. Тег отправляется вместе
+с веткой: `git push origin avros/vX.Y.Z`. `-SNAPSHOT` публикуется из рабочей папки и без тега.
 
-История релизов хранится в git, Nexus — только хранилище артефактов. `make contracts-bootstrap` (его вызывает
-`make up`) проходит по тегам `contracts/v*` по возрастанию версий и каждую версию, которой нет в
+История релизов хранится в git, Nexus — только хранилище артефактов. `make avros-bootstrap` (его вызывает
+`make up`) проходит по тегам `avros/v*` по возрастанию версий и каждую версию, которой нет в
 `maven-releases`, собирает во временном `git worktree` на её теге и публикует — с той же проверкой
 совместимости. Поэтому на чистом клоне и после `make clean` в Nexus снова оказываются все выпущенные версии,
 от которых зависят сервисы. Уже опубликованные версии пропускаются; тег, в котором `version` не совпадает
 с именем тега, — ошибка.
 
-Выпущена `1.0.0` (тег `contracts/v1.0.0`) — схемы приёма событий. После релиза `make contracts-check` на той же версии сообщает
-«Версия … уже опубликована»: перед изменением схем поднимите `version` в `contracts/build.gradle.kts`.
+Выпущена `1.0.0` (тег `avros/v1.0.0`) — схемы приёма событий. После релиза `make avros-check` на той же версии сообщает
+«Версия … уже опубликована»: перед изменением схем поднимите `version` в `avros/build.gradle.kts`.
 
 
 Сериализация — `KafkaAvroSerializer`/`KafkaAvroDeserializer` (Schema Registry, `specific.avro.reader=true`),
@@ -395,7 +395,7 @@ docker compose -f infrastructure/docker-compose.yaml --profile observability up 
 То же через Makefile — с ожиданием healthy и понятным кодом выхода:
 
 ```bash
-make up                       # базовый стенд: Nexus -> контракты из тегов -> сборка и запуск остального
+make up                       # базовый стенд: Nexus -> публикация avros -> сборка и запуск остального
 make nexus-up                 # только Nexus (http://localhost:8091)
 make up-obs                   # с observability
 make up PROFILES=tools        # плюс Kafka UI (http://localhost:8090)
@@ -407,9 +407,9 @@ make clean                    # остановить и удалить тома
 
 Профиль `platform` — окружение платформы, приёмом событий не используется.
 
-Nexus — Maven-репозиторий, в который конвейер контрактов публикует собранные Avro-классы. Он входит в базовый
-стенд: `make up` сначала поднимает его (`make nexus-up`), затем публикует выпущенные версии контрактов из тегов
-(`make contracts-bootstrap`, раздел 6) и только потом собирает и запускает остальные сервисы. Одноразовый `nexus-init` (`infrastructure/init/nexus/init-nexus.sh`) после `nexus: healthy`:
+Nexus — Maven-репозиторий, в который публикуется avros (Avro-схемы и классы платформы). Он входит в базовый
+стенд: `make up` сначала поднимает его (`make nexus-up`), затем задача compose `avros-publish` (`make avros-up`) публикует текущую версию avros
+(раздел 6) и только потом собирает и запускает остальные сервисы. Одноразовый `nexus-init` (`infrastructure/init/nexus/init-nexus.sh`) после `nexus: healthy`:
 
 * заменяет сгенерированный пароль `admin` на `NEXUS_ADMIN_PASSWORD`;
 * принимает EULA Community Edition — только если в `.env` стоит `NEXUS_ACCEPT_EULA=true`. Без этого Nexus отвечает
@@ -420,13 +420,13 @@ Nexus — Maven-репозиторий, в который конвейер ко�
   `NEXUS_PUBLISH_USER`; при каждом запуске синхронизирует его пароль с `.env`.
 
 `maven-releases` не даёт перезаписать выпущенную версию (повторная загрузка — 409). `maven-public` объединяет
-`maven-releases`, `maven-snapshots` и прокси Maven Central. Публикация контрактов — `make contracts-publish`
+`maven-releases`, `maven-snapshots` и прокси Maven Central. Релиз avros с тегом — `make avros-release`
 (раздел 6).
 
 ## 11. Запуск сервиса из IDE
 
-1. Поднять стенд без сервиса (Nexus нужен для загрузки контрактов при сборке):
-   `make nexus-up && make contracts-bootstrap`, затем
+1. Поднять стенд без сервиса (Nexus нужен для загрузки avros при сборке):
+   `make nexus-up && make avros-bootstrap`, затем
    `docker compose -f infrastructure/docker-compose.yaml up -d kafka kafka-init schema-registry clickhouse redis`
    (или остановить контейнер сервиса: `docker compose -f infrastructure/docker-compose.yaml stop events-collector-service`).
 2. Main class: `com.github.gluhov.iotplatform.eventscollector.EventsCollectorApplication`, профиль `local`
@@ -445,10 +445,10 @@ SPRING_PROFILES_ACTIVE=local ./gradlew :services:events-collector-service:bootRu
 ## 12. Запуск через Docker Compose
 
 Сервис входит в базовый профиль и собирается из `services/events-collector-service/Dockerfile`
-(контекст — корень репозитория). Gradle внутри сборки берёт контракты из Nexus хоста: compose передаёт
+(контекст — корень репозитория). Gradle внутри сборки берёт avros из Nexus хоста: compose передаёт
 аргумент `NEXUS_URL=http://host.docker.internal:${NEXUS_PORT}` и `extra_hosts: host.docker.internal:host-gateway`
 (внутри сборки `localhost` — сам контейнер сборки). Поэтому перед сборкой образа Nexus должен быть поднят и
-содержать нужную версию контрактов — `make up` делает это сам. Пересобрать после изменений кода:
+содержать нужную версию avros — `make up` делает это сам. Пересобрать после изменений кода:
 
 ```bash
 docker compose -f infrastructure/docker-compose.yaml up -d --build events-collector-service
@@ -537,7 +537,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 
 Покрытие строк (JaCoCo, unit + integration): порог 65 %, фактически около 98 %; отчёт —
 `services/events-collector-service/build/reports/jacoco/test/html/index.html`.
-Avro-классы приходят из `contracts-avro` и в отчёт не входят; код Lombok исключён из отчёта.
+Avro-классы приходят из `avros` и в отчёт не входят; код Lombok исключён из отчёта.
 
 ## 16. Наблюдаемость
 
@@ -632,8 +632,8 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 |---|---|
 | Schema Registry недоступен | `make health`; `curl localhost:8081/subjects`; у сервиса `SCHEMA_REGISTRY_URL` должен указывать на `http://schema-registry:8081` внутри сети compose и на `http://localhost:8081` из IDE; SR стартует после `kafka: healthy` |
 | `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
-| сборка: `Could not resolve com.github.gluhov.iotplatform:contracts-avro` | Nexus не поднят или в нём нет версии: `make nexus-up && make contracts-bootstrap`; другой порт Nexus — `-PnexusUrl=http://localhost:<NEXUS_PORT>`. В `docker build` — `Connection refused` к `host.docker.internal`: Nexus не поднят на хосте или сборка запущена без `extra_hosts` (собирайте через compose или `--add-host host.docker.internal:host-gateway`) |
-| `make contracts-publish` / `contracts-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `contracts/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `contracts/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
+| сборка: `Could not resolve com.github.gluhov.iotplatform:avros` | Nexus не поднят или в нём нет версии: `make nexus-up && make avros-bootstrap`; другой порт Nexus — `-PnexusUrl=http://localhost:<NEXUS_PORT>`. В `docker build` — `Connection refused` к `host.docker.internal`: Nexus не поднят на хосте или сборка запущена без `extra_hosts` (собирайте через compose или `--add-host host.docker.internal:host-gateway`) |
+| `make avros-release` / `avros-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `contracts/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `avros/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |

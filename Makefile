@@ -14,7 +14,6 @@ DCS_PROJ      := :services:device-collector-service
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
 #	make up PROFILES=tools	- плюс Kafka UI
-#   make up PROFILES=ci     - плюс Nexus для контрактов
 #	make up PROFILES="observability platform" - плюс окружение модуля
 PROFILES ?=
 COMPOSE       := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) $(foreach p, $(PROFILES),--profile $(p))
@@ -25,13 +24,13 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
-INIT_SERVICES := kafka-init minio-init nexus-init clickhouse-init db-migrator
+INIT_SERVICES := kafka-init minio-init nexus-init avros-publish clickhouse-init db-migrator
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        contracts-check contracts-publish contracts-bootstrap proxy-sql shard-of dcs-test dcs-it dcs-coverage
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of dcs-test dcs-it dcs-coverage
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -45,7 +44,7 @@ help: ## Показать список команд
 up: ## Поднять всю инфраструктуру (PROFILES=observability - с наблюдаемостью) и дождаться готовности
 	@echo "==> Запуск инфраструктуры IoT Platform (профили: $(if $(PROFILES),$(PROFILES),базовый))"
 	@$(MAKE) --no-print-directory nexus-up
-	@$(MAKE) --no-print-directory contracts-bootstrap
+	@$(MAKE) --no-print-directory avros-up
 	@$(COMPOSE) up -d --build --remove-orphans
 	@$(MAKE) --no-print-directory wait
 	@$(MAKE) --no-print-directory urls
@@ -222,10 +221,17 @@ dcs-it: ## Интеграционные тесты device-collector-service (Tes
 dcs-coverage: ## Все тесты device-collector-service + порог покрытия 70% + HTML-отчёт
 	@$(GRADLE) $(DCS_PROJ):check && echo "Отчёт: $(DCS_DIR)/build/reports/jacoco/test/html/index.html"
 
-## ----------------------------------------------------------------- Avro-контракты
-contracts-check: ## Проверить схемы и совместимость с последней версией в Nexus (без публикации)
-	@$(GRADLE) :contracts:checkContractsCompatibility -PnexusUrl=http://localhost:$(call compose_env,NEXUS_PORT)
-contracts-publish: ## Конвейер контрактов: совместимость -> сборка -> публикация в Nexus (нужен make nexus-up)
-	@$(ROOT_DIR)/contracts/scripts/publish.sh
-contracts-bootstrap: ## Вернуть в Nexus выпущенные версии контрактов из git-тегов contracts/v* (make up вызывает сам)
-	@$(ROOT_DIR)/contracts/scripts/bootstrap.sh
+## ----------------------------------------------------------------- avros
+avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up)
+	@echo "==> avros: сборка и публикация в Nexus"
+	@$(COMPOSE) up -d --build avros-publish
+	@$(COMPOSE) wait avros-publish >/dev/null || { \
+	  echo "!!! avros-publish завершился с ошибкой:"; $(COMPOSE) logs --no-log-prefix --tail=30 avros-publish; exit 1; }
+	@$(COMPOSE) logs --no-log-prefix avros-publish | grep '^==>'
+avros-check: ## Проверить схемы avros и совместимость с последней версией в Nexus (без публикации)
+	@$(GRADLE) :avros:checkAvrosCompatibility -PnexusUrl=http://localhost:$(call compose_env,NEXUS_PORT)
+avros-release: ## Релиз avros с хоста: совместимость -> сборка -> публикация -> тег (нужен make nexus-up)
+	@$(ROOT_DIR)/avros/scripts/publish.sh
+avros-bootstrap: ## Вернуть в Nexus выпущенные версии avros из git-тегов avros/v* (нужно, если сервис закреплён на старой версии)
+	@$(ROOT_DIR)/avros/scripts/bootstrap.sh
+
