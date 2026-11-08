@@ -24,13 +24,13 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
-INIT_SERVICES := kafka-init minio-init nexus-init avros-publish clickhouse-init db-migrator
+INIT_SERVICES := kafka-init minio-init nexus-init avros-publish schema-register clickhouse-init db-migrator
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of dcs-test dcs-it dcs-coverage
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of dcs-test dcs-it dcs-coverage schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -234,4 +234,21 @@ avros-release: ## Релиз avros с хоста: совместимость -> 
 	@$(ROOT_DIR)/avros/scripts/publish.sh
 avros-bootstrap: ## Вернуть в Nexus выпущенные версии avros из git-тегов avros/v* (нужно, если сервис закреплён на старой версии)
 	@$(ROOT_DIR)/avros/scripts/bootstrap.sh
+schemas-register: ## Зарегистрировать схемы avros в Schema Registry (FULL_TRANSITIVE) одноразовой задачей compose (Schema Registry поднимает сама)
+	@echo "==> Schema Registry: регистрация схем avros"
+	@$(COMPOSE) up -d --wait schema-registry >/dev/null
+	@$(COMPOSE) build -q schema-register >/dev/null
+	@set -o pipefail; $(COMPOSE) run -T --rm --no-deps schema-register 2>&1 | grep -v -e 'SVE' -e '^$$' \
+	  || { echo "!!! schema-register завершился с ошибкой (см. вывод выше)"; exit 1; }
+schemas: ## Показать зарегистрированные схемы: subject, версии, режим совместимости
+	@url=http://localhost:$(call compose_env,SCHEMA_REGISTRY_PORT); \
+	curl -fsS "$$url/subjects" >/dev/null || { echo "!!! Schema Registry недоступен: $$url"; exit 1; }; \
+	printf "%-22s %-9s %-12s %s\n" SUBJECT VERSIONS "ID(посл.)" COMPATIBILITY; \
+	for s in $$(curl -fsS "$$url/subjects" | tr -d '[]"' | tr ',' ' '); do \
+	  v=$$(curl -fsS "$$url/subjects/$$s/versions" | tr -d '[]' ); \
+	  id=$$(curl -fsS "$$url/subjects/$$s/versions/latest" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'); \
+	  c=$$(curl -sS "$$url/config/$$s" | sed -n 's/.*"compatibilityLevel":"\([A-Z_]*\)".*/\1/p'); \
+	  printf "%-22s %-9s %-12s %s\n" "$$s" "$$v" "$$id" "$${c:-(глобальный)}"; \
+	done
+
 

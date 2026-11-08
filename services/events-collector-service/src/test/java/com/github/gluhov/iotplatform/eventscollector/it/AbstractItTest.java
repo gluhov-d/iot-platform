@@ -38,6 +38,9 @@ public abstract class AbstractItTest {
         registry.add("KAFKA_BOOTSTRAP_SERVERS", kafka::getBootstrapServers);
         registry.add("KAFKA_CONSUMER_GROUP", () -> "events-collector-it");
         registry.add("SCHEMA_REGISTRY_URL", SchemaRegistryTestContainerConfig::schemaRegistryUrl);
+        // Schema Registry стенда тестов пуст, а задачи schema-register здесь нет: продюсер сервиса регистрирует схему сам
+        // (на стенде compose - auto.register.schemas=false, это проверяется там)
+        registry.add("spring.kafka.producer.properties.auto.register.schemas", () -> "true");
         registry.add("CLICKHOUSE_URL", ClickHouseTestContainerConfig::jdbcUrl);
         registry.add("CLICKHOUSE_DATABASE", () -> DATABASE);
         registry.add("CLICKHOUSE_USERNAME", clickhouse::getUsername);

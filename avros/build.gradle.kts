@@ -6,6 +6,8 @@ import org.apache.avro.compiler.specific.SpecificCompiler
 import org.apache.avro.generic.GenericData
 import java.io.IOException
 import java.net.URI
+import java.net.URLClassLoader
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -229,6 +231,129 @@ val checkAvrosCompatibility by tasks.registering {
                 "Схемы несовместимы с $latest ($level):\n$report\n" +
                     "Сделайте изменение совместимым (новые поля - с default) или поднимите старшую версию."
             )
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Schema Registry
+// Регистрация схем в Schema Registry - одноразовая задача compose schema-register (после публикации в Nexus):
+//   -PschemaRegistryUrl=http://schema-registry:8081
+//   -PschemaSubjects=events-value=DeviceEvent,devices-value=DeviceInfo   (тема-value=простое имя записи)
+//   -PschemaCompatibility=FULL_TRANSITIVE                                (по умолчанию)
+// Продюсеры сервисов работают с auto.register.schemas=false и сами схем не регистрируют: сериализатор ищет в
+// subject ту же схему, что лежит в SCHEMA$ класса, - со вложенными типами и свойствами генерации. Поэтому
+// регистрируется SCHEMA$ самих классов (DeviceSnapshot внутри DeviceInfo), а не отдельные subject со ссылками.
+fun jsonString(text: String): String = buildString {
+    append('"')
+    text.forEach { c ->
+        when {
+            c == '"' -> append("\\\"")
+            c == '\\' -> append("\\\\")
+            c < ' ' -> append("\\u%04x".format(c.code))
+            else -> append(c)
+        }
+    }
+    append('"')
+}
+
+val registerSchemas by tasks.registering {
+    group = "publishing"
+    description = "Регистрирует схемы avros/avro в Schema Registry (FULL_TRANSITIVE); повторный запуск ничего не меняет"
+    dependsOn(tasks.classes)
+    outputs.upToDateWhen { false }
+    doLast {
+        val registryUrl = providers.gradleProperty("schemaRegistryUrl").orNull?.trimEnd('/')
+            ?: throw GradleException("Не задан -PschemaRegistryUrl")
+        val level = providers.gradleProperty("schemaCompatibility").orElse("FULL_TRANSITIVE").get().uppercase()
+        if (level !in setOf("FULL_TRANSITIVE", "FULL")) {
+            throw GradleException("schemaCompatibility = '$level': ожидается FULL_TRANSITIVE или FULL")
+        }
+        val subjects = (providers.gradleProperty("schemaSubjects").orNull
+            ?: throw GradleException("Не задан -PschemaSubjects (тема-value=ИмяЗаписи через запятую)"))
+            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            .map { entry ->
+                val (subject, record) = entry.split('=', limit = 2).takeIf { it.size == 2 }
+                    ?: throw GradleException("schemaSubjects: '$entry' - ожидается тема-value=ИмяЗаписи")
+                subject to record
+            }
+        if (subjects.isEmpty()) throw GradleException("schemaSubjects пуст")
+
+        val files = avroSchemasDir.asFile.listFiles { f -> f.extension == "avsc" }!!.sorted()
+        val schemas = parseSchemas(files.associate { it.name to it.readText() })
+
+        val classesDir = layout.buildDirectory.dir("classes/java/main").get().asFile
+        val classLoader = URLClassLoader(arrayOf(classesDir.toURI().toURL()), Schema::class.java.classLoader)
+
+        val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
+        fun call(method: String, path: String, body: String? = null): Pair<Int, String> {
+            val publisher = if (body == null) HttpRequest.BodyPublishers.noBody() else HttpRequest.BodyPublishers.ofString(body)
+            val request = HttpRequest.newBuilder(URI.create("$registryUrl$path"))
+                .timeout(Duration.ofSeconds(20))
+                .header("Content-Type", "application/vnd.schemaregistry.v1+json")
+                .method(method, publisher)
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            return response.statusCode() to response.body()
+        }
+
+        // Schema Registry может быть healthy чуть раньше, чем примет запись: ждём до 60 с
+        var ready = false
+        for (attempt in 1..30) {
+            try {
+                if (call("GET", "/subjects").first == 200) { ready = true; break }
+            } catch (_: IOException) {
+            }
+            Thread.sleep(2000)
+        }
+        if (!ready) throw GradleException("Schema Registry недоступен: $registryUrl")
+
+        val failures = mutableListOf<String>()
+        subjects.forEach { (subject, record) ->
+            val fullName = schemas.values.singleOrNull { it.name == record }?.fullName
+                ?: throw GradleException("$subject: в avros нет записи '$record' (есть: ${schemas.keys.sorted().joinToString()})")
+            // Схема - SCHEMA$ сгенерированного класса, а не .avsc: в ней есть свойства генерации (avro.java.string),
+            // и Schema Registry находит схему сериализатора только при полном совпадении
+            val schema = classLoader.loadClass(fullName).getMethod("getClassSchema").invoke(null) as Schema
+            val body = """{"schemaType":"AVRO","schema":${jsonString(schema.toString())}}"""
+            val path = "/subjects/" + URLEncoder.encode(subject, Charsets.UTF_8)
+
+            // 1. Режим совместимости subject - явно: не зависит от глобального значения Schema Registry
+            val config = call("PUT", "/config/" + URLEncoder.encode(subject, Charsets.UTF_8), """{"compatibility":"$level"}""")
+            if (config.first != 200) throw GradleException("$subject: PUT /config HTTP ${config.first}: ${config.second}")
+
+            // 2. Эта схема уже в subject (байт в байт как её находит сериализатор) - ничего не делаем
+            val found = call("POST", path, body)
+            if (found.first == 200) {
+                val id = Regex(""""id"\s*:\s*(\d+)""").find(found.second)?.groupValues?.get(1)
+                val version = Regex(""""version"\s*:\s*(\d+)""").find(found.second)?.groupValues?.get(1)
+                println("$subject: ${schema.fullName} уже зарегистрирована (id=$id, version=$version), $level")
+                return@forEach
+            }
+
+            // 3. Новая схема: сначала проверка совместимости со ВСЕМИ зарегистрированными версиями
+            //    (404 - subject ещё нет, сравнивать не с чем)
+            val check = call("POST", "/compatibility/subjects/" + URLEncoder.encode(subject, Charsets.UTF_8) + "/versions?verbose=true", body)
+            if (check.first == 200 && check.second.contains(""""is_compatible":false""")) {
+                failures += "$subject: ${schema.fullName} несовместима с зарегистрированными версиями ($level): ${check.second}"
+                return@forEach
+            }
+            if (check.first != 200 && check.first != 404) {
+                throw GradleException("$subject: проверка совместимости HTTP ${check.first}: ${check.second}")
+            }
+
+            // 4. Регистрация; Schema Registry проверяет совместимость ещё раз сам
+            val created = call("POST", "$path/versions", body)
+            if (created.first == 409) {
+                failures += "$subject: ${schema.fullName} отклонена Schema Registry (409): ${created.second}"
+                return@forEach
+            }
+            if (created.first != 200) throw GradleException("$subject: регистрация HTTP ${created.first}: ${created.second}")
+            val id = Regex(""""id"\s*:\s*(\d+)""").find(created.second)?.groupValues?.get(1)
+            println("$subject: ${schema.fullName} зарегистрирована (id=$id), $level")
+        }
+        if (failures.isNotEmpty()) {
+            throw GradleException("Схемы не зарегистрированы:\n" + failures.joinToString("\n") { "  - $it" } +
+                    "\nСделайте изменение совместимым (новые поля - с default) или поднимите старшую версию avros с новыми subject.")
         }
     }
 }

@@ -124,6 +124,9 @@ public abstract class AbstractItTest {
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("KAFKA_BOOTSTRAP_SERVERS", KAFKA::getBootstrapServers);
         registry.add("SCHEMA_REGISTRY_URL", AbstractItTest::schemaRegistryUrl);
+        // Schema Registry стенда тестов пуст, а задачи schema-register здесь нет: продюсер сервиса регистрирует схему сам
+        // (на стенде compose - auto.register.schemas=false, это проверяется там)
+        registry.add("spring.kafka.producer.properties.auto.register.schemas", () -> "true");
         registry.add("DEVICES_DB_URL", () -> "jdbc:postgresql://%s:%d/devices?connectTimeout=3&socketTimeout=15"
                 .formatted(PROXY.getHost(), PROXY.getMappedPort(3307)));
         registry.add("DEVICES_DB_USERNAME", () -> PROXY_USER);

@@ -63,6 +63,7 @@ send_event() {
       --topic events \
       --property schema.registry.url=http://localhost:8081 \
       --property value.schema="${SCHEMA}" \
+      --property auto.register.schemas=false \
       --property parse.key=true \
       --property key.separator='|' \
       --property key.serializer=org.apache.kafka.common.serialization.StringSerializer \

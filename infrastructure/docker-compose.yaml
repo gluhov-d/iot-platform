@@ -209,7 +209,8 @@ services:
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://kafka:${KAFKA_INTERNAL_PORT}"
       SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:${SCHEMA_REGISTRY_PORT}"
       SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
-      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+      # Умолчание для subject без своего режима; у subject платформы режим задаёт schema-register
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: full_transitive
       SCHEMA_REGISTRY_HEAP_OPTS: "-Xms256m -Xmx512m"
     ports:
       - "${SCHEMA_REGISTRY_PORT}:${SCHEMA_REGISTRY_PORT}"
@@ -239,7 +240,7 @@ services:
     <<: *default-restart
     logging: *default-logging
     depends_on:
-      avros-publish:
+      schema-register:
         condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
@@ -345,7 +346,7 @@ services:
         condition: service_healthy
       postgres-shard-1:
         condition: service_healthy
-      avros-publish:
+      schema-register:
         condition: service_completed_successfully
     environment:
       DB_SHARDS: shard_0,shard_1
@@ -407,6 +408,8 @@ services:
     <<: *default-restart
     logging: *default-logging
     depends_on:
+      schema-register:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       schema-registry:
@@ -542,6 +545,34 @@ services:
       NEXUS_URL: http://nexus:8081
       NEXUS_PUBLISH_USER: ${NEXUS_PUBLISH_USER}
       NEXUS_PUBLISH_PASSWORD: ${NEXUS_PUBLISH_PASSWORD}
+    networks: [ iot-net ]
+
+  # ---------------------------------------------------------------------------
+  # Регистрация схем avros в Schema Registry - одноразовая задача после публикации в Nexus.
+  # Subject <тема>-value, режим FULL_TRANSITIVE; повторный запуск ничего не меняет, несовместимая схема -
+  # ошибка. Сервисы работают с auto.register.schemas=false: незарегистрированную схему они не запишут
+  # ---------------------------------------------------------------------------
+  schema-register:
+    build:
+      context: ..
+      dockerfile: avros/Dockerfile
+    # Тот же образ, что у avros-publish (схемы и кеш Gradle), другая точка входа
+    image: iot-platform/avros-publish:${AVROS_IMAGE_TAG}
+    container_name: iot-schema-register
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      avros-publish:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      SCHEMA_COMPATIBILITY: FULL_TRANSITIVE
+    entrypoint: [ "/workspace/avros/scripts/container-register.sh" ]
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------

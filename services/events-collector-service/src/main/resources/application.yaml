@@ -27,6 +27,9 @@ spring:
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
       acks: all
       properties:
+        # Схемы регистрирует только задача schema-register (avros); продюсер лишь ищет схему в Schema Registry.
+        # Незарегистрированная схема - ошибка сериализации, а не молчаливая новая версия
+        auto.register.schemas: false
         enable.idempotence: true
         max.block.ms: 5000
         request.timeout.ms: 5000
