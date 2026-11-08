@@ -45,6 +45,36 @@ class DeviceEventMapperTest {
     }
 
     @Test
+    @DisplayName("Event with snapshot then name, OS and firmware in separate columns of the event row")
+    void givenEventWithSnapshot_whenMap_thenDeviceProfileColumns() {
+        DeviceEvent event = eventWithSnapshot(EVENT_ID, DEVICE_ID, NOW.toEpochMilli(), DeviceStatus.ACTIVE);
+
+        DeviceEventRecord row = mapper.toEventRecord(event, NOW);
+
+        assertThat(row.deviceName()).isEqualTo("Thermostat " + DEVICE_ID);
+        assertThat(row.osName()).isEqualTo("Linux");
+        assertThat(row.osVersion()).isEqualTo("6.1");
+        assertThat(row.firmwareVersion()).isEqualTo("1.4.2");
+    }
+
+    @Test
+    @DisplayName("Snapshot without optional device data then empty columns, not null")
+    void givenSnapshotWithoutProfile_whenMap_thenEmptyStrings() {
+        DeviceEvent event = eventWithSnapshot(EVENT_ID, DEVICE_ID, NOW.toEpochMilli(), DeviceStatus.ACTIVE);
+        event.getDevice().setName(null);
+        event.getDevice().setOsName(null);
+        event.getDevice().setOsVersion(null);
+        event.getDevice().setFirmwareVersion(null);
+
+        DeviceEventRecord row = mapper.toEventRecord(event, NOW);
+
+        assertThat(row.deviceName()).isEmpty();
+        assertThat(row.osName()).isEmpty();
+        assertThat(row.osVersion()).isEmpty();
+        assertThat(row.firmwareVersion()).isEmpty();
+    }
+
+    @Test
     @DisplayName("Telemetry without snapshot then empty snapshot and source system, null payload")
     void givenEventWithoutSnapshot_whenMap_thenEmptySnapshot() {
         DeviceEvent event = validEvent();
@@ -55,6 +85,8 @@ class DeviceEventMapperTest {
         assertThat(row.deviceSnapshot()).isEmpty();
         assertThat(row.sourceSystem()).isEmpty();
         assertThat(row.payload()).isNull();
+        assertThat(row.deviceName()).isEmpty();
+        assertThat(row.osName()).isEmpty();
         assertThat(outbox.hasSnapshot()).isFalse();
     }
 }

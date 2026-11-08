@@ -9,6 +9,10 @@ import java.time.LocalDate;
  * @param deviceSnapshot снимок устройства в формате Avro JSON; пустая строка - событие без снимка
  * @param sourceSystem   система-источник; пустая строка - не указана
  * @param payload        сырая нагрузка исходного события или null
+ * @param deviceName     имя устройства из снимка; пустая строка - снимка нет или поле не задано
+ * @param osName         операционная система устройства; пустая строка - не задана
+ * @param osVersion      версия операционной системы; пустая строка - не задана
+ * @param firmwareVersion версия прошивки; пустая строка - не задана
  */
 public record DeviceEventRecord(
         String deviceId,
@@ -19,4 +23,8 @@ public record DeviceEventRecord(
         Instant ingestedAt,
         String deviceSnapshot,
         String sourceSystem,
-        String payload) {}
+        String payload,
+        String deviceName,
+        String osName,
+        String osVersion,
+        String firmwareVersion) {}

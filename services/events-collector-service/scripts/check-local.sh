@@ -64,6 +64,7 @@ send_event() {
       --property schema.registry.url=http://localhost:8081 \
       --property value.schema="${SCHEMA}" \
       --property auto.register.schemas=false \
+      --property use.latest.version=true \
       --property parse.key=true \
       --property key.separator='|' \
       --property key.serializer=org.apache.kafka.common.serialization.StringSerializer \
@@ -86,9 +87,15 @@ state="$("${COMPOSE[@]}" ps --format '{{.Health}}' events-collector-service 2>/d
 ok "container healthy"
 
 # ------------------------------------------------------------------------------
+# Конец каждого раздела devices до отправки (строки devices:<раздел>:<offset>): шаг 8 читает только то, что
+# появилось после этого. Тема целиком не годится: любое не-Avro сообщение в ней (например, из проверки devices-dlt)
+# обрывает консольный консьюмер, и все сообщения раздела после него остаются непрочитанными
+devices_offsets="$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \
+  --bootstrap-server localhost:9092 --topic devices --time -1 2>/dev/null || true)"
+
 next "Send DeviceEvent with device snapshot to topic events (Avro + Schema Registry, key deviceId)"
 # Avro JSON: значения union-полей - в обёртке с именем типа, все поля перечислены явно
-SNAPSHOT="{\"com.github.gluhov.iotplatform.events.avro.DeviceSnapshot\":{\"deviceId\":\"${DEVICE_ID}\",\"tenantId\":\"check-tenant\",\"ownerId\":null,\"deviceType\":\"check-sensor\",\"serialNumber\":null,\"manufacturer\":null,\"model\":null,\"firmwareVersion\":{\"string\":\"1.0.0\"},\"status\":\"ACTIVE\",\"registeredAtMs\":null,\"lastSeenAtMs\":{\"long\":${TIMESTAMP_MS}},\"settings\":{\"mode\":\"check\"},\"sensors\":[],\"attributes\":{}}}"
+SNAPSHOT="{\"com.github.gluhov.iotplatform.events.avro.DeviceSnapshot\":{\"deviceId\":\"${DEVICE_ID}\",\"tenantId\":\"check-tenant\",\"ownerId\":null,\"deviceType\":\"check-sensor\",\"serialNumber\":null,\"manufacturer\":null,\"model\":null,\"firmwareVersion\":{\"string\":\"1.0.0\"},\"name\":{\"string\":\"check-device\"},\"osName\":{\"string\":\"Linux\"},\"osVersion\":{\"string\":\"6.1\"},\"status\":\"ACTIVE\",\"registeredAtMs\":null,\"lastSeenAtMs\":{\"long\":${TIMESTAMP_MS}},\"settings\":{\"mode\":\"check\"},\"sensors\":[],\"attributes\":{}}}"
 send_event "{\"eventId\":\"${EVENT_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":${TIMESTAMP_MS},\"eventType\":\"CHECK_LOCAL\",\"device\":${SNAPSHOT},\"sourceSystem\":{\"string\":\"check-local\"},\"payload\":null}" \
   || fail "failed to send message (are Kafka and Schema Registry available?)"
 ok "message sent"
@@ -98,6 +105,12 @@ next "Event stored in iot_platform.device_events"
 wait_for 1 clickhouse "SELECT count() FROM iot_platform.device_events FINAL WHERE event_id = {eid:String} AND device_snapshot != ''" \
   || fail "no row with device_snapshot in device_events within ${TIMEOUT}s (column missing? see clickhouse-init), check service logs"
 ok "device_events: 1 row with device snapshot"
+
+# ------------------------------------------------------------------------------
+next "Device name, OS and firmware in separate columns of device_events"
+wait_for "check-device|Linux|6.1|1.0.0" clickhouse "SELECT concat(device_name, '|', os_name, '|', os_version, '|', firmware_version) FROM iot_platform.device_events FINAL WHERE event_id = {eid:String}" \
+  || fail "device profile columns are not filled (column missing? see infrastructure/init/clickhouse/04-device-profile.sh)"
+ok "device_events: name, OS and firmware columns"
 
 # ------------------------------------------------------------------------------
 next "Outbox record created in iot_platform.device_outbox"
@@ -118,18 +131,22 @@ wait_for PUBLISHED clickhouse "SELECT toString(outcome) FROM iot_platform.device
 ok "device_publication_audit: PUBLISHED"
 
 # ------------------------------------------------------------------------------
-next "DeviceInfo CREATED with device snapshot published to topic devices"
-found="$("${COMPOSE[@]}" exec -T schema-registry \
-  kafka-avro-console-consumer \
-    --bootstrap-server kafka:9092 \
-    --topic devices \
-    --from-beginning \
-    --timeout-ms 15000 \
-    --property schema.registry.url=http://localhost:8081 \
-    --property print.key=true \
-    --property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer \
-    --group "check-local-${EVENT_ID}" \
-  2>/dev/null | grep "\"deviceId\":\"${DEVICE_ID}\"" | grep "\"eventType\":\"CREATED\"" | grep -c "\"tenantId\":\"check-tenant\"" || true)"
+next "DeviceInfo CREATED with device snapshot (including OS) published to topic devices"
+found=0
+while IFS=: read -r _ partition offset && [[ "${found}" -lt 1 ]]; do
+  [[ -n "${partition}" && -n "${offset}" ]] || continue
+  found="$("${COMPOSE[@]}" exec -T schema-registry \
+    kafka-avro-console-consumer \
+      --bootstrap-server kafka:9092 \
+      --topic devices \
+      --partition "${partition}" \
+      --offset "${offset}" \
+      --timeout-ms 8000 \
+      --property schema.registry.url=http://localhost:8081 \
+      --property print.key=true \
+      --property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer \
+    < /dev/null 2>/dev/null | grep "\"deviceId\":\"${DEVICE_ID}\"" | grep "\"eventType\":\"CREATED\"" | grep "\"tenantId\":\"check-tenant\"" | grep -c "\"osName\":{\"string\":\"Linux\"}" || true)"
+done <<< "${devices_offsets}"
 [[ "${found}" -ge 1 ]] || fail "DeviceInfo CREATED with snapshot for ${DEVICE_ID} not found in topic devices"
 ok "devices: DeviceInfo CREATED for ${DEVICE_ID}"
 

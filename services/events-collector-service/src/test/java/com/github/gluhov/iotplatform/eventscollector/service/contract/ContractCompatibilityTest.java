@@ -2,6 +2,7 @@ package com.github.gluhov.iotplatform.eventscollector.service.contract;
 
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
 import org.apache.avro.Schema;
@@ -20,12 +21,14 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.List;
+import java.util.Set;
 
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Сообщения контрактов 1.0.0 и 1.1.0 читаются в обе стороны: сервисы переходят на новую версию независимо.
+ * Сообщения контрактов 1.0.0, 1.1.0 и 1.2.0 читаются в обе стороны: сервисы переходят на новую версию независимо.
  * Схемы 1.0.0 - как в теге contracts/v1.0.0.
  */
 class ContractCompatibilityTest {
@@ -94,6 +97,52 @@ class ContractCompatibilityTest {
         assertThat(read.getSourceSystem()).isNull();
         assertThat(read.getPayload()).isNull();
     }
+
+    /** Снимок 1.1.0 - текущий без полей, добавленных в 1.2.0 (name, osName, osVersion). */
+    private static final Schema SNAPSHOT_1_1 = withoutFields(DeviceSnapshot.getClassSchema(),
+            Set.of("name", "osName", "osVersion"));
+
+    @Test
+    @DisplayName("DeviceSnapshot 1.1.0 read by 1.2.0 then name and OS are null, other fields kept")
+    void givenSnapshot11_whenReadWithNewSchema_thenNewFieldsNull() throws IOException {
+        DeviceSnapshot current = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        GenericRecord old = new GenericData.Record(SNAPSHOT_1_1);
+        SNAPSHOT_1_1.getFields().forEach(f -> old.put(f.name(), current.get(f.name())));
+
+        DeviceSnapshot read = new SpecificDatumReader<DeviceSnapshot>(SNAPSHOT_1_1, DeviceSnapshot.getClassSchema())
+                .read(null, decoder(writeGeneric(old)));
+
+        assertThat(read.getDeviceId()).isEqualTo(DEVICE_ID);
+        assertThat(read.getFirmwareVersion()).isEqualTo(current.getFirmwareVersion());
+        assertThat(read.getName()).isNull();
+        assertThat(read.getOsName()).isNull();
+        assertThat(read.getOsVersion()).isNull();
+    }
+
+    @Test
+    @DisplayName("DeviceSnapshot 1.2.0 read by 1.1.0 then new fields ignored")
+    void givenSnapshot12_whenReadWithOldSchema_thenKnownFields() throws IOException {
+        DeviceSnapshot current = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+
+        GenericRecord read = new GenericDatumReader<GenericRecord>(DeviceSnapshot.getClassSchema(), SNAPSHOT_1_1)
+                .read(null, decoder(writeSpecific(current, DeviceSnapshot.getClassSchema())));
+
+        assertThat(read.get("deviceId").toString()).isEqualTo(DEVICE_ID);
+        assertThat(read.get("firmwareVersion").toString()).isEqualTo("1.4.2");
+        assertThat(read.getSchema().getField("name")).isNull();
+        assertThat(read.getSchema().getField("osName")).isNull();
+        assertThat(read.getSchema().getField("osVersion")).isNull();
+    }
+
+    private static Schema withoutFields(Schema schema, Set<String> names) {
+        List<Schema.Field> fields = schema.getFields().stream()
+                .filter(f -> !names.contains(f.name()))
+                .map(f -> new Schema.Field(f, f.schema()))
+                .toList();
+        return Schema.createRecord(schema.getName(), schema.getDoc(), schema.getNamespace(), false, fields);
+    }
+
+
 
     private static byte[] writeGeneric(GenericRecord record) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();

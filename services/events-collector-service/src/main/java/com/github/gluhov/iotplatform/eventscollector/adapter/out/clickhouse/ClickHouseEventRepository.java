@@ -14,10 +14,12 @@ public class ClickHouseEventRepository implements DeviceEventRepository {
     private static final String INSERT = """
             INSERT INTO device_events
                 (device_id, event_id, event_date, timestamp_ms, event_type, ingested_at,
-                 device_snapshot, source_system, payload)
+                 device_snapshot, source_system, payload,
+                 device_name, os_name, os_version, firmware_version)
             VALUES (:deviceId, :eventId, toDate(:eventDate), :timestampMs, :eventType,
                     fromUnixTimestamp64Milli(:ingestedAtMs, 'UTC'),
-                    :deviceSnapshot, :sourceSystem, :payload)
+                    :deviceSnapshot, :sourceSystem, :payload,
+                    :deviceName, :osName, :osVersion, :firmwareVersion)
             """;
 
     private final JdbcClient jdbc;
@@ -35,6 +37,10 @@ public class ClickHouseEventRepository implements DeviceEventRepository {
                 .param("sourceSystem", record.sourceSystem())
                 // Nullable(String): тип нужен драйверу, чтобы передать NULL
                 .param("payload", record.payload(), Types.VARCHAR)
+                .param("deviceName", record.deviceName())
+                .param("osName", record.osName())
+                .param("osVersion", record.osVersion())
+                .param("firmwareVersion", record.firmwareVersion())
                 .update();
     }
 }

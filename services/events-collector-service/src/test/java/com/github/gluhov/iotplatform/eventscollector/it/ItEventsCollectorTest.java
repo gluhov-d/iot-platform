@@ -130,6 +130,11 @@ class ItEventsCollectorTest extends AbstractItTest {
         assertThat(DeviceSnapshotJson.fromJson(stored)).isEqualTo(event.getDevice());
         assertThat(jdbcClient.sql("SELECT source_system FROM device_events FINAL WHERE event_id = :id")
                 .param("id", eventId).query(String.class).single()).isEqualTo("gateway-7");
+        assertThat(jdbcClient.sql("SELECT concat(device_name, '|', os_name, '|', os_version, '|', firmware_version)"
+                        + " FROM device_events FINAL WHERE event_id = :id")
+                .param("id", eventId).query(String.class).single())
+                .as("device data in separate columns")
+                .isEqualTo("Thermostat " + deviceId + "|Linux|6.1|1.4.2");
         assertThat(jdbcClient.sql("SELECT device_snapshot FROM device_outbox FINAL WHERE event_id = :id")
                 .param("id", eventId).query(String.class).single()).as("outbox carries the same snapshot").isEqualTo(stored);
         assertThat(jdbcClient.sql("SELECT device_snapshot_schema FROM device_outbox FINAL WHERE event_id = :id")

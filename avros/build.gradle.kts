@@ -30,7 +30,7 @@ plugins {
 // Версия схем: несовместимое изменение схем - новая старшая версия.
 // Выпущенную версию maven-releases перезаписать не даст.
 group = "com.github.gluhov.iotplatform"
-version = "1.1.0"
+version = "1.2.0"
 description = "Avro-схемы IoT Platform: .avsc всех топиков и сгенерированные классы SpecificRecord"
 
 val avroVersion = "1.12.1"

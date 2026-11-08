@@ -46,6 +46,24 @@
       "default": null
     },
     {
+      "name": "name",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Имя устройства, заданное владельцем (с версии 1.2.0)."
+    },
+    {
+      "name": "osName",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Операционная система устройства, например Linux или FreeRTOS (с версии 1.2.0)."
+    },
+    {
+      "name": "osVersion",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Версия операционной системы устройства (с версии 1.2.0)."
+    },
+    {
       "name": "status",
       "type": {
         "type": "enum",
