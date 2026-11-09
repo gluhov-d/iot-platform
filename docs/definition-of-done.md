@@ -194,8 +194,11 @@ device-collector-service, проект avros и изменения в приём
   (кроме недоступного Schema Registry - сбой инфраструктуры, а не сообщения). Тесты: `KafkaConfigTest`,
   `ItKafkaErrorHandlingTest.givenStorageFailure_whenConsume_thenRetriedMaxAttemptsThenMovedToDlt`,
   `givenInvalidEvent_whenConsume_thenMovedToDltAndOffsetCommitted`.
-- [ ] Число попыток и паузы задаются переменными окружения `EVENTS_MAX_ATTEMPTS`, `EVENTS_RETRY_INTERVAL` и перечислены
-  в `.env.example`.
+- [ ] Число попыток, паузы и их рост, тайм-ауты и размеры пулов задаются переменными окружения и перечислены
+  в `.env.example`: `EVENTS_MAX_ATTEMPTS`, `EVENTS_RETRY_INTERVAL`, `EVENTS_RETRY_MULTIPLIER`, `CLICKHOUSE_POOL_SIZE`,
+  `CLICKHOUSE_CONNECTION_TIMEOUT_MS`, `REDIS_TIMEOUT`, `KAFKA_SEND_TIMEOUT`, `KAFKA_PRODUCER_MAX_BLOCK_MS`,
+  `KAFKA_PRODUCER_REQUEST_TIMEOUT_MS`, `KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS`, `OUTBOX_*`. Фиксированы только значения,
+  определяющие поведение (`max-poll-records: 1`, ручной ack, `acks: all`).
 
 ## device-collector-service
 
@@ -213,8 +216,12 @@ device-collector-service, проект avros и изменения в приём
   (`ItDeviceCollectorTest.givenInvalidMessage_whenConsumed_thenDeadLetteredAndNextProcessed`,
   `givenUndeserializableMessage_whenConsumed_thenDeadLetteredAsIs`; `KafkaConfigTest`).
 - [ ] Все параметры, включая тайм-ауты (подключение, запрос, блокировка), число попыток, паузы и их рост,
-  задаются переменными окружения: в `application*.yaml` нет значений без `${…}`, все переменные есть
-  в `.env.example`.
+  задаются переменными окружения и перечислены в `.env.example`: `DEVICES_MAX_ATTEMPTS`, `DEVICES_RETRY_INTERVAL`,
+  `DEVICES_RETRY_MULTIPLIER`, `DEVICES_MAX_FUTURE_SKEW`, `DEVICES_SHARD_CACHE_TTL`, `DEVICES_DB_POOL_SIZE`,
+  `DEVICES_DB_CONNECTION_TIMEOUT_MS`, `DEVICES_DLT_MAX_BLOCK_MS`, `DEVICES_DLT_REQUEST_TIMEOUT_MS`,
+  `DEVICES_DLT_DELIVERY_TIMEOUT_MS`; тайм-ауты запросов и блокировок к шардам - на стороне Proxy
+  (`database-devices.yaml`), `connectTimeout`/`socketTimeout` - в `DEVICES_DB_URL`. Фиксированы только значения,
+  определяющие поведение (`max-poll-records: 1`, ручной ack, `acks: all`).
 - [ ] Миграций в сервисе нет: в `services/device-collector-service` нет Flyway и DDL
   (`grep -rniE "flyway|create table|alter table" services/device-collector-service/src/main` — пусто).
 

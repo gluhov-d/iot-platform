@@ -2,9 +2,10 @@
 -- ShardingSphere-Proxy маршрутизирует запросы по device_id (devices и processed_device_events - связанные таблицы,
 -- запись устройства и его журнал всегда на одном шарде, транзакция локальная).
 -- Запросов без device_id нет по условию задания, поэтому вторичных индексов нет.
+-- IF NOT EXISTS: повторный запуск на шарде, где таблицы уже есть, ничего не меняет.
 
 -- Текущее состояние устройства: последний применённый снимок + счётчики событий
-CREATE TABLE devices (
+CREATE TABLE IF NOT EXISTS devices (
                          device_id        TEXT        PRIMARY KEY,               -- ключ шардирования
                          tenant_id        TEXT,                                  -- поля снимка; NULL, пока снимка не было
                          owner_id         TEXT,
@@ -33,7 +34,7 @@ CREATE TABLE devices (
 
 -- Журнал обработанных событий: защита от повторной доставки. Первичный ключ (device_id, event_key) на том же шарде,
 -- что и устройство; INSERT ... ON CONFLICT DO NOTHING вернул 0 строк - событие уже обработано
-CREATE TABLE processed_device_events (
+CREATE TABLE IF NOT EXISTS processed_device_events (
                                          device_id       TEXT        NOT NULL,
                                          event_key       TEXT        NOT NULL,                   -- DeviceInfo.eventId; для сообщений 1.0.0 - 'emitted:<emittedAtMs>'
                                          event_type      TEXT        NOT NULL,

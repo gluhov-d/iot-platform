@@ -56,8 +56,18 @@
 
 **Ошибка записи в ClickHouse** и непредвиденная ошибка обработки повторяются `EVENTS_MAX_ATTEMPTS` раз (по
 умолчанию 3, включая первую попытку) с паузой `EVENTS_RETRY_INTERVAL` перед второй попыткой (по умолчанию 1 с;
-дальше пауза растёт вдвое: 1 с, 2 с). Не получилось — сообщение уходит в `events-dlt`, offset подтверждается
-после записи в DLT, следующие сообщения раздела обрабатываются.
+дальше пауза растёт в `EVENTS_RETRY_MULTIPLIER` раз, по умолчанию 2: 1 с, 2 с). Не получилось — сообщение уходит
+в `events-dlt`, offset подтверждается после записи в DLT, следующие сообщения раздела обрабатываются.
+
+Остальные тайм-ауты и размеры тоже заданы переменными окружения (значения по умолчанию - в `.env.example`):
+
+| Переменная | Назначение | По умолчанию |
+|---|---|---|
+| `CLICKHOUSE_POOL_SIZE`, `CLICKHOUSE_CONNECTION_TIMEOUT_MS` | пул соединений с ClickHouse и ожидание свободного соединения, мс | `5`, `30000` |
+| `REDIS_TIMEOUT` | тайм-аут команд Redis | `2s` |
+| `KAFKA_SEND_TIMEOUT` | сколько публикация одного сообщения outbox ждёт подтверждения брокера | `20s` |
+| `KAFKA_PRODUCER_MAX_BLOCK_MS`, `KAFKA_PRODUCER_REQUEST_TIMEOUT_MS`, `KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS` | продюсер Kafka: блокировка при отправке, ответ брокера, общий срок доставки, мс | `5000`, `5000`, `15000` |
+| `OUTBOX_BATCH_SIZE`, `OUTBOX_MAX_ATTEMPTS`, `OUTBOX_LEASE_TTL_MS`, `OUTBOX_PUBLISH_INTERVAL_MS` | публикация outbox: размер пачки, попытки, срок аренды, период, мс | `100`, `10`, `30000`, `2000` |
 
 **Schema Registry недоступен** (таймаут, обрыв соединения, ответ 5xx при десериализации) повторяется без
 ограничения числа попыток с экспоненциальной паузой до 10 с: это сбой инфраструктуры, а не сообщения, и иначе в
@@ -880,13 +890,22 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | `KAFKA_DEVICES_TOPIC`, `KAFKA_DEVICES_DLT_TOPIC` | входная тема и DLT | `devices`, `devices-dlt` |
 | `DEVICES_DB_URL`, `DEVICES_DB_USERNAME`, `DEVICES_DB_PASSWORD` | логическая база `devices` в Proxy (пароль — `SHARDING_PROXY_PASSWORD`); `connectTimeout` и `socketTimeout` — параметры URL | задаёт compose |
 | `DEVICES_MAX_ATTEMPTS` | всего попыток записи, включая первую | `3` |
-| `DEVICES_RETRY_INTERVAL` | пауза перед второй попыткой, дальше растёт вдвое | `1s` |
+| `DEVICES_RETRY_INTERVAL` | пауза перед второй попыткой | `1s` |
+| `DEVICES_RETRY_MULTIPLIER` | во сколько раз растёт каждая следующая пауза | `2.0` |
+| `DEVICES_MAX_FUTURE_SKEW` | на сколько время события может опережать часы сервиса; позже - сообщение невалидно | `1d` |
+| `DEVICES_SHARD_CACHE_TTL` | как долго сервис помнит шард устройства (определяется через `PREVIEW` в Proxy) | `5m` |
+| `DEVICES_DB_POOL_SIZE` | размер пула соединений с Proxy | `5` |
+| `DEVICES_DB_CONNECTION_TIMEOUT_MS` | сколько ждать свободное соединение из пула, мс | `2000` |
+| `DEVICES_DLT_MAX_BLOCK_MS`, `DEVICES_DLT_REQUEST_TIMEOUT_MS`, `DEVICES_DLT_DELIVERY_TIMEOUT_MS` | продюсер `devices-dlt`: блокировка при отправке, ответ брокера, общий срок доставки, мс | `5000`, `5000`, `15000` |
 | `APP_INSTANCE_ID` | `instanceId` в метриках и логах | hostname |
 | `MANAGEMENT_OTLP_ENDPOINT` | OTLP-экспорт трейсов | `http://alloy:4320/v1/traces` в compose |
 
 Тайм-ауты запросов к шардам заданы на стороне Proxy (`database-devices.yaml`: `connectionTimeoutMilliseconds`,
-`statement_timeout`, `lock_timeout` в URL источников). Прочие технические параметры (размер пула соединений, тайм-ауты
-продюсера DLT, множитель паузы, окно «время события в будущем», TTL кеша шардов) заданы в `application.yaml` сервиса.
+`statement_timeout`, `lock_timeout` в URL источников), а `connectTimeout` и `socketTimeout` соединения сервиса с Proxy -
+в `DEVICES_DB_URL` (`docker-compose.yaml`). Остальные тайм-ауты, число попыток, паузы и их рост, пул - переменные из
+таблицы выше; значения по умолчанию в `application.yaml` совпадают с `.env.example`. Фиксированы только значения,
+на которых держится поведение сервиса: `max-poll-records: 1`, ручное подтверждение offset, `acks: all`,
+`auto.register.schemas: false`.
 
 ### 19.4 Данные в PostgreSQL
 

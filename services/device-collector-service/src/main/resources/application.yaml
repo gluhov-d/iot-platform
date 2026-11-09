@@ -33,9 +33,9 @@ spring:
         # Незарегистрированная схема - ошибка сериализации, а не молчаливая новая версия
         auto.register.schemas: false
         enable.idempotence: true
-        max.block.ms: 5000
-        request.timeout.ms: 5000
-        delivery.timeout.ms: 15000
+        max.block.ms: ${DEVICES_DLT_MAX_BLOCK_MS:5000}
+        request.timeout.ms: ${DEVICES_DLT_REQUEST_TIMEOUT_MS:5000}
+        delivery.timeout.ms: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS:15000}
     listener:
       type: single
       ack-mode: manual_immediate
@@ -50,9 +50,9 @@ spring:
     password: ${DEVICES_DB_PASSWORD}
     hikari:
       pool-name: sharding-proxy
-      maximum-pool-size: 5
+      maximum-pool-size: ${DEVICES_DB_POOL_SIZE:5}
       # Proxy не выдал соединение за 2 с - ошибка, а не долгое ожидание
-      connection-timeout: 2000
+      connection-timeout: ${DEVICES_DB_CONNECTION_TIMEOUT_MS:2000}
       # Не падать при старте, если Proxy ещё не готов: запись повторит обработчик ошибок
       initialization-fail-timeout: -1
 
@@ -66,9 +66,11 @@ app:
     # Ошибка хранилища: 3 попытки с паузами 1 с и 2 с, затем devices-dlt
     max-attempts: ${DEVICES_MAX_ATTEMPTS:3}
     retry-interval: ${DEVICES_RETRY_INTERVAL:1s}
-    retry-multiplier: 2.0
-    max-future-skew: 1d
-    shard-cache-ttl: 5m
+    retry-multiplier: ${DEVICES_RETRY_MULTIPLIER:2.0}
+    # Время события может опережать часы сервиса не больше чем на это значение
+    max-future-skew: ${DEVICES_MAX_FUTURE_SKEW:1d}
+    # Как долго помнить шард устройства, определённый через Proxy (PREVIEW)
+    shard-cache-ttl: ${DEVICES_SHARD_CACHE_TTL:5m}
 
 # Только технические точки: health, metrics, prometheus
 management:
