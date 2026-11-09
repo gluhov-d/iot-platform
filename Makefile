@@ -30,7 +30,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status dcs-test dcs-it dcs-coverage schemas-register schemas
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -191,6 +191,12 @@ shard-of: ## На какой шард попадает устройство: mak
 
 replication-status: ## Репликация шардов: клиенты и слоты на шардах, режим и приёмник WAL на репликах (код 1 при сбое)
 	@COMPOSE_CMD="$(COMPOSE)" bash $(INFRA_DIR)/config/postgres/replication-status.sh
+
+shard-backup: ## Копия каждого шарда с его реплики без остановки сервисов (backups/<время>/, manifest: SHA-256, offset Kafka)
+	@$(INFRA_DIR)/config/postgres/shard-backup.sh
+
+shard-restore: ## УДАЛЯЕТ данные шардов и восстанавливает из копии: make shard-restore CONFIRM=yes [BACKUP=backups/<время>]
+	@$(INFRA_DIR)/config/postgres/shard-restore.sh $(if $(filter yes,$(CONFIRM)),--yes) $(BACKUP)
 
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml

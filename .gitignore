@@ -42,6 +42,9 @@ out/
 diagrams/*.svg
 /.env
 
+# Копии шардов (make shard-backup)
+/backups/
+
 ### Gradle-сборка сервиса ###
 services/*/build/
 services/*/.gradle/
