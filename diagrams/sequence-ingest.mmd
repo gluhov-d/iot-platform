@@ -1,57 +1,41 @@
 %% Прием события: at-least-once, offset подтверждается только после записи в обе таблицы
-%% или после записи сообщения в events.DLT. Реестр устройств: событие может нести снимок устройства (DeviceEvent 1.1)
 sequenceDiagram
     autonumber
     participant K as Kafka (events)
     participant SR as Schema Registry
-    participant C as ErrorHandlingDeserializer
     participant L as KafkaEventListener
-    participant H as DefaultErrorHandler
     participant S as EventIngestionService
     participant V as DeviceEventValidator
     participant CE as ClickHouse device_events
     participant CO as ClickHouse device_outbox
-    participant D as Kafka (events.DLT)
 
-    K->>C: poll (max.poll.records=1, enable.auto.commit=false)
-    C->>SR: схема по id (KafkaAvroDeserializer, кешируется)
-    alt Schema Registry не ответил (сеть, 5xx)
-        SR--xC: ошибка
-        C-->>H: DeserializationException - временная
-        Note over H,K: повтор с backoff 0,5 → 10 с без лимита попыток, offset не подтверждается
-    else не Avro / схема не найдена
-        C-->>H: DeserializationException - «ядовитое» сообщение
-        H->>D: исходные байты, тот же номер раздела
-        H->>K: commit offset после записи в DLT
-    else DeviceEvent (SpecificRecord, контракт 1.0 или 1.1)
-        SR-->>C: схема
-        C->>L: DeviceEvent
-        L->>L: MDC: topic, partition, offset, eventId, deviceId
-        L->>S: ingest(event)
-        S->>V: validate(eventId, deviceId, eventType, timestampMs, device)
-        alt событие невалидно (в т. ч. device.deviceId ≠ deviceId)
-            V-->>S: InvalidEventException
-            S-->>H: исключение - не повторяется
-            H->>D: DeviceEvent (Avro), тот же номер раздела
-            H->>K: commit offset после записи в DLT, лог status=REJECTED
+    K->>L: poll (max.poll.records=1, enable.auto.commit=false)
+    L->>SR: схема по id (KafkaAvroDeserializer, кешируется)
+    SR-->>L: DeviceEvent (SpecificRecord)
+    L->>L: MDC: topic, partition, offset, eventId, deviceId
+    L->>S: ingest(event)
+    S->>V: validate(eventId, deviceId, eventType, timestampMs)
+
+    alt событие невалидно
+        V-->>S: InvalidEventException
+        S-->>L: исключение
+        Note over L,K: ack не вызывается. DefaultErrorHandler не повторяет<br/>(not retryable),  пишет лог status=REJECTED
         else событие валидно
-            S->>S: event_date = дата в UTC, ingested_at = now<br/>device_snapshot = снимок в Avro JSON, '' - если снимка нет
-            S->>CE: INSERT device_events (+ device_snapshot, source_system, payload)
+        S->>S: event_date = дата в UTC, ingested_at = now
+        S->>CE: INSERT device_events
+        alt ошибка записи
+            CE-->>S: ошибка
+            S-->>L: EventPersistenceException (events_persist_fail_total++)
+            Note over L,K: ack не вызывается -> повтор с backoff без лимита попыток
+        else записано
+                        S->>CO: INSERT device_outbox (state_version=1, NEW, attempts=0, <br/>trace_id/span_id текущего спана - для сквозного трейса)
             alt ошибка записи
-                CE-->>S: ошибка
-                S-->>H: EventPersistenceException (events_persist_fail_total++)
-                Note over H,K: повтор с backoff без лимита попыток
+                CO-->>S: ошибка
+                S-->>L: EventPersistenceException
+                Note over L,K: ack не вызывается -> повтор. Повторная строка<br/>device_events схлопнется ReplacingMergeTree
             else записано
-                S->>CO: INSERT device_outbox (state_version=1, NEW, attempts=0, device_snapshot,<br/>trace_id/span_id текущего спана - для сквозного трейса)
-                alt ошибка записи
-                    CO-->>S: ошибка
-                    S-->>H: EventPersistenceException
-                    Note over H,K: повтор. Повторная строка device_events схлопнется ReplacingMergeTree
-                else записано
-                    S-->>L: ok (events_processed_total++, outbox_candidate_created_total++)
-                    L->>K: ack.acknowledge() - commit offset
-                end
+                S-->>L: ok (events_processed_total++, outbox_candidate_created_total++)
+                L->>K: ack.acknowledge() - commit offset
             end
         end
     end
-    Note over D,K: запись в DLT не удалась - offset не подтверждается, сообщение будет обработано снова

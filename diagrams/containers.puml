@@ -3,16 +3,14 @@
 
 title C4 Level 2 — Контейнеры IoT-платформы
 
-' Маршруты выделены цветом и нумерацией: T — приём телеметрии и реестр устройств, C — выполнение команд,
-' E — обработка ошибок, B — сборка и схема БД. Наблюдаемость: M — метрики, L — логи, R — трейсы
-AddRelTag("telemetry", $textColor="#1565C0", $lineColor="#1565C0", $legendText="T: телеметрия и реестр устройств")
+' Маршруты выделены цветом и нумерацией: T — приём телеметрии, C — выполнение команд, E — обработка ошибок.
+' Наблюдаемость: M — метрики, L — логи, R — трейсы
+AddRelTag("telemetry", $textColor="#1565C0", $lineColor="#1565C0", $legendText="T: приём телеметрии")
 AddRelTag("command",   $textColor="#2E7D32", $lineColor="#2E7D32", $legendText="C: выполнение команд")
 AddRelTag("error",     $textColor="#C62828", $lineColor="#C62828", $lineStyle=DashedLine(), $legendText="E: обработка ошибок")
-AddRelTag("build",     $textColor="#5D4037", $lineColor="#5D4037", $lineStyle=DashedLine(), $legendText="B: сборка и миграции")
 AddRelTag("metrics",   $textColor="#EF6C00", $lineColor="#EF6C00", $lineStyle=DottedLine(), $legendText="M: метрики")
 AddRelTag("logs",      $textColor="#6A1B9A", $lineColor="#6A1B9A", $lineStyle=DottedLine(), $legendText="L: логи")
 AddRelTag("traces",    $textColor="#00838F", $lineColor="#00838F", $lineStyle=DottedLine(), $legendText="R: трейсы")
-
 
 Person(engineer, "Инженер", "Регистрирует устройства, отправляет команды, смотрит телеметрию")
 System_Ext(device, "IoT-устройство", "Датчик/контроллер: шлёт телеметрию, получает команды")
@@ -23,47 +21,37 @@ System_Boundary(platform, "IoT Platform") {
     Container(gateway, "API Gateway", "Spring Cloud Gateway", "Единая точка входа прикладного API: проверка JWT, маршрутизация")
     Container(orchestrator, "API Orchestrator", "Spring Boot", "Сценарии из нескольких шагов: запускает процессы Camunda, агрегирует ответы")
 
+    Container(device_service, "Device Service", "Spring Boot", "Реестр устройств и их статусы")
     Container(command_service, "Command Service", "Spring Boot", "Жизненный цикл команд: NEW → SENT → DONE/FAILED")
     Container(event_service, "Event Service", "Spring Boot", "Чтение телеметрии и событий для API")
 
-    Container(device_gateway, "Device Gateway", "Spring Boot, MQTT/HTTP adapter", "Протокольный шлюз устройств: принимает MQTT/HTTP, проверяет устройство, публикует в Kafka; доставляет команды устройству")
-    Container(events_collector, "events-collector-service", "Spring Boot 4, Kafka consumer", "Приём событий: events -> ClickHouse (device_events со снимком устройства + outbox), публикация DeviceInfo в devices")
-    Container(device_collector, "device-collector-service", "Spring Boot 4, Kafka consumer", "Реестр устройств: devices -> PostgreSQL через ShardingSphere-Proxy, идемпотентно; чтение по deviceId")
+    Container(device_collector, "Device Collector", "Spring Boot, MQTT/HTTP adapter", "Протокольный шлюз устройств: принимает MQTT/HTTP, проверяет устройство, публикует в Kafka; доставляет команды устройству")
+    Container(events_collector, "events-collector-service", "Spring Boot 4, Kafka consumer", "Модуль 2: events -> ClickHouse (device_events + outbox), фоновая публикация DeviceInfo в devices")
     Container(failed_processor, "Failed Events Processor", "Spring Boot, Kafka consumer", "Разбор DLT: сохраняет сбойные сообщения, повторяет обработку")
   }
 
-  Boundary(kafka, "Kafka", "Message Broker") {
-    ContainerQueue(topic_events, "events", "Kafka topic, delete", "Сырые события устройств (Avro DeviceEvent), ключ deviceId")
-    ContainerQueue(topic_device, "devices", "Kafka topic, compact", "Производные события устройств (Avro DeviceInfo: CREATED / UPDATED / DELETED, снимок устройства), ключ deviceId")
-    ContainerQueue(topic_events_dlt, "events.DLT", "Kafka topic, delete", "Не Avro / невалидные события events")
-    ContainerQueue(topic_devices_dlt, "devices-dlt", "Kafka topic, delete", "Невалидные DeviceInfo и сообщения, не записанные в PostgreSQL после повторов")
-    ContainerQueue(topic_dlt, "iot.dlt", "Kafka topic", "Отклонённые шлюзом сообщения устройств (шлюз пока не реализован)")
-  }
-  Container(schema_registry, "Schema Registry", "Confluent", "Avro-схемы тем: events-value, devices-value (BACKWARD)")
-  Container(nexus, "Nexus", "Sonatype Nexus 3, Maven", "Артефакт contracts-avro: версии из git-тегов contracts/vX.Y.Z, проверка совместимости при публикации")
+    Boundary(kafka, "Kafka", "Message Broker") {
+        ContainerQueue(topic_events, "events", "Kafka topic, delete", "Сырые события устройств (Avro DeviceEvent), ключ deviceId")
+        ContainerQueue(topic_device, "devices", "Kafka topic, compact", "Обнаруженные устройства (Avro DeviceInfo), ключ deviceId")
+        ContainerQueue(topic_dlt, "iot.dlt", "Kafka topic", "Сообщения, которые не удалось обработать (следующие модули)")
+    }
+    Container(schema_registry, "Schema Registry", "Confluent", "Контракты Avro")
 
-  Boundary(registry, "Реестр устройств") {
-    Container(proxy, "ShardingSphere-Proxy", "Apache ShardingSphere 5.5.3, PostgreSQL protocol", "Логическая база devices: маршрутизация по |hashCode(device_id)| % 2, связанные таблицы")
-    ContainerDb(shard0, "postgres-shard-0", "PostgreSQL 18, база shard_0", "devices, processed_device_events — часть устройств")
-    ContainerDb(shard1, "postgres-shard-1", "PostgreSQL 18, база shard_1", "devices, processed_device_events — остальные устройства")
-    Container(db_migrator, "db-migrator", "Java 25, Flyway 12.11", "Одноразовая задача: одинаковые миграции на каждый шард, сверка версий схемы")
-  }
+    ContainerDb(pg, "PostgreSQL", "Реляционная БД", "devices, device_commands; БД Keycloak и Camunda")
+    ContainerDb(redis, "Redis", "In-Memory", "outbox:lease (аренда публикатора), devices:published; кэш активных устройств")
+    ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "iot_platform: device_events, device_outbox (ReplacingMergeTree), device_publication_audit (MergeTree)")
+    ContainerDb(minio, "MinIO", "Object Storage", "Бакеты iot-dlt, iot-attachments")
+    Container(camunda, "Camunda", "BPM Engine", "Процесс выполнения команды: отправка, ожидание подтверждения, таймаут")
 
-  ContainerDb(pg, "PostgreSQL", "Реляционная БД", "device_commands; БД Keycloak и Camunda")
-  ContainerDb(redis, "Redis", "In-Memory", "outbox:lease (аренда публикатора), devices:published; кэш активных устройств")
-  ContainerDb(clickhouse, "ClickHouse", "Колоночная БД", "iot_platform: device_events, device_outbox (ReplacingMergeTree), device_publication_audit (MergeTree)")
-  ContainerDb(minio, "MinIO", "Object Storage", "Бакеты iot-dlt, iot-attachments")
-  Container(camunda, "Camunda", "BPM Engine", "Процесс выполнения команды: отправка, ожидание подтверждения, таймаут")
-
-  Boundary(obs, "Наблюдаемость") {
-    Container(alloy, "Alloy", "Grafana Alloy", "Агент: читает логи контейнеров проекта через Docker API, принимает OTLP-трейсы")
-    ContainerDb(loki, "Loki", "Log storage", "Логи с метками service, container, cluster")
-    ContainerDb(tempo, "Tempo", "Trace storage", "Трейсы")
-    ContainerDb(prometheus, "Prometheus", "TSDB, pull", "Метрики приложений и экспортёров")
-    Container(pg_exporter, "postgres-exporter", "Prometheus exporter", "Метрики PostgreSQL на :9187")
-    Container(kafka_exporter, "kafka-exporter", "Prometheus exporter", "Метрики Kafka на :9308")
-    Container(grafana, "Grafana", "Dashboards", "Дашборды поверх Prometheus, Loki, Tempo")
-  }
+    Boundary(obs, "Наблюдаемость") {
+        Container(alloy, "Alloy", "Grafana Alloy", "Агент: читает логи контейнеров проекта через Docker API, принимает OTLP-трейсы")
+        ContainerDb(loki, "Loki", "Log storage", "Логи с метками service, container, cluster")
+        ContainerDb(tempo, "Tempo", "Trace storage", "Трейсы")
+        ContainerDb(prometheus, "Prometheus", "TSDB, pull", "Метрики: скрейп каждые 15 с")
+        Container(pg_exporter, "postgres-exporter", "Prometheus exporter", "Метрики PostgreSQL на :9187")
+        Container(kafka_exporter, "kafka-exporter", "Prometheus exporter", "Метрики Kafka на :9308")
+        Container(grafana, "Grafana", "Dashboards", "Дашборды поверх Prometheus, Loki, Tempo")
+    }
 }
 
 System_Ext(keycloak, "Keycloak", "OIDC-провайдер")
@@ -74,57 +62,43 @@ Rel(engineer, keycloak, "Вход, получение токена", "OIDC")
 Rel(engineer, gateway, "Прикладной API с JWT", "HTTPS/REST")
 Rel(gateway, keycloak, "Проверка JWT (JWKS)", "OIDC")
 Rel(gateway, orchestrator, "Составные операции", "REST")
-Rel(gateway, device_collector, "Устройство по deviceId (только чтение)", "REST")
+Rel(gateway, device_service, "CRUD устройств", "REST")
 Rel(gateway, event_service, "Запросы телеметрии", "REST")
 
-' ------------------------------------------------------------------ T: приём телеметрии и реестр устройств
-Rel(device, device_gateway, "T1. Телеметрия, состояние устройства", "MQTT/HTTP", $tags="telemetry")
-Rel(device_gateway, redis, "T2. Устройство известно и активно?", "Redis", $tags="telemetry")
-Rel(device_gateway, topic_events, "T3. DeviceEvent (со снимком устройства, если состояние изменилось)", "Kafka, Avro", $tags="telemetry")
-Rel(events_collector, topic_events, "T4. Чтение, ack после записи", "Kafka", $tags="telemetry")
-Rel(events_collector, clickhouse, "T5. device_events + outbox со снимком; сбой записи - повтор", "JDBC/HTTP", $tags="telemetry")
-Rel(events_collector, redis, "T6. Аренда публикатора, devices:published", "Redis", $tags="telemetry")
-Rel(events_collector, topic_device, "T7. DeviceInfo: CREATED / UPDATED / DELETED (outbox)", "Kafka, Avro", $tags="telemetry")
-Rel(device_collector, topic_device, "T8. Чтение по одному, ack после COMMIT", "Kafka", $tags="telemetry")
-Rel(device_collector, proxy, "T9. Журнал + состояние устройства в одной транзакции", "JDBC, PostgreSQL", $tags="telemetry")
-Rel(proxy, shard0, "T10. Маршрут по device_id", "JDBC", $tags="telemetry")
-Rel(proxy, shard1, "T10. Маршрут по device_id", "JDBC", $tags="telemetry")
-Rel(device_gateway, schema_registry, "Схемы Avro", "HTTP")
-Rel(events_collector, schema_registry, "Схемы Avro", "HTTP")
+' ------------------------------------------------------------------ T: приём телеметрии
+Rel(device, device_collector, "T1. Телеметрия", "MQTT/HTTP", $tags="telemetry")
+Rel(device_collector, redis, "T2. Устройство известно и активно?", "Redis", $tags="telemetry")
+Rel(device_collector, topic_events, "T3. Публикация события", "Kafka, Avro", $tags="telemetry")
 Rel(device_collector, schema_registry, "Схемы Avro", "HTTP")
+Rel(events_collector, topic_events, "T4. Чтение", "Kafka", $tags="telemetry")
+Rel(events_collector, clickhouse, "T5. device_events + outbox, ack после записи", "JDBC/HTTP", $tags="telemetry")
+Rel(events_collector, redis, "T6. Аренда публикатора, devices:published", "Redis", $tags="telemetry")
+Rel(events_collector, topic_device, "T7. DeviceInfo (outbox)", "Kafka, Avro", $tags="telemetry")
+Rel(device_service, topic_device, "T4. Чтение: статус, last_seen", "Kafka", $tags="telemetry")
+Rel(device_service, pg, "Реестр устройств", "JDBC")
+Rel(device_service, redis, "Обновление кэша активных устройств", "Redis")
 Rel(event_service, clickhouse, "Выборки телеметрии", "HTTP/SQL")
-
-' ------------------------------------------------------------------ B: сборка и схема БД
-Rel(events_collector, nexus, "B1. Сборка: contracts-avro", "Maven", $tags="build")
-Rel(device_collector, nexus, "B1. Сборка: contracts-avro", "Maven", $tags="build")
-Rel(db_migrator, shard0, "B2. Flyway migrate", "JDBC", $tags="build")
-Rel(db_migrator, shard1, "B2. Flyway migrate", "JDBC", $tags="build")
 
 ' ------------------------------------------------------------------ C: выполнение команд
 Rel(orchestrator, camunda, "C1. Запуск процесса команды", "REST", $tags="command")
 Rel(camunda, command_service, "C2. Шаг «отправить команду»", "External Task / REST", $tags="command")
 Rel(command_service, pg, "C3. Сохранение команды и статуса", "JDBC", $tags="command")
-Rel(command_service, device_gateway, "C4. Доставить команду", "REST", $tags="command")
-Rel(device_gateway, device, "C5. Команда устройству", "MQTT/HTTP", $tags="command")
-Rel(device, device_gateway, "C6. Подтверждение (ack) → events", "MQTT/HTTP", $tags="command")
+Rel(command_service, device_collector, "C4. Доставить команду", "REST", $tags="command")
+Rel(device_collector, device, "C5. Команда устройству", "MQTT/HTTP", $tags="command")
+Rel(device, device_collector, "C6. Подтверждение (ack) → events", "MQTT/HTTP", $tags="command")
 Rel(command_service, topic_events, "C7. Чтение ack → DONE, завершение шага", "Kafka", $tags="command")
 Rel(camunda, pg, "Состояние процессов", "JDBC")
 
 ' ------------------------------------------------------------------ E: обработка ошибок
-Rel(device_gateway, topic_dlt, "E1. Неизвестное устройство / невалидное сообщение", "Kafka", $tags="error")
-Rel(events_collector, topic_events_dlt, "E1. Не Avro / невалидное событие, ack после записи в DLT", "Kafka", $tags="error")
-Rel(device_collector, topic_devices_dlt, "E1. Невалидное сообщение / шард недоступен после 3 попыток, ack после записи в DLT", "Kafka", $tags="error")
-Rel(failed_processor, topic_dlt, "E2. Чтение DLT", "Kafka", $tags="error")
-Rel(failed_processor, topic_events_dlt, "E2. Чтение DLT", "Kafka", $tags="error")
-Rel(failed_processor, topic_devices_dlt, "E2. Чтение DLT", "Kafka", $tags="error")
+Rel(device_collector, topic_dlt, "E1. Неизвестное устройство / невалидное сообщение", "Kafka", $tags="error")
+Rel(events_collector, topic_dlt, "E1. Ошибка записи после ретраев", "Kafka", $tags="error")
+Rel(failed_processor, topic_dlt, "E2. Чтение", "Kafka", $tags="error")
 Rel(failed_processor, minio, "E3. Исходное сообщение", "S3 API", $tags="error")
 Rel(failed_processor, clickhouse, "E3. Запись в dead_letters", "HTTP/SQL", $tags="error")
-Rel(failed_processor, topic_device, "E4. Повторная публикация исправимых (журнал отсекает дубли)", "Kafka", $tags="error")
+Rel(failed_processor, topic_events, "E4. Повторная публикация исправимых", "Kafka", $tags="error")
 Rel(camunda, command_service, "E5. Таймаут ack → FAILED", "External Task / REST", $tags="error")
 
 ' ------------------------------------------------------------------ M: метрики (Prometheus забирает сам, pull)
-Rel(prometheus, events_collector, "M1. /actuator/prometheus", "HTTP")
-Rel(prometheus, device_collector, "M1. /actuator/prometheus: devices_*, shard", "HTTP")
 Rel(prometheus, pg_exporter, "M1. Скрейп /metrics", "HTTP :9187", $tags="metrics")
 Rel(pg_exporter, pg, "M2. Статистика pg_stat_*", "SQL", $tags="metrics")
 Rel(prometheus, kafka_exporter, "M1. Скрейп /metrics", "HTTP :9308", $tags="metrics")
@@ -138,7 +112,7 @@ Rel(alloy, docker, "L1. Контейнеры проекта и их stdout/stder
 Rel(alloy, loki, "L2. Отправка логов", "HTTP push :3100", $tags="logs")
 
 ' ------------------------------------------------------------------ R: трейсы
-Rel(apps, alloy, "R1. Трейсы (один трейс: events -> devices -> PostgreSQL)", "OTLP gRPC :4319 / HTTP :4320")
+Rel(apps, alloy, "R1. Трейсы", "OTLP gRPC :4319 / HTTP :4320", $tags="traces")
 Rel(alloy, tempo, "R2. Батчи трейсов", "OTLP gRPC :4317", $tags="traces")
 
 ' ------------------------------------------------------------------ Просмотр
