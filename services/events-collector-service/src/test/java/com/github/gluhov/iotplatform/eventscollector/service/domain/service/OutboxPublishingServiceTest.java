@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceFingerprint;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.PublisherUnavailableException;
@@ -575,6 +576,116 @@ class OutboxPublishingServiceTest {
         service.publishPendingBatch();
 
         verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
+    }
+
+    @Test
+    @DisplayName("Device data unchanged (same fingerprint) then SKIPPED, event time remembered, nothing published")
+    void givenSameFingerprint_whenPublishBatch_thenSkippedAndSnapshotTimeAdvanced() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(500L));
+        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.of(DeviceFingerprint.of(snapshot)));
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, never()).publish(any());
+        verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
+        verify(publishedDeviceStore, never()).markFingerprint(any(), any());
+        verify(publishedDeviceStore, never()).markPublished(any());
+        assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
+        assertThat(captureAudit().outcome()).isEqualTo(PublishOutcome.SKIPPED);
+        assertThat(result.skipped()).isEqualTo(1);
+        assertThat(result.published()).isZero();
+    }
+
+    @Test
+    @DisplayName("Skipped snapshot does not move the remembered event time back")
+    void givenSameFingerprintAndNewerPublished_whenPublishBatch_thenSnapshotTimeKept() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(1_000L));
+        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.of(DeviceFingerprint.of(snapshot)));
+
+        service.publishPendingBatch();
+
+        verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
+    }
+
+    @Test
+    @DisplayName("Device data changed then UPDATED, and the new fingerprint is stored only after Kafka acknowledged")
+    void givenChangedFingerprint_whenPublishBatch_thenPublishedAndFingerprintStoredAfterAck() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(500L));
+        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.of("fingerprint-of-the-previous-data"));
+
+        service.publishPendingBatch();
+
+        InOrder order = inOrder(publisher, publishedDeviceStore, outboxRepository);
+        ArgumentCaptor<DeviceInfo> info = ArgumentCaptor.forClass(DeviceInfo.class);
+        order.verify(publisher).publish(info.capture());
+        order.verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        order.verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
+        order.verify(publishedDeviceStore).markFingerprint(DEVICE_ID, DeviceFingerprint.of(snapshot));
+        assertThat(captureInsert(order).status()).isEqualTo(OutboxStatus.SENT);
+        assertThat(info.getValue().getEventType()).isEqualTo(DeviceUpsertEventType.UPDATED);
+    }
+
+    @Test
+    @DisplayName("Known device without a stored fingerprint (published before it existed) then published once")
+    void givenNoStoredFingerprint_whenPublishBatch_thenPublished() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.empty());
+        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.empty());
+
+        service.publishPendingBatch();
+
+        assertThat(capturePublished().getEventType()).isEqualTo(DeviceUpsertEventType.UPDATED);
+        verify(publishedDeviceStore).markFingerprint(DEVICE_ID, DeviceFingerprint.of(snapshot));
+    }
+
+    @Test
+    @DisplayName("New device is published even if Redis still holds the same fingerprint: devices:published decides CREATED")
+    void givenNewDeviceWithKnownFingerprint_whenPublishBatch_thenCreated() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+
+        service.publishPendingBatch();
+
+        assertThat(capturePublished().getEventType()).isEqualTo(DeviceUpsertEventType.CREATED);
+        verify(publishedDeviceStore, never()).fingerprint(any());
+    }
+
+    @Test
+    @DisplayName("Kafka send fails then fingerprint is not stored: the change stays publishable")
+    void givenKafkaFailure_whenPublishBatch_thenFingerprintNotStored() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.empty());
+        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.empty());
+        doThrow(new RuntimeException("kafka rejected")).when(publisher).publish(any());
+
+        service.publishPendingBatch();
+
+        verify(publishedDeviceStore, never()).markFingerprint(any(), any());
+        verify(publishedDeviceStore, never()).markSnapshotAt(any(), anyLong());
+        assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("Event without snapshot of a known device does not read the fingerprint")
+    void givenTelemetry_whenPublishBatch_thenFingerprintNotRead() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+
+        service.publishPendingBatch();
+
+        verify(publishedDeviceStore, never()).fingerprint(any());
+        verify(publishedDeviceStore, never()).markFingerprint(any(), any());
     }
 
     @Test

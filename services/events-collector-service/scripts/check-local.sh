@@ -5,7 +5,9 @@
 #
 # Отправляет в тему events событие со снимком нового устройства и проверяет всю цепочку:
 # device_events (со снимком) -> device_outbox -> публикация (SENT) -> DeviceInfo CREATED со снимком в теме devices;
-# затем телеметрию того же устройства без снимка -> пропуск публикации (SKIPPED) -> /actuator/health.
+# затем телеметрию того же устройства без снимка -> пропуск публикации (SKIPPED); снимок с теми же данными устройства
+# и новым временем активности -> SKIPPED (отпечаток совпал), снимок с новой версией ОС -> PUBLISHED;
+# затем /actuator/health.
 # Выход 0 - все в порядке, иначе номер упавшего шага в выводе.
 #
 # Все выполняется внутри контейнеров стенда (docker compose exec): на хосте нужны
@@ -20,6 +22,8 @@ TIMEOUT="${CHECK_TIMEOUT:-60}"
 
 EVENT_ID="check-$(date +%s)-${RANDOM}"
 TELEMETRY_ID="${EVENT_ID}-telemetry"
+SAME_DATA_ID="${EVENT_ID}-same-data"
+NEW_OS_ID="${EVENT_ID}-new-os"
 # Уникальное устройство: иначе публикация была бы пропущена из-за devices:published
 DEVICE_ID="check-device-$(date +%s)-${RANDOM}"
 TIMESTAMP_MS="$(( $(date +%s) * 1000 ))"
@@ -44,7 +48,8 @@ wait_for() {
 clickhouse() {
   "${COMPOSE[@]}" exec -T clickhouse sh -c \
     'clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" "$@"' _ \
-    --param_eid="${EVENT_ID}" --param_tid="${TELEMETRY_ID}" --query "$1"
+    --param_eid="${EVENT_ID}" --param_tid="${TELEMETRY_ID}" \
+    --param_sid="${SAME_DATA_ID}" --param_oid="${NEW_OS_ID}" --query "$1"
 }
 
 # Схема DeviceEvent для консольного продюсера: тип DeviceSnapshot объявлен в отдельном файле,
@@ -93,9 +98,14 @@ ok "container healthy"
 devices_offsets="$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-get-offsets.sh \
   --bootstrap-server localhost:9092 --topic devices --time -1 2>/dev/null || true)"
 
+# Снимок устройства в Avro JSON: значения union-полей - в обёртке с именем типа, все поля перечислены явно.
+# $1 - время последней активности (мс), $2 - версия ОС
+snapshot_json() {
+  printf '%s' "{\"com.github.gluhov.iotplatform.events.avro.DeviceSnapshot\":{\"deviceId\":\"${DEVICE_ID}\",\"tenantId\":\"check-tenant\",\"ownerId\":null,\"deviceType\":\"check-sensor\",\"serialNumber\":null,\"manufacturer\":null,\"model\":null,\"firmwareVersion\":{\"string\":\"1.0.0\"},\"name\":{\"string\":\"check-device\"},\"osName\":{\"string\":\"Linux\"},\"osVersion\":{\"string\":\"$2\"},\"status\":\"ACTIVE\",\"registeredAtMs\":null,\"lastSeenAtMs\":{\"long\":$1},\"settings\":{\"mode\":\"check\"},\"sensors\":[],\"attributes\":{}}}"
+}
+
 next "Send DeviceEvent with device snapshot to topic events (Avro + Schema Registry, key deviceId)"
-# Avro JSON: значения union-полей - в обёртке с именем типа, все поля перечислены явно
-SNAPSHOT="{\"com.github.gluhov.iotplatform.events.avro.DeviceSnapshot\":{\"deviceId\":\"${DEVICE_ID}\",\"tenantId\":\"check-tenant\",\"ownerId\":null,\"deviceType\":\"check-sensor\",\"serialNumber\":null,\"manufacturer\":null,\"model\":null,\"firmwareVersion\":{\"string\":\"1.0.0\"},\"name\":{\"string\":\"check-device\"},\"osName\":{\"string\":\"Linux\"},\"osVersion\":{\"string\":\"6.1\"},\"status\":\"ACTIVE\",\"registeredAtMs\":null,\"lastSeenAtMs\":{\"long\":${TIMESTAMP_MS}},\"settings\":{\"mode\":\"check\"},\"sensors\":[],\"attributes\":{}}}"
+SNAPSHOT="$(snapshot_json "${TIMESTAMP_MS}" "6.1")"
 send_event "{\"eventId\":\"${EVENT_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":${TIMESTAMP_MS},\"eventType\":\"CHECK_LOCAL\",\"device\":${SNAPSHOT},\"sourceSystem\":{\"string\":\"check-local\"},\"payload\":null}" \
   || fail "failed to send message (are Kafka and Schema Registry available?)"
 ok "message sent"
@@ -157,6 +167,24 @@ send_event "{\"eventId\":\"${TELEMETRY_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"tim
 wait_for SKIPPED clickhouse "SELECT toString(outcome) FROM iot_platform.device_publication_audit WHERE event_id = {tid:String} ORDER BY occurred_at DESC LIMIT 1" \
   || fail "telemetry of a known device was not SKIPPED"
 ok "device_publication_audit: SKIPPED"
+
+# ------------------------------------------------------------------------------
+next "Snapshot with the same device data and a new last-seen time is not published (SKIPPED, same fingerprint)"
+SAME_DATA="$(snapshot_json "$(( TIMESTAMP_MS + 5000 ))" "6.1")"
+send_event "{\"eventId\":\"${SAME_DATA_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":$(( TIMESTAMP_MS + 2 )),\"eventType\":\"CHECK_LOCAL\",\"device\":${SAME_DATA},\"sourceSystem\":null,\"payload\":null}" \
+  || fail "failed to send snapshot with the same data"
+wait_for SKIPPED clickhouse "SELECT toString(outcome) FROM iot_platform.device_publication_audit WHERE event_id = {sid:String} ORDER BY occurred_at DESC LIMIT 1" \
+  || fail "snapshot with unchanged device data was not SKIPPED (devices:fingerprint in Redis?)"
+ok "device_publication_audit: SKIPPED"
+
+# ------------------------------------------------------------------------------
+next "Snapshot with a new OS version is published (PUBLISHED)"
+NEW_OS="$(snapshot_json "$(( TIMESTAMP_MS + 6000 ))" "6.2")"
+send_event "{\"eventId\":\"${NEW_OS_ID}\",\"deviceId\":\"${DEVICE_ID}\",\"timestampMs\":$(( TIMESTAMP_MS + 3 )),\"eventType\":\"CHECK_LOCAL\",\"device\":${NEW_OS},\"sourceSystem\":null,\"payload\":null}" \
+  || fail "failed to send snapshot with a new OS version"
+wait_for PUBLISHED clickhouse "SELECT toString(outcome) FROM iot_platform.device_publication_audit WHERE event_id = {oid:String} ORDER BY occurred_at DESC LIMIT 1" \
+  || fail "snapshot with changed device data was not PUBLISHED"
+ok "device_publication_audit: PUBLISHED"
 
 # ------------------------------------------------------------------------------
 next "/actuator/health returns UP"

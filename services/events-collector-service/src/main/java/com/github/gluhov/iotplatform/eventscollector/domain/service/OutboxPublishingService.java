@@ -176,7 +176,9 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     //   снимок со статусом DELETED                   -> DELETED (в том числе для нового устройства);
     //   устройство есть, снимка нет (телеметрия)    -> SKIPPED: поток devices не раздувается;
     //   снимок старше уже опубликованного снимка     -> SKIPPED: в compacted-теме devices последним по ключу
-    //                                                   остаётся самое позднее состояние устройства.
+    //                                                   остаётся самое позднее состояние устройства;
+    //   данные устройства те же, что в опубликованном -> SKIPPED: отпечаток (DeviceFingerprint) совпал с devices:fingerprint,
+    //                                                   меняются только время активности и показания сенсоров.
     private PublishOutcome publishOrSkip(OutboxRecord record, LeaseGuard guard) {
         boolean alreadyPublished = step("redis devices:published check")
                 .observe(() -> publishedDeviceStore.isPublished(record.deviceId()));
@@ -190,17 +192,33 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
             return skip(record, guard, "snapshot is older than the published one");
         }
 
-        DeviceInfo deviceInfo;
+        DeviceSnapshot snapshot;
         try {
-            deviceInfo = toDeviceInfo(record, alreadyPublished);
+            snapshot = DeviceSnapshotJson.fromJson(record.deviceSnapshot(), record.deviceSnapshotSchema());
         } catch (IllegalArgumentException e) {
             // Снимок не читается: дефект записи, повтор не поможет - FAILED с attempts + 1, а не ERROR каждые 2 с
             return failed(record, guard, e);
         }
+        String fingerprint = snapshot == null ? null : DeviceFingerprint.of(snapshot);
+        if (alreadyPublished && fingerprint != null && isUnchanged(record, fingerprint)) {
+            // Свежее время события запоминается и у пропущенного снимка: иначе запоздавший снимок с другими
+            // данными (время между двумя событиями) был бы опубликован поверх более позднего состояния
+            ensureLease(guard);
+            long snapshotAt = Math.max(record.sourceTimestampMs(), lastSnapshotAt.orElse(Long.MIN_VALUE));
+            step("redis devices:snapshot-at set").observe(() -> publishedDeviceStore.markSnapshotAt(record.deviceId(), snapshotAt));
+            return skip(record, guard, "device data unchanged");
+        }
+        DeviceInfo deviceInfo = toDeviceInfo(record, snapshot, alreadyPublished);
         // Тип изменения - в MDC на всё время публикации, включая журнал ошибки отправки
         try (var ignored = MDC.putCloseable("eventType", deviceInfo.getEventType().name())) {
-            return publish(record, deviceInfo, guard, lastSnapshotAt);
+            return publish(record, deviceInfo, guard, lastSnapshotAt, fingerprint);
         }
+    }
+
+    private boolean isUnchanged(OutboxRecord record, String fingerprint) {
+        Optional<String> published = step("redis devices:fingerprint get")
+                .observe(() -> publishedDeviceStore.fingerprint(record.deviceId()));
+        return published.filter(fingerprint::equals).isPresent();
     }
 
     private PublishOutcome skip(OutboxRecord record, LeaseGuard guard, String reason) {
@@ -222,7 +240,8 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         return PublishOutcome.FAILED;
     }
 
-    private PublishOutcome publish(OutboxRecord record, DeviceInfo deviceInfo, LeaseGuard guard, OptionalLong lastSnapshotAt) {
+    private PublishOutcome publish(OutboxRecord record, DeviceInfo deviceInfo, LeaseGuard guard, OptionalLong lastSnapshotAt,
+                                   String fingerprint) {
         try {
             step("publish devices").observe(() -> publisher.publish(deviceInfo));
         } catch (PublisherUnavailableException e) {
@@ -240,6 +259,10 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
             long snapshotAt = Math.max(record.sourceTimestampMs(), lastSnapshotAt.orElse(Long.MIN_VALUE));
             step("redis devices:snapshot-at set").observe(() -> publishedDeviceStore.markSnapshotAt(record.deviceId(), snapshotAt));
         }
+        // Отпечаток - тоже только после подтверждения Kafka: иначе изменение данных могло бы так и не уйти в devices
+        if (fingerprint != null) {
+            step("redis devices:fingerprint set").observe(() -> publishedDeviceStore.markFingerprint(record.deviceId(), fingerprint));
+        }
         ensureLease(guard);
         step("append SENT version").observe(() -> outboxRepository.insert(record.sent(now())));
         metrics.publishSucceeded();
@@ -250,9 +273,9 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
 
     // eventId - ключ идемпотентности потребителя: одинаков при повторной публикации той же записи outbox,
     // а emittedAtMs - время этой попытки. eventTimeMs - время исходного события: по нему отсекаются устаревшие
-    private DeviceInfo toDeviceInfo(OutboxRecord record, boolean alreadyPublished) {
-        DeviceSnapshot snapshot = DeviceSnapshotJson.fromJson(record.deviceSnapshot(), record.deviceSnapshotSchema());
+    private DeviceInfo toDeviceInfo(OutboxRecord record, DeviceSnapshot snapshot, boolean alreadyPublished) {
         DeviceUpsertEventType eventType;
+
         if (snapshot != null && snapshot.getStatus() == DeviceStatus.DELETED) {
             eventType = DeviceUpsertEventType.DELETED;
         } else {

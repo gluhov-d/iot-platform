@@ -6,6 +6,10 @@ import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
+import com.github.gluhov.iotplatform.events.avro.SensorSnapshot;
+import com.github.gluhov.iotplatform.events.avro.SensorStatus;
+import com.github.gluhov.iotplatform.eventscollector.domain.service.DeviceFingerprint;
 import com.github.gluhov.iotplatform.eventscollector.adapter.out.kafka.DeviceInfoPublishException;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.BatchResult;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
@@ -42,6 +46,9 @@ import java.util.*;
 
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.LEASE_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.PUBLISHED_KEY;
+import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.FINGERPRINT_KEY;
+import static com.github.gluhov.iotplatform.eventscollector.data.TestData.event;
+import static com.github.gluhov.iotplatform.eventscollector.data.TestData.snapshot;
 import static com.github.gluhov.iotplatform.eventscollector.config.SchemaRegistryTestContainerConfig.schemaRegistryUrl;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.EVENT_TYPE;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.eventWithSnapshot;
@@ -397,6 +404,84 @@ class ItEventsCollectorTest extends AbstractItTest {
                 .containsEntry("errorMessage", "redis unavailable");
         assertThat(auditTrail(eventId)).containsExactly("ERROR/1/it");
         assertThat(outboxRow(eventId)).containsEntry("status", "NEW").containsEntry("state_version", 1L);
+    }
+
+    @Test
+    @DisplayName("Snapshots with the same device data are published once, a change of the data is published again")
+    void givenSnapshotsOfSameDevice_whenPublish_thenOnlyChangedDataPublished() {
+        String deviceId = unique("dev");
+        long t0 = Instant.now().toEpochMilli();
+        DeviceSnapshot first = snapshot(deviceId, DeviceStatus.ACTIVE);
+        // Те же данные устройства: новые время активности и показания сенсора
+        DeviceSnapshot sameData = DeviceSnapshot.newBuilder(first)
+                .setLastSeenAtMs(t0 + 500)
+                .setSensors(List.of(SensorSnapshot.newBuilder().setSensorId("t1").setSensorType("temperature")
+                        .setUnit("C").setValue("29.9").setMeasuredAtMs(t0 + 500).setStatus(SensorStatus.WARNING).build()))
+                .build();
+        DeviceSnapshot newOs = DeviceSnapshot.newBuilder(sameData).setOsVersion("6.2").build();
+        String e1 = unique("evt");
+        String e2 = unique("evt");
+        String e3 = unique("evt");
+        String e4 = unique("evt");
+
+        publishSnapshotEvent(e1, deviceId, t0, first);
+        publishSnapshotEvent(e2, deviceId, t0 + 1, sameData);
+        publishSnapshotEvent(e3, deviceId, t0 + 2, newOs);
+        publishSnapshotEvent(e4, deviceId, t0 + 3, newOs);
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).hasSize(2));
+        await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(publishedDeviceInfo(deviceId)).hasSize(2));
+        List<DeviceInfo> published = publishedDeviceInfo(deviceId);
+        assertThat(published).extracting(DeviceInfo::getEventId).containsExactly(e1, e3);
+        assertThat(published).extracting(DeviceInfo::getEventType)
+                .containsExactly(DeviceUpsertEventType.CREATED, DeviceUpsertEventType.UPDATED);
+        assertThat(published.get(1).getDevice().getOsVersion()).isEqualTo("6.2");
+        assertThat(auditTrail(e2)).containsExactly("SKIPPED/1/it");
+        assertThat(auditTrail(e4)).containsExactly("SKIPPED/1/it");
+        assertThat(redisTemplate.opsForHash().get(FINGERPRINT_KEY, deviceId)).isEqualTo(DeviceFingerprint.of(newOs));
+    }
+
+    @Test
+    @DisplayName("Kafka does not acknowledge then fingerprint is not stored and the same data is published on retry")
+    void givenKafkaFailure_whenPublish_thenFingerprintStoredOnlyAfterSuccessfulRetry() {
+        String deviceId = unique("dev");
+        long t0 = Instant.now().toEpochMilli();
+        DeviceSnapshot first = snapshot(deviceId, DeviceStatus.ACTIVE);
+        DeviceSnapshot changed = DeviceSnapshot.newBuilder(first).setFirmwareVersion("1.5.0").build();
+        publishSnapshotEvent(unique("evt"), deviceId, t0, first);
+        String failing = unique("evt");
+        send(withSnapshot(failing, deviceId, t0 + 1, changed));
+        awaitOutbox(failing);
+        doThrow(new DeviceInfoPublishException("kafka rejected", null))
+                .doCallRealMethod()
+                .when(deviceInfoPublisher).publish(forDevice(deviceId));
+
+        publishOutbox.publishPendingBatch();
+
+        assertThat(outboxRow(failing)).containsEntry("status", "FAILED");
+        assertThat(redisTemplate.opsForHash().get(FINGERPRINT_KEY, deviceId))
+                .as("fingerprint of the data that was NOT delivered must not be stored")
+                .isEqualTo(DeviceFingerprint.of(first));
+
+        publishOutbox.publishPendingBatch();
+
+        assertThat(outboxRow(failing)).containsEntry("status", "SENT");
+        assertThat(redisTemplate.opsForHash().get(FINGERPRINT_KEY, deviceId)).isEqualTo(DeviceFingerprint.of(changed));
+    }
+
+    private void publishSnapshotEvent(String eventId, String deviceId, long timestampMs, DeviceSnapshot snapshot) {
+        send(withSnapshot(eventId, deviceId, timestampMs, snapshot));
+        awaitOutbox(eventId);
+        // По одной пачке на событие: порядок в пачке задаёт created_at, у соседних событий он может совпасть
+        publishOutbox.publishPendingBatch();
+    }
+
+    private static DeviceEvent withSnapshot(String eventId, String deviceId, long timestampMs, DeviceSnapshot snapshot) {
+        DeviceEvent event = event(eventId, deviceId, timestampMs);
+        event.setEventType("DEVICE_STATE");
+        event.setDevice(snapshot);
+        return event;
     }
 
     // Попытки публикации события из аудита: "исход/номер попытки/экземпляр" в порядке времени

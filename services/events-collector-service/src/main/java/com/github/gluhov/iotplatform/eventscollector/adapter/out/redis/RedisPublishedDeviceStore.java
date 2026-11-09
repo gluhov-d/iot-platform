@@ -6,6 +6,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.OptionalLong;
+import java.util.Optional;
 
 @Component
 @RequiredArgsConstructor
@@ -13,6 +14,8 @@ public class RedisPublishedDeviceStore implements PublishedDeviceStore {
     public static final String PUBLISHED_KEY = "devices:published";
     /** Хеш deviceId -> время события последнего опубликованного снимка (мс Unix). Пишет только владелец аренды. */
     public static final String SNAPSHOT_AT_KEY = "devices:snapshot-at";
+    /** Хеш deviceId -> SHA-256 данных устройства из последнего опубликованного снимка. Пишется после подтверждения Kafka. */
+    public static final String FINGERPRINT_KEY = "devices:fingerprint";
 
     private final StringRedisTemplate redisTemplate;
 
@@ -36,4 +39,15 @@ public class RedisPublishedDeviceStore implements PublishedDeviceStore {
     public void markSnapshotAt(String deviceId, long eventTimeMs) {
         redisTemplate.opsForHash().put(SNAPSHOT_AT_KEY, deviceId, Long.toString(eventTimeMs));
     }
+
+    @Override
+    public Optional<String> fingerprint(String deviceId) {
+        return Optional.ofNullable(redisTemplate.opsForHash().get(FINGERPRINT_KEY, deviceId)).map(Object::toString);
+    }
+
+    @Override
+    public void markFingerprint(String deviceId, String fingerprint) {
+        redisTemplate.opsForHash().put(FINGERPRINT_KEY, deviceId, fingerprint);
+    }
+
 }
