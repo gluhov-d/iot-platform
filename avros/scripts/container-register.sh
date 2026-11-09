@@ -9,12 +9,13 @@ set -euo pipefail
 : "${SCHEMA_REGISTRY_URL:?SCHEMA_REGISTRY_URL не задан}"
 EVENTS_TOPIC="${KAFKA_EVENTS_TOPIC:?KAFKA_EVENTS_TOPIC не задан}"
 DEVICES_TOPIC="${KAFKA_DEVICES_TOPIC:?KAFKA_DEVICES_TOPIC не задан}"
+EVENTS_DLT_TOPIC="${KAFKA_EVENTS_DLT_TOPIC:?KAFKA_EVENTS_DLT_TOPIC не задан}"
 DEVICES_DLT_TOPIC="${KAFKA_DEVICES_DLT_TOPIC:?KAFKA_DEVICES_DLT_TOPIC не задан}"
 COMPATIBILITY="${SCHEMA_COMPATIBILITY:-FULL_TRANSITIVE}"
 
-# events и <events>.DLT - DeviceEvent; devices и devices-dlt - DeviceInfo.
-# <events>.DLT: сюда же попадают нечитаемые байты, они схемой не описываются
-subjects="${EVENTS_TOPIC}-value=DeviceEvent,${EVENTS_TOPIC}.DLT-value=DeviceEvent,${DEVICES_TOPIC}-value=DeviceInfo,${DEVICES_DLT_TOPIC}-value=DeviceInfo"
+# events и events-dlt - DeviceEvent; devices и devices-dlt - DeviceInfo.
+# В DLT-темы попадают и нечитаемые байты: они схемой не описываются
+subjects="${EVENTS_TOPIC}-value=DeviceEvent,${EVENTS_DLT_TOPIC}-value=DeviceEvent,${DEVICES_TOPIC}-value=DeviceInfo,${DEVICES_DLT_TOPIC}-value=DeviceInfo"
 
 cd /workspace
 echo "==> Schema Registry ${SCHEMA_REGISTRY_URL}, совместимость ${COMPATIBILITY}"

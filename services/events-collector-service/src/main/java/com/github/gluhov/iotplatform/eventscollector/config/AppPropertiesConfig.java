@@ -9,7 +9,7 @@ import java.time.Clock;
 import java.time.Duration;
 
 @Configuration
-@EnableConfigurationProperties({KafkaProperties.class, OutboxProperties.class})
+@EnableConfigurationProperties({KafkaProperties.class, OutboxProperties.class, ProcessingProperties.class})
 public class AppPropertiesConfig {
 
     @Bean

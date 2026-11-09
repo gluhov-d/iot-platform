@@ -42,7 +42,7 @@ class KafkaDeviceInfoProducerTest {
 
     @BeforeEach
     void setUp() {
-        KafkaProperties properties = new KafkaProperties("events", DEVICES_TOPIC, Duration.ofMillis(200));
+        KafkaProperties properties = new KafkaProperties("events", DEVICES_TOPIC, "events-dlt", Duration.ofMillis(200));
         producer = new KafkaDeviceInfoProducer(kafkaTemplate, properties);
     }
 

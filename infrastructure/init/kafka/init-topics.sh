@@ -10,6 +10,7 @@ set -euo pipefail
 : "${KAFKA_BOOTSTRAP:?KAFKA_BOOTSTRAP не задан}"
 EVENTS_TOPIC="${KAFKA_EVENTS_TOPIC:-events}"
 DEVICES_TOPIC="${KAFKA_DEVICES_TOPIC:-devices}"
+EVENTS_DLT_TOPIC="${KAFKA_EVENTS_DLT_TOPIC:-events-dlt}"
 DEVICES_DLT_TOPIC="${KAFKA_DEVICES_DLT_TOPIC:-devices-dlt}"
 PARTITIONS="${KAFKA_TOPIC_PARTITIONS:-3}"
 REPLICATION="${KAFKA_TOPIC_REPLICATION:-1}"
@@ -38,7 +39,7 @@ create "${EVENTS_TOPIC}" delete
 create "${DEVICES_TOPIC}" compact
 # Входные сообщения, которые нельзя обработать (не Avro, не прошли валидацию): сервис откладывает их сюда,
 # а не теряет; число разделов как у events - сообщение уходит в раздел с тем же номером
-create "${EVENTS_TOPIC}.DLT" delete
+create "${EVENTS_DLT_TOPIC}" delete
 # Реестр устройств: сообщения devices, которые device-collector-service не смог обработать (невалидные или не записанные
 # в PostgreSQL после повторов); число разделов как у devices - сообщение уходит в раздел с тем же номером
 create "${DEVICES_DLT_TOPIC}" delete
@@ -46,5 +47,5 @@ create "${DEVICES_DLT_TOPIC}" delete
 echo "==> итоговая конфигурация:"
 topics --describe --topic "${EVENTS_TOPIC}"
 topics --describe --topic "${DEVICES_TOPIC}"
-topics --describe --topic "${EVENTS_TOPIC}.DLT"
 topics --describe --topic "${DEVICES_DLT_TOPIC}"
+topics --describe --topic "${EVENTS_DLT_TOPIC}"

@@ -66,12 +66,18 @@ app:
     kafka:
       events-topic: ${KAFKA_EVENTS_TOPIC:events}
       devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
+      dlt-topic: ${KAFKA_EVENTS_DLT_TOPIC:events-dlt}
       send-timeout: 20s
     outbox:
       batch-size: ${OUTBOX_BATCH_SIZE:100}
       max-attempts: ${OUTBOX_MAX_ATTEMPTS:10}
       lease-ttl-ms: ${OUTBOX_LEASE_TTL_MS:30000}
       publish-interval-ms: ${OUTBOX_PUBLISH_INTERVAL_MS:2000}
+    processing:
+      # Ошибка записи в ClickHouse: 3 попытки с паузами 1 с и 2 с, затем events-dlt
+      max-attempts: ${EVENTS_MAX_ATTEMPTS:3}
+      retry-interval: ${EVENTS_RETRY_INTERVAL:1s}
+      retry-multiplier: 2.0
 
 # Только технические точки: health, metrics, prometheus
 management:
