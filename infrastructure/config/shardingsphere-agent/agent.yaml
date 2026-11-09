@@ -1,0 +1,12 @@
+# Агент метрик ShardingSphere-Proxy (монтируется в agent/conf/agent.yaml контейнера).
+# Сам агент и плагин Prometheus уже есть в официальном образе; включается он ключом start.sh -g
+# (PROXY_AGENT_ENABLED=true в docker-compose.yaml, см. config/shardingsphere/render-config.sh).
+# Только метрики: трассировку даёт приложение, журнал собирает Alloy.
+# host 0.0.0.0: порт слушает контейнер; на хост он не публикуется - метрики читает Prometheus по сети compose.
+plugins:
+  metrics:
+    Prometheus:
+      host: "0.0.0.0"
+      port: 9090
+      props:
+        jvm-information-collector-enabled: "true"

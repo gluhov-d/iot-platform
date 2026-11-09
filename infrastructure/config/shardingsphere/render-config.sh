@@ -19,4 +19,11 @@ for template in "${TEMPLATES_DIR}"/*.yaml; do
   echo "==> ${target}: rendered from ${template}"
 done
 
-exec "${LOCAL_PATH:-/opt/shardingsphere-proxy}/bin/start.sh" "${PORT:-3307}"
+# Агент метрик: плагин Prometheus входит в официальный образ, ключ -g (start.sh) подключает его как -javaagent.
+# Включается переменной PROXY_AGENT_ENABLED=true (в docker-compose.yaml); в тестах Testcontainers её нет - агента нет.
+args=()
+if [ "${PROXY_AGENT_ENABLED:-false}" = "true" ]; then
+  args+=(-g)
+fi
+
+exec "${LOCAL_PATH:-/opt/shardingsphere-proxy}/bin/start.sh" "${args[@]}" "${PORT:-3307}"

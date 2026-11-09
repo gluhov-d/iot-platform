@@ -9,6 +9,29 @@ x-logging: &default-logging
 x-restart: &default-restart
   restart: unless-stopped
 
+# Общая часть экспортёров метрик шардов (postgres-exporter-shard-*): образ, healthcheck, профиль
+x-shard-exporter: &shard-exporter
+  # Версия своя, не POSTGRES_EXPORTER_VERSION: v0.15.0 платформенного postgres-exporter не знает pg_stat_bgwriter PostgreSQL 17+
+  image: quay.io/prometheuscommunity/postgres-exporter:${POSTGRES_SHARD_EXPORTER_VERSION}
+  profiles: [observability]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # postmaster - время запуска сервера (панель Uptime), stat_replication - отставание реплик в байтах WAL (на шарде);
+  # оба сборщика по умолчанию выключены
+  command: ["--collector.postmaster", "--collector.stat_replication"]
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- -T 3 http://127.0.0.1:9187/metrics | grep -q '^pg_up 1'"]
+    interval: 20s
+    timeout: 5s
+    retries: 5
+    start_period: 15s
+  networks: [iot-net]
+
+
 services:
 
   # ---------------------------------------------------------------------------
@@ -368,6 +391,7 @@ services:
       SHARD_DB_USER: ${SHARD_DB_USER}
       SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
       SHARD_REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+      SHARD_EXPORTER_PASSWORD: ${SHARD_EXPORTER_PASSWORD}
     entrypoint: [ "/bin/sh", "/opt/init/shard-replication-init.sh" ]
     volumes:
       - ./init/shards/shard-replication-init.sh:/opt/init/shard-replication-init.sh:ro
@@ -481,6 +505,8 @@ services:
         condition: service_completed_successfully
     environment:
       PORT: 3307
+      # Агент метрик (Prometheus, порт 9090 контейнера, наружу не публикуется): плагин входит в образ, конфигурация - config/shardingsphere-agent
+      PROXY_AGENT_ENABLED: "true"
       # Без этого start.sh в контейнере не задаёт кучу, и JVM берёт до четверти памяти Docker
       CGROUP_MEM_OPTS: "-Xms256m -Xmx512m"
       SHARD_DB_USER: ${SHARD_DB_USER}
@@ -493,6 +519,7 @@ services:
     volumes:
       - ./config/shardingsphere:/opt/init/conf:ro
       - ./config/shardingsphere/render-config.sh:/opt/init/render-config.sh:ro
+      - ./config/shardingsphere-agent/agent.yaml:/opt/shardingsphere-proxy/agent/conf/agent.yaml:ro
     healthcheck:
       # Порт Proxy открывается после загрузки конфигурации и метаданных таблиц; curl/psql в образе нет
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3307"]
@@ -532,6 +559,8 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
       KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      DEVICES_MAX_ATTEMPTS: ${DEVICES_MAX_ATTEMPTS}
+      DEVICES_RETRY_INTERVAL: ${DEVICES_RETRY_INTERVAL}
       # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
       # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml)
       DEVICES_DB_URL: "jdbc:postgresql://shardingsphere-proxy:3307/devices?connectTimeout=3&socketTimeout=15"
@@ -839,6 +868,59 @@ services:
       retries: 5
       start_period: 15s
     networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Экспортёры метрик шардов и их реплик: по одному postgres-exporter на каждый сервер PostgreSQL
+  # (профиль observability). Под ролью exporter (pg_monitor), создаёт её shard-replication-init.
+  # Порты на хост не публикуются: метрики читает Prometheus по сети compose
+  # ---------------------------------------------------------------------------
+  postgres-exporter-shard-0:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-0
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-0:5432/shard_0?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
+
+  postgres-exporter-shard-0-replica:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-0-replica
+    depends_on:
+      postgres-shard-0-replica:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-0-replica:5432/shard_0?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
+
+  postgres-exporter-shard-1:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-1
+    depends_on:
+      postgres-shard-1:
+        condition: service_healthy
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-1:5432/shard_1?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
+
+  postgres-exporter-shard-1-replica:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-1-replica
+    depends_on:
+      postgres-shard-1-replica:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-1-replica:5432/shard_1?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
 
   # ---------------------------------------------------------------------------
   # kafka-exporter — метрики Kafka (лаг консьюмер-групп) для Prometheus

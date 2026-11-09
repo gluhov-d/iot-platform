@@ -36,7 +36,8 @@ datasources:
         spanStartTimeShift: -5m
         spanEndTimeShift: 5m
         customQuery: true
-        query: '{service="events-collector-service"} |= "$${__trace.traceId}"'
+        # Трейс проходит оба сервиса (events -> devices): логи обоих по traceId
+        query: '{service=~"events-collector-service|device-collector-service"} |= "$${__trace.traceId}"'
       serviceMap:
         datasourceUid: prometheus
       nodeGraph:

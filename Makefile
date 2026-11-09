@@ -159,6 +159,7 @@ urls: ## Показать адреса всех сервисов
 	echo "  Tempo                     http://localhost:$$(v TEMPO_HTTP_PORT)  (OTLP: $$(v TEMPO_OTLP_GRPC_PORT)/$$(v TEMPO_OTLP_HTTP_PORT))"; \
 	echo "  Alloy                     http://localhost:$$(v ALLOY_PORT)"; \
 	echo "  kafka-exporter            http://localhost:$$(v KAFKA_EXPORTER_PORT)/metrics"; \
+	echo "  Proxy и шарды (метрики)   только сеть compose: shardingsphere-proxy:9090, postgres-exporter-shard-N[-replica]:9187 (читает Prometheus)"; \
 	echo "  --- профиль platform"; \
 	echo "  PostgreSQL                postgresql://localhost:$$(v POSTGRES_PORT)/$$(v POSTGRES_DB)"; \
 	echo "  postgres-exporter         http://localhost:$$(v POSTGRES_EXPORTER_PORT)/metrics"; \
