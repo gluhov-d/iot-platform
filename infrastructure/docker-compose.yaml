@@ -303,16 +303,25 @@ services:
       POSTGRES_DB: shard_0
       POSTGRES_USER: ${SHARD_DB_USER}
       POSTGRES_PASSWORD: ${SHARD_DB_PASSWORD}
+    # hba_file: правила доступа из репозитория (роль replicator, см. config/postgres/pg_hba.conf);
+    # max_slot_wal_keep_size: остановленная реплика не заполнит диск шарда - после 1 ГБ WAL слот отключается
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - max_slot_wal_keep_size=1GB
     volumes:
       # PostgreSQL 18: данные в /var/lib/postgresql/18/docker, том монтируется на /var/lib/postgresql
       - postgres-shard-0-data:/var/lib/postgresql
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_0"]
+      test: [ "CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_0" ]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 10s
-    networks: [iot-net]
+    networks: [ iot-net ]
 
   postgres-shard-1:
     image: postgres:${POSTGRES_SHARD_VERSION}
@@ -323,8 +332,16 @@ services:
       POSTGRES_DB: shard_1
       POSTGRES_USER: ${SHARD_DB_USER}
       POSTGRES_PASSWORD: ${SHARD_DB_PASSWORD}
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - max_slot_wal_keep_size=1GB
     volumes:
+      # PostgreSQL 18: данные в /var/lib/postgresql/18/docker, том монтируется на /var/lib/postgresql
       - postgres-shard-1-data:/var/lib/postgresql
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_1"]
       interval: 5s
@@ -332,6 +349,95 @@ services:
       retries: 20
       start_period: 10s
     networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Подготовка шардов к репликации - одноразовая задача: роль replicator и слоты replica_N на каждом шарде.
+  # Идемпотентна, безопасна на шардах с данными. Реплики стартуют после неё
+  # ---------------------------------------------------------------------------
+  shard-replication-init:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-shard-replication-init
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+    environment:
+      SHARD_DB_USER: ${SHARD_DB_USER}
+      SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      SHARD_REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+    entrypoint: [ "/bin/sh", "/opt/init/shard-replication-init.sh" ]
+    volumes:
+      - ./init/shards/shard-replication-init.sh:/opt/init/shard-replication-init.sh:ro
+    networks: [ iot-net ]
+
+  # Реплика шарда 0: только чтение, потоковая репликация. Приложение и Proxy её не используют
+  # (в конфигурации Proxy только шарды); нужна для отказоустойчивости и как источник копий. Порты на хост не публикуются
+  postgres-shard-0-replica:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-0-replica
+    <<: *default-restart
+    logging: *default-logging
+    # Пустой том принадлежит postgres: pg_basebackup и сервер работают без root
+    user: postgres
+    depends_on:
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      # POSTGRES_USER нужен только проверке здоровья: данные и роли реплика получает от шарда
+      POSTGRES_USER: ${SHARD_DB_USER}
+      PRIMARY_HOST: postgres-shard-0
+      REPLICATION_SLOT: replica_0
+      REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+    entrypoint: [ "/bin/sh", "/opt/init/replica-entrypoint.sh" ]
+    # hot_standby_feedback: запросы на реплике (например, копия) не отменяются очисткой на шарде
+    command: [ "postgres", "-c", "hot_standby=on", "-c", "hot_standby_feedback=on" ]
+    volumes:
+      - postgres-shard-0-replica-data:/var/lib/postgresql
+      - ./init/shards/replica-entrypoint.sh:/opt/init/replica-entrypoint.sh:ro
+    healthcheck:
+      # healthy - сервер принимает подключения и работает как standby
+      test: [ "CMD-SHELL", "[ \"$$(psql -U \"$${POSTGRES_USER}\" -d shard_0 -Atc 'SELECT pg_is_in_recovery()')\" = t ]" ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [ iot-net ]
+
+  # Реплика шарда 1: только чтение, потоковая репликация. Приложение и Proxy её не используют
+  # (в конфигурации Proxy только шарды); нужна для отказоустойчивости и как источник копий. Порты на хост не публикуются
+  postgres-shard-1-replica:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-1-replica
+    <<: *default-restart
+    logging: *default-logging
+    # Пустой том принадлежит postgres: pg_basebackup и сервер работают без root
+    user: postgres
+    depends_on:
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      # POSTGRES_USER нужен только проверке здоровья: данные и роли реплика получает от шарда
+      POSTGRES_USER: ${SHARD_DB_USER}
+      PRIMARY_HOST: postgres-shard-1
+      REPLICATION_SLOT: replica_1
+      REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+    entrypoint: [ "/bin/sh", "/opt/init/replica-entrypoint.sh" ]
+    # hot_standby_feedback: запросы на реплике (например, копия) не отменяются очисткой на шарде
+    command: [ "postgres", "-c", "hot_standby=on", "-c", "hot_standby_feedback=on" ]
+    volumes:
+      - postgres-shard-1-replica-data:/var/lib/postgresql
+      - ./init/shards/replica-entrypoint.sh:/opt/init/replica-entrypoint.sh:ro
+    healthcheck:
+      # healthy - сервер принимает подключения и работает как standby
+      test: [ "CMD-SHELL", "[ \"$$(psql -U \"$${POSTGRES_USER}\" -d shard_1 -Atc 'SELECT pg_is_in_recovery()')\" = t ]" ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
   # Миграции Flyway на каждый шард — одноразовая задача (services/db-migrator).
@@ -927,3 +1033,5 @@ volumes:
   nexus-data:
   postgres-shard-0-data:
   postgres-shard-1-data:
+  postgres-shard-0-replica-data:
+  postgres-shard-1-replica-data:
