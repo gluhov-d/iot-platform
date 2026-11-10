@@ -97,6 +97,10 @@ public class KafkaConfig {
 
     // max-attempts попыток всего: первая и max-attempts - 1 повторов (паузы 1 с, 2 с, ...)
     static BackOff storageBackOff(ProcessingProperties processing) {
+        if (processing.maxAttempts() == 1) {
+            // ExponentialBackOffWithMaxRetries(0) не останавливается: одна попытка - сразу в devices-dlt
+            return NO_RETRIES;
+        }
         ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(processing.maxAttempts() - 1);
         backOff.setInitialInterval(processing.retryInterval().toMillis());
         backOff.setMultiplier(processing.retryMultiplier());

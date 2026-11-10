@@ -43,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -72,14 +73,20 @@ class KafkaConfigTest {
     @BeforeEach
     @SuppressWarnings("unchecked")
     void setUp() {
-        ProducerFactory<Object, Object> producerFactory = mock(ProducerFactory.class);
-        when(producerFactory.copyWithConfigurationOverride(anyMap())).thenReturn(mock(ProducerFactory.class));
         when(template.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.completedFuture(null));
         ContainerProperties properties = new ContainerProperties("devices");
         properties.setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         when(container.getContainerProperties()).thenReturn(properties);
-        handler = new KafkaConfig().kafkaErrorHandler(producerFactory, template, new KafkaProperties("devices", DLT),
-                new ProcessingProperties(3, Duration.ofMillis(1), 2.0, Duration.ofDays(1), Duration.ofMinutes(5)),
+        handler = errorHandler(3);
+    }
+
+    // Обработчик ошибок с заданным числом попыток; остальные настройки - как в сервисе
+    @SuppressWarnings("unchecked")
+    private DefaultErrorHandler errorHandler(int maxAttempts) {
+        ProducerFactory<Object, Object> producerFactory = mock(ProducerFactory.class);
+        when(producerFactory.copyWithConfigurationOverride(anyMap())).thenReturn(mock(ProducerFactory.class));
+        return new KafkaConfig().kafkaErrorHandler(producerFactory, template, new KafkaProperties("devices", DLT),
+                new ProcessingProperties(maxAttempts, Duration.ofMillis(1), 2.0, Duration.ofDays(1), Duration.ofMinutes(5)),
                 new MetricsFacade(registry));
     }
 
@@ -127,6 +134,20 @@ class KafkaConfigTest {
     }
 
     @Test
+    @DisplayName("One attempt: the first storage error moves the message to devices-dlt at once, no retry")
+    void givenOneAttempt_whenStorageFailure_thenDeadLetteredAtOnce() {
+        handler = errorHandler(1);
+
+        handle(new ListenerExecutionFailedException("listener failed", new DeviceNotStoredException("dev-1",
+                "shard_1", new StorageAccessException(StorageFailureReason.CONNECTION, "shard is down", null))));
+
+        assertThat(sentToDlt().topic()).isEqualTo(DLT);
+        verify(consumer, never()).seek(any(TopicPartition.class), anyLong());
+        verify(consumer).commitSync(Map.of(PARTITION, new OffsetAndMetadata(11L)), null);
+        assertThat(dlt(FailureReason.STORAGE)).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("devices-dlt unavailable: offset not committed, the message is not counted as failed")
     void givenDeadLetterPublishFailure_whenHandled_thenNotCommittedNotCounted() {
         when(template.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.failedFuture(new IllegalStateException("dlt down")));
@@ -159,6 +180,15 @@ class KafkaConfigTest {
 
         assertThat(execution.nextBackOff()).isEqualTo(1000L);
         assertThat(execution.nextBackOff()).isEqualTo(2000L);
+        assertThat(execution.nextBackOff()).isEqualTo(BackOffExecution.STOP);
+    }
+
+    @Test
+    @DisplayName("One attempt in settings: no retries, straight to devices-dlt")
+    void givenOneAttempt_whenBackOff_thenStopAtOnce() {
+        BackOffExecution execution = KafkaConfig.storageBackOff(
+                new ProcessingProperties(1, Duration.ofSeconds(1), 2.0, Duration.ofDays(1), Duration.ofMinutes(5))).start();
+
         assertThat(execution.nextBackOff()).isEqualTo(BackOffExecution.STOP);
     }
 
