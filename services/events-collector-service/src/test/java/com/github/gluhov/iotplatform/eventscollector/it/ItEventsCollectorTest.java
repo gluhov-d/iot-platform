@@ -47,6 +47,7 @@ import java.util.*;
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisLeaseService.LEASE_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.PUBLISHED_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.FINGERPRINT_KEY;
+import static com.github.gluhov.iotplatform.eventscollector.adapter.out.redis.RedisPublishedDeviceStore.SNAPSHOT_AT_KEY;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.event;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.snapshot;
 import static com.github.gluhov.iotplatform.eventscollector.config.SchemaRegistryTestContainerConfig.schemaRegistryUrl;
@@ -468,6 +469,51 @@ class ItEventsCollectorTest extends AbstractItTest {
 
         assertThat(outboxRow(failing)).containsEntry("status", "SENT");
         assertThat(redisTemplate.opsForHash().get(FINGERPRINT_KEY, deviceId)).isEqualTo(DeviceFingerprint.of(changed));
+    }
+
+    @Test
+    @DisplayName("Lease taken over during Kafka send then Redis keeps the new owner's state and no SENT version is written")
+    void givenLeaseLostDuringSend_whenPublish_thenRedisKeepsNewOwnerStateAndNoSentVersion() {
+        String deviceId = unique("dev");
+        String otherOwner = "other-instance-token";
+        String newOwnerFingerprint = "fingerprint-saved-by-the-new-owner";
+        long t0 = Instant.now().toEpochMilli();
+        DeviceSnapshot first = snapshot(deviceId, DeviceStatus.ACTIVE);
+        DeviceSnapshot changed = DeviceSnapshot.newBuilder(first).setFirmwareVersion("1.5.0").build();
+        publishSnapshotEvent(unique("evt"), deviceId, t0, first);
+        String stalled = unique("evt");
+        send(withSnapshot(stalled, deviceId, t0 + 1, changed));
+        awaitOutbox(stalled);
+        // Процесс замер сразу после подтверждения Kafka дольше TTL: аренду взял другой экземпляр
+        // и успел сохранить более свежее состояние устройства
+        doAnswer(call -> {
+            Object result = call.callRealMethod();
+            redisTemplate.opsForValue().set(LEASE_KEY, otherOwner, Duration.ofSeconds(30));
+            redisTemplate.opsForHash().put(SNAPSHOT_AT_KEY, deviceId, Long.toString(t0 + 100));
+            redisTemplate.opsForHash().put(FINGERPRINT_KEY, deviceId, newOwnerFingerprint);
+            return result;
+        }).when(deviceInfoPublisher).publish(forDevice(deviceId));
+
+        try {
+            BatchResult result = publishOutbox.publishPendingBatch();
+
+            assertThat(result.leaseLost()).isTrue();
+            assertThat(result.published()).isZero();
+            // Kafka подтвердила отправку (at-least-once), но Redis и outbox старый процесс уже не меняет
+            await().atMost(WAIT).untilAsserted(() ->
+                    assertThat(publishedDeviceInfo(deviceId)).extracting(DeviceInfo::getEventId).contains(stalled));
+            assertThat(redisTemplate.opsForHash().get(SNAPSHOT_AT_KEY, deviceId))
+                    .as("snapshot time of the new owner is not overwritten").isEqualTo(Long.toString(t0 + 100));
+            assertThat(redisTemplate.opsForHash().get(FINGERPRINT_KEY, deviceId))
+                    .as("fingerprint of the new owner is not overwritten").isEqualTo(newOwnerFingerprint);
+            assertThat(redisTemplate.opsForSet().isMember(PUBLISHED_KEY, deviceId)).isTrue();
+            assertThat(redisTemplate.opsForValue().get(LEASE_KEY)).as("new owner's lease kept").isEqualTo(otherOwner);
+            assertThat(outboxRow(stalled)).as("no new outbox version")
+                    .containsEntry("status", "NEW").containsEntry("state_version", 1L);
+            assertThat(auditTrail(stalled)).isEmpty();
+        } finally {
+            redisTemplate.delete(LEASE_KEY);
+        }
     }
 
     private void publishSnapshotEvent(String eventId, String deviceId, long timestampMs, DeviceSnapshot snapshot) {

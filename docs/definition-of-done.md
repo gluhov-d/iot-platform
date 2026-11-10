@@ -65,8 +65,13 @@
    `givenStaleToken_whenRelease_thenForeignLeaseKept`).
 - [ ] Учет устройств в `devices:published` и отпечатков опубликованных данных в `devices:fingerprint`
    (`RedisPublishedDeviceStore`); в `devices` уходит сообщение, только если устройство новое или отпечаток изменился.
-- [ ] `SADD` и запись отпечатка — только после успешной отправки (`OutboxPublishingServiceTest.givenNewDevice_whenPublishBatch_thenPublishMarkAndSent`) -
-   `givenKafkaFailure_whenPublishBatch_thenFailedVersionWithIncrementedAttempts` - `markPublished` не вызван).
+- [ ] `SADD`, время снимка и отпечаток — только после успешной отправки (`OutboxPublishingServiceTest.givenNewDevice_whenPublishBatch_thenPublishMarkAndSent`) -
+   `givenKafkaFailure_whenPublishBatch_thenFailedVersionWithIncrementedAttempts` - `markPublication` не вызван).
+- [ ] Отметки публикации пишутся одним Lua-скриптом с проверкой `ownerToken` и защитой от отката времени снимка
+   (`RedisPublishedDeviceStore.markPublication`); на настоящем Redis - `ItRedisPublishedDeviceStoreTest` (чужая или истёкшая
+   аренда - ничего не записано; более старый снимок - время и отпечаток не откатываются); потеря аренды во время отправки -
+   `ItEventsCollectorTest.givenLeaseLostDuringSend_whenPublish_thenRedisKeepsNewOwnerStateAndNoSentVersion`,
+   `OutboxPublishingServiceTest.givenLeaseLostDuringSend_whenPublishBatch_thenNoMarksAndNoOutboxVersion`.
 - [ ] Без аренды публикации нет (`OutboxPublishingServiceTest.givenLeaseNotAcquired_whenPublishBatch_thenNothingPublished`).
 - [ ] Аренда проверяется и продлевается после выборки - перед каждой записью, в том числе первой, и перед каждой
    записью версии outbox (`OutboxPublishingServiceTest.givenSeveralRecords_whenPublishBatch_thenLeaseExtendedBeforeEachRecordAndWrite`).

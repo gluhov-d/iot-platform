@@ -78,6 +78,8 @@ class OutboxPublishingServiceTest {
         lenient().when(lease.release(TOKEN)).thenReturn(true);
         lenient().when(outboxRepository.findPending(MAX_ATTEMPTS, BATCH_SIZE)).thenReturn(List.of(pending));
         lenient().when(lease.extend(TOKEN, TTL)).thenReturn(true);
+        lenient().when(publishedDeviceStore.markPublication(any(), any(), anyBoolean(), any(), any()))
+                .thenReturn(PublicationMarkResult.WRITTEN);
     }
 
     @Test
@@ -90,7 +92,7 @@ class OutboxPublishingServiceTest {
         InOrder order = inOrder(publisher, publishedDeviceStore, outboxRepository, lease);
         ArgumentCaptor<DeviceInfo> info = ArgumentCaptor.forClass(DeviceInfo.class);
         order.verify(publisher).publish(info.capture());
-        order.verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        order.verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, true, OptionalLong.empty(), null);
         OutboxRecord sent = captureInsert(order);
         order.verify(lease).release(TOKEN);
 
@@ -182,7 +184,7 @@ class OutboxPublishingServiceTest {
         BatchResult result = service.publishPendingBatch();
 
         verify(publisher, never()).publish(any());
-        verify(publishedDeviceStore, never()).markPublished(anyString());
+        verifyNothingMarked();
         OutboxRecord sent = captureInsert(inOrder(outboxRepository));
         assertThat(sent.status()).isEqualTo(OutboxStatus.SENT);
         assertThat(sent.stateVersion()).isEqualTo(2);
@@ -199,7 +201,7 @@ class OutboxPublishingServiceTest {
 
         BatchResult result = service.publishPendingBatch();
 
-        verify(publishedDeviceStore, never()).markPublished(anyString());
+        verifyNothingMarked();
         OutboxRecord failed = captureInsert(inOrder(outboxRepository));
         assertThat(failed.status()).isEqualTo(OutboxStatus.FAILED);
         assertThat(failed.attempts()).isEqualTo(pending.attempts() + 1);
@@ -391,21 +393,72 @@ class OutboxPublishingServiceTest {
     }
 
     @Test
-    @DisplayName("Lease lost during Kafka send then no SENT version written")
-    void givenLeaseLostDuringSend_whenPublishBatch_thenNoOutboxVersion() {
+    @DisplayName("Lease lost during Kafka send then Redis marks refused by the owner check and no SENT version written")
+    void givenLeaseLostDuringSend_whenPublishBatch_thenNoMarksAndNoOutboxVersion() {
         when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
-        when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
+        when(publishedDeviceStore.markPublication(TOKEN, DEVICE_ID, true, OptionalLong.empty(), null))
+                .thenReturn(PublicationMarkResult.LEASE_LOST);
 
         BatchResult result = service.publishPendingBatch();
 
-        // Kafka подтвердила отправку - устройство отмечено; SENT запишет новый владелец (пропуск по devices:published)
-        verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        // Kafka подтвердила отправку, но Redis отказал в записи: SENT не пишется, запись опубликует новый владелец
+        verify(publisher).publish(forDevice(DEVICE_ID));
         verify(outboxRepository, never()).insert(any());
         verify(publicationAuditRepository, never()).insert(any());
         verify(metrics, never()).publishSucceeded();
         assertThat(result.leaseLost()).isTrue();
         assertThat(result.published()).isZero();
         assertThat(result.errors()).isZero();
+    }
+
+    @Test
+    @DisplayName("Lease expires after the Redis marks were written then no SENT version written")
+    void givenLeaseLostAfterMarks_whenPublishBatch_thenNoOutboxVersion() {
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        when(lease.extend(TOKEN, TTL)).thenReturn(true, false);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, true, OptionalLong.empty(), null);
+        verify(outboxRepository, never()).insert(any());
+        verify(publicationAuditRepository, never()).insert(any());
+        verify(metrics, never()).publishSucceeded();
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.published()).isZero();
+    }
+
+    @Test
+    @DisplayName("Redis already holds a newer snapshot then publication is still completed with a SENT version")
+    void givenNewerSnapshotInRedis_whenPublishBatch_thenSentVersionWritten() {
+        givenPending(DeviceSnapshotJson.toJson(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(false);
+        when(publishedDeviceStore.markPublication(any(), any(), anyBoolean(), any(), any()))
+                .thenReturn(PublicationMarkResult.STALE);
+
+        BatchResult result = service.publishPendingBatch();
+
+        assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
+        assertThat(result.published()).isEqualTo(1);
+        assertThat(result.leaseLost()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Lease lost while remembering the time of a skipped snapshot then no SENT version written")
+    void givenLeaseLostOnSkippedSnapshot_whenPublishBatch_thenNoOutboxVersion() {
+        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
+        givenPending(DeviceSnapshotJson.toJson(snapshot));
+        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
+        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(500L));
+        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.of(DeviceFingerprint.of(snapshot)));
+        when(publishedDeviceStore.markPublication(TOKEN, DEVICE_ID, false, OptionalLong.of(1_000L), null))
+                .thenReturn(PublicationMarkResult.LEASE_LOST);
+
+        BatchResult result = service.publishPendingBatch();
+
+        verify(publisher, never()).publish(any());
+        verify(outboxRepository, never()).insert(any());
+        assertThat(result.leaseLost()).isTrue();
+        assertThat(result.skipped()).isZero();
     }
 
     @Test
@@ -511,7 +564,7 @@ class OutboxPublishingServiceTest {
 
         assertThat(result.published()).isEqualTo(1);
         assertThat(result.errors()).isZero();
-        verify(publishedDeviceStore).markPublished(DEVICE_ID);
+        verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, true, OptionalLong.empty(), null);
         assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
         verify(metrics).publishSucceeded();
     }
@@ -575,7 +628,8 @@ class OutboxPublishingServiceTest {
 
         service.publishPendingBatch();
 
-        verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
+        verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, true, OptionalLong.of(1_000L),
+                DeviceFingerprint.of(snapshot(DEVICE_ID, DeviceStatus.ACTIVE)));
     }
 
     @Test
@@ -590,27 +644,13 @@ class OutboxPublishingServiceTest {
         BatchResult result = service.publishPendingBatch();
 
         verify(publisher, never()).publish(any());
-        verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
-        verify(publishedDeviceStore, never()).markFingerprint(any(), any());
-        verify(publishedDeviceStore, never()).markPublished(any());
+        // Только время снимка, под проверкой аренды: ни отметки опубликованности, ни отпечатка
+        verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, false, OptionalLong.of(1_000L), null);
+        verify(publishedDeviceStore, never()).markPublication(any(), any(), eq(true), any(), any());
         assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.SENT);
         assertThat(captureAudit().outcome()).isEqualTo(PublishOutcome.SKIPPED);
         assertThat(result.skipped()).isEqualTo(1);
         assertThat(result.published()).isZero();
-    }
-
-    @Test
-    @DisplayName("Skipped snapshot does not move the remembered event time back")
-    void givenSameFingerprintAndNewerPublished_whenPublishBatch_thenSnapshotTimeKept() {
-        DeviceSnapshot snapshot = snapshot(DEVICE_ID, DeviceStatus.ACTIVE);
-        givenPending(DeviceSnapshotJson.toJson(snapshot));
-        when(publishedDeviceStore.isPublished(DEVICE_ID)).thenReturn(true);
-        when(publishedDeviceStore.lastSnapshotAt(DEVICE_ID)).thenReturn(OptionalLong.of(1_000L));
-        when(publishedDeviceStore.fingerprint(DEVICE_ID)).thenReturn(Optional.of(DeviceFingerprint.of(snapshot)));
-
-        service.publishPendingBatch();
-
-        verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
     }
 
     @Test
@@ -627,9 +667,8 @@ class OutboxPublishingServiceTest {
         InOrder order = inOrder(publisher, publishedDeviceStore, outboxRepository);
         ArgumentCaptor<DeviceInfo> info = ArgumentCaptor.forClass(DeviceInfo.class);
         order.verify(publisher).publish(info.capture());
-        order.verify(publishedDeviceStore).markPublished(DEVICE_ID);
-        order.verify(publishedDeviceStore).markSnapshotAt(DEVICE_ID, 1_000L);
-        order.verify(publishedDeviceStore).markFingerprint(DEVICE_ID, DeviceFingerprint.of(snapshot));
+        order.verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, true, OptionalLong.of(1_000L),
+                DeviceFingerprint.of(snapshot));
         assertThat(captureInsert(order).status()).isEqualTo(OutboxStatus.SENT);
         assertThat(info.getValue().getEventType()).isEqualTo(DeviceUpsertEventType.UPDATED);
     }
@@ -646,7 +685,8 @@ class OutboxPublishingServiceTest {
         service.publishPendingBatch();
 
         assertThat(capturePublished().getEventType()).isEqualTo(DeviceUpsertEventType.UPDATED);
-        verify(publishedDeviceStore).markFingerprint(DEVICE_ID, DeviceFingerprint.of(snapshot));
+        verify(publishedDeviceStore).markPublication(TOKEN, DEVICE_ID, true, OptionalLong.of(1_000L),
+                DeviceFingerprint.of(snapshot));
     }
 
     @Test
@@ -672,8 +712,7 @@ class OutboxPublishingServiceTest {
 
         service.publishPendingBatch();
 
-        verify(publishedDeviceStore, never()).markFingerprint(any(), any());
-        verify(publishedDeviceStore, never()).markSnapshotAt(any(), anyLong());
+        verifyNothingMarked();
         assertThat(captureInsert(inOrder(outboxRepository)).status()).isEqualTo(OutboxStatus.FAILED);
     }
 
@@ -685,7 +724,6 @@ class OutboxPublishingServiceTest {
         service.publishPendingBatch();
 
         verify(publishedDeviceStore, never()).fingerprint(any());
-        verify(publishedDeviceStore, never()).markFingerprint(any(), any());
     }
 
     @Test
@@ -701,6 +739,11 @@ class OutboxPublishingServiceTest {
         assertThat(failed.status()).isEqualTo(OutboxStatus.FAILED);
         assertThat(failed.attempts()).isEqualTo(1);
         assertThat(result.failed()).isEqualTo(1);
+    }
+
+    // Ни одна отметка в Redis не записывалась
+    private void verifyNothingMarked() {
+        verify(publishedDeviceStore, never()).markPublication(any(), any(), anyBoolean(), any(), any());
     }
 
     private void givenPending(String snapshotJson) {

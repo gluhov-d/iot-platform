@@ -36,7 +36,8 @@ sequenceDiagram
                 P->>K: send(devices, key=deviceId, DeviceInfo) - ждем подтверждения
                 alt отправка успешна
                     K-->>P: ack (acks=all)
-                    P->>R: SADD devices:published <deviceId>
+                    P->>R: EVAL mark.lua - SADD devices:published, HSET snapshot-at и fingerprint,<br/>только если значение outbox:lease == ownerToken и снимок не старше сохранённого
+                    Note over P,R: аренда не наша (-1) - в Redis ничего не записано, версия outbox не пишется
                     P->>R: EVAL extend.lua - контрольная точка
                     P->>CH: INSERT версия v+1, SENT
                     Note over P: outbox_publish_success_total++
