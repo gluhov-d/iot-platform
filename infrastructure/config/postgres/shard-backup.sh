@@ -5,11 +5,12 @@
 #
 # В каталоге копии: shard_0.dump, shard_1.dump (pg_dump, формат custom) и manifest.txt - число строк devices и
 # processed_device_events, версия схемы Flyway, SHA-256 файлов, до 5 deviceId каждого шарда для проверки после
-# восстановления и подтверждённые offset группы device-collector в теме devices.
+# восстановления и позиции группы device-collector в теме devices - по каждому разделу.
 #
 # Порядок (шарды и сервис продолжают работать, нагрузка копии ложится на реплику):
 #   1. обе реплики должны быть в режиме streaming;
-#   2. записываются подтверждённые offset группы device-collector;
+#   2. записываются позиции группы device-collector по каждому разделу devices: подтверждённый offset, а у раздела
+#      без коммита - его начало (restore вернёт группу и туда: иначе сообщения, обработанные после копии, не дочитались бы);
 #   3. шаг 2 раньше копий: сервис подтверждает offset ПОСЛЕ записи в шард, поэтому всё, что покрыто этими offset,
 #      уже на шарде. Реплика должна применить WAL шарда до текущей позиции - тогда копия содержит всё, что покрыто offset;
 #   4. pg_dump на реплике: согласованный снимок на момент старта (запись на шарде его не затрагивает);
@@ -42,14 +43,12 @@ for i in "${SHARDS[@]}"; do
   require_replica_streaming "${i}"
 done
 
-# Offset ДО копий (см. пункт 3 в шапке). Группа без коммитов - не ошибка; недоступная Kafka - ошибка:
-# копия без offset при восстановлении не дочитала бы сообщения, обработанные после неё
+# Позиции ДО копий (см. пункт 3 в шапке). Группа или раздел без коммитов - не ошибка (позиция - начало раздела);
+# недоступная Kafka - ошибка: копия без позиций при восстановлении не дочитала бы сообщения, обработанные после неё
 [[ -n "$("${COMPOSE[@]}" ps -q --status running kafka)" ]] \
   || { echo "[FAIL] kafka is not running: offsets of ${CONSUMER_GROUP} cannot be recorded (make up)" >&2; exit 1; }
-offsets="$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server "kafka:${KAFKA_PORT}" \
-    --describe --group "${CONSUMER_GROUP}" < /dev/null 2>/dev/null \
-  | awk -v topic="${DEVICES_TOPIC}" '$2 == topic && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { printf "%s%s:%s", sep, $3, $4; sep = "," }' || true)"
-echo "    kafka: group ${CONSUMER_GROUP}, ${DEVICES_TOPIC} offsets ${offsets:-none (group has no commits yet)}"
+offsets="$(group_positions "${CONSUMER_GROUP}" "${DEVICES_TOPIC}")" || exit 1
+echo "    kafka: group ${CONSUMER_GROUP}, ${DEVICES_TOPIC} positions ${offsets} (partition without a commit - its start)"
 
 mkdir -p "${WORK}"
 manifest="${WORK}/manifest.txt"

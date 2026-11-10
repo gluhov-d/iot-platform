@@ -18,6 +18,44 @@ DEVICES_TOPIC="$(env_value KAFKA_DEVICES_TOPIC)"; DEVICES_TOPIC="${DEVICES_TOPIC
 CONSUMER_GROUP="$(env_value DEVICE_COLLECTOR_CONSUMER_GROUP)"; CONSUMER_GROUP="${CONSUMER_GROUP:-device-collector}"
 KAFKA_PORT="$(env_value KAFKA_INTERNAL_PORT)"; KAFKA_PORT="${KAFKA_PORT:-9092}"
 
+# Инструмент Kafka в контейнере kafka: $1 - имя без .sh, дальше его аргументы. Код возврата и сообщения об ошибках
+# не скрываются: недоступный брокер не должен выглядеть как «у группы нет коммитов»
+kafka_tool() {
+  local tool="$1"; shift
+  "${COMPOSE[@]}" exec -T kafka "/opt/kafka/bin/${tool}.sh" --bootstrap-server "kafka:${KAFKA_PORT}" "$@" < /dev/null
+}
+
+# Позиции группы $1 по КАЖДОМУ разделу темы $2: раздел:offset,раздел:offset,...
+# Раздел с коммитом - подтверждённый offset; раздел без коммита - его начало: consumer без коммита читает с earliest
+# (auto-offset-reset), поэтому «нет коммита» тоже позиция, к которой нужно вернуться при восстановлении.
+# Группы, которой нет в Kafka (коммитов не было нигде), - все разделы с начала.
+group_positions() {
+  local group="$1" topic="$2" starts groups committed=""
+  starts="$(kafka_tool kafka-get-offsets --topic "${topic}" --time -2)" \
+    || { echo "[FAIL] cannot read partitions of ${topic} from Kafka" >&2; return 1; }
+  groups="$(kafka_tool kafka-consumer-groups --list)" \
+    || { echo "[FAIL] cannot list consumer groups in Kafka" >&2; return 1; }
+  if grep -qx -- "${group}" <<<"${groups}"; then
+    committed="$(kafka_tool kafka-consumer-groups --describe --group "${group}")" \
+      || { echo "[FAIL] cannot read offsets of group ${group} from Kafka" >&2; return 1; }
+  fi
+  { sed 's/^/C /' <<<"${committed}"; sed 's/^/S /' <<<"${starts}"; } | awk -v topic="${topic}" '
+    # C: строка --describe (GROUP TOPIC PARTITION CURRENT-OFFSET ...), "-" в CURRENT-OFFSET - коммита нет
+    $1 == "C" && $3 == topic && $4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ { committed[$4] = $5 }
+    # S: строка kafka-get-offsets (тема:раздел:начало)
+    $1 == "S" { split($2, f, ":"); if (f[1] == topic && f[2] ~ /^[0-9]+$/ && f[3] ~ /^[0-9]+$/) { start[f[2]] = f[3]; if (f[2] + 0 > max) max = f[2] + 0; seen = 1 } }
+    END {
+      if (!seen) exit 1
+      for (p = 0; p <= max; p++) {
+        if (!(p in start)) exit 1
+        printf "%s%s:%s", sep, p, (p in committed) ? committed[p] : start[p]; sep = ","
+      }
+    }' || { echo "[FAIL] cannot determine positions of group ${group} in ${topic}" >&2; return 1; }
+}
+
+# Номера разделов из списка позиций (раздел:offset,...) через запятую, по возрастанию
+position_partitions() { tr ',' '\n' <<<"$1" | cut -d: -f1 | sort -n | paste -sd, -; }
+
 # Команда без шума в выводе; при ошибке её вывод печатается, код возврата сохраняется
 quiet() {
   local out

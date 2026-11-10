@@ -12,7 +12,8 @@
 #      число строк и версия схемы сверяются с manifest;
 #   4. shard-replication-init заново создаёт роль replicator и слоты (слоты жили в удалённых томах),
 #      реплики снимают новый pg_basebackup с восстановленных шардов и догоняют их;
-#   5. offset группы device-collector в теме devices возвращаются к моменту копии (из manifest): сообщения,
+#   5. позиции группы device-collector в теме devices по каждому разделу возвращаются к моменту копии (из manifest;
+#      у раздела, где коммитов к тому моменту не было, - к началу раздела) и сверяются с Kafka: сообщения,
 #      обработанные после копии, сервис обработает снова - журнал processed_device_events отсекает повторы,
 #      реестр догоняет тему devices (пока сообщения в ней есть; тема compacted хранит последнее сообщение каждого устройства);
 #   6. Proxy запускается заново (метаданные таблиц он читает при старте): устройства из manifest читаются через него;
@@ -64,6 +65,19 @@ for i in "${SHARDS[@]}"; do
   if [[ ${#sample[@]} -gt 0 ]]; then ids+=("${sample[@]}"); fi
 done
 echo "==> SHA-256 of dumps matches manifest"
+
+# Позиции группы из manifest должны покрывать все разделы темы: пустой список (копия старой версии скрипта)
+# или другое число разделов - отказ до остановки чего-либо, а не молчаливое оставление текущих offset
+group="$(value kafka.group)"
+topic="$(value kafka.topic)"
+offsets="$(value kafka.offsets)"
+[[ -n "${group}" && -n "${topic}" && -n "${offsets}" ]] \
+  || { echo "[FAIL] manifest has no Kafka positions of the group (copy made by an older version of shard-backup.sh): make a new copy" >&2; exit 1; }
+[[ -n "$("${COMPOSE[@]}" ps -q --status running kafka)" ]] \
+  || { echo "[FAIL] kafka is not running: positions of ${group} cannot be returned (make up)" >&2; exit 1; }
+current_positions="$(group_positions "${group}" "${topic}")" || exit 1
+[[ "$(position_partitions "${offsets}")" == "$(position_partitions "${current_positions}")" ]] \
+  || { echo "[FAIL] partitions of ${topic} differ: manifest $(position_partitions "${offsets}"), Kafka $(position_partitions "${current_positions}")" >&2; exit 1; }
 
 # С этого места стенд меняется: при сбое - что осталось остановленным и как повторить (копия не тронута)
 stopped=""
@@ -123,24 +137,21 @@ for i in "${SHARDS[@]}"; do
   echo "    shard_${i}: replica streaming, devices=${replica_devices}"
 done
 
-# Offset группы - к моменту копии. Группа должна быть неактивной: сервис остановлен, но брокер
-# снимает участника с группы не мгновенно - ждём
-group="$(value kafka.group)"
-topic="$(value kafka.topic)"
-offsets="$(value kafka.offsets)"
-if [[ -n "${offsets}" ]]; then
-  echo "==> Kafka: group ${group}, ${topic} offsets back to the backup point (${offsets})"
-  tr ',' '\n' <<<"${offsets}" | awk -F: -v topic="${topic}" '{ print topic "," $1 "," $2 }' \
-    | "${COMPOSE[@]}" exec -T kafka sh -c 'cat > /tmp/restore-offsets.csv'
-  deadline=$(( $(date +%s) + 60 ))
-  until quiet "${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server "kafka:${KAFKA_PORT}" \
-      --group "${group}" --reset-offsets --from-file /tmp/restore-offsets.csv --execute < /dev/null 2>/dev/null; do
-    [[ $(date +%s) -ge ${deadline} ]] && { echo "[FAIL] offsets of ${group} were not reset: group is still active" >&2; exit 1; }
-    sleep 3
-  done
-else
-  echo "==> Kafka: no offsets in manifest (group had no commits at backup time) - offsets unchanged"
-fi
+# Позиции группы (все разделы, в том числе без коммитов к моменту копии) - к моменту копии. Группа должна быть
+# неактивной: сервис остановлен, но брокер снимает участника с группы не мгновенно - ждём
+echo "==> Kafka: group ${group}, ${topic} positions back to the backup point (${offsets})"
+tr ',' '\n' <<<"${offsets}" | awk -F: -v topic="${topic}" '{ print topic "," $1 "," $2 }' \
+  | "${COMPOSE[@]}" exec -T kafka sh -c 'cat > /tmp/restore-offsets.csv'
+deadline=$(( $(date +%s) + 60 ))
+until reset_out="$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server "kafka:${KAFKA_PORT}" \
+    --group "${group}" --reset-offsets --from-file /tmp/restore-offsets.csv --execute < /dev/null 2>&1)"; do
+  [[ $(date +%s) -ge ${deadline} ]] && { echo "[FAIL] offsets of ${group} were not reset (group still active?):" >&2; echo "${reset_out}" >&2; exit 1; }
+  sleep 3
+done
+# Сверка: Kafka показывает ровно те позиции, что записаны в manifest
+after="$(group_positions "${group}" "${topic}")" || exit 1
+[[ "${after}" == "${offsets}" ]] || { echo "[FAIL] positions of ${group} after reset: ${after}, manifest ${offsets}" >&2; exit 1; }
+echo "    positions of ${group} match manifest"
 
 echo "==> start shardingsphere-proxy (reloads table metadata)"
 quiet "${COMPOSE[@]}" start shardingsphere-proxy
