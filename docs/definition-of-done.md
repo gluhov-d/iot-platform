@@ -287,6 +287,9 @@ device-collector-service, проект avros и изменения в приём
   device-collector-service — 93, db-migrator — 2); порог покрытия JaCoCo выполняется (65 % и 70 %, `make coverage`,
   `make dcs-coverage`), сгенерированные Avro-классы из отчёта исключены.
 - [ ] Интеграционные тесты обоих сервисов на Testcontainers (`make integration-test` — 23, `make dcs-it` — 10).
+- [ ] Быстрая проверка `services/device-collector-service/scripts/quick-check.sh` -> "All checks passed" - напрямую,
+  через `make dcs-quick-check` и `./gradlew :services:device-collector-service:quickCheck`: ждёт сохранения устройства,
+  подтверждает его на ожидаемом шарде (напрямую в PostgreSQL) и отсутствие на другом.
 - [ ] Шардирование: поднимаются два контейнера PostgreSQL и ShardingSphere-Proxy. После сохранения через Proxy
   тест проверяет напрямую в шардах, что запись есть на ожидаемом шарде и её нет на другом
   (`ItDeviceCollectorTest.givenDeviceInfo_whenConsumed_thenStoredOnItsShard`,

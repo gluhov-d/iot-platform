@@ -30,7 +30,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage schemas-register schemas
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -230,6 +230,9 @@ dcs-it: ## Интеграционные тесты device-collector-service (Tes
 
 dcs-coverage: ## Все тесты device-collector-service + порог покрытия 70% + HTML-отчёт
 	@$(GRADLE) $(DCS_PROJ):check && echo "Отчёт: $(DCS_DIR)/build/reports/jacoco/test/html/index.html"
+
+dcs-quick-check: ## Быстрая проверка поднятого стенда: устройство сохраняется на ожидаемом шарде (scripts/quick-check.sh)
+	@$(DCS_DIR)/scripts/quick-check.sh
 
 ## ----------------------------------------------------------------- avros
 avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up)

@@ -172,7 +172,7 @@ iot-platform/
 │   ├── Dockerfile                     # сборка из корня репозитория; контракты - из Nexus хоста
 │   ├── scripts/check-local.sh         # быстрая проверка стенда
 │   └── src/{main,test}/...
-├── services/device-collector-service/ # реестр устройств (раздел 19): Dockerfile, build.gradle.kts, src/{main,test}/...
+├── services/device-collector-service/ # реестр устройств (раздел 19): Dockerfile, build.gradle.kts, scripts/quick-check.sh, src/{main,test}/...
 ├── services/db-migrator/              # Flyway: миграции db/migration/devices (V1, V2...) применяются к каждому шарду (раздел 20)
 ├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service", "services:device-collector-service", "services:db-migrator", "avros")
 ├── gradle.properties                  # nexusUrl - адрес Nexus для обоих Gradle-проектов
@@ -962,6 +962,12 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
   `devices-dlt`, следующее обработано; остановленный шард не мешает устройствам другого; метрики; `health` = `DOWN`,
   когда Proxy недоступен.
 * `make dcs-test`, `make dcs-it`, `make dcs-coverage` (порог 70 %).
+* Быстрая проверка поднятого стенда — `make dcs-quick-check` (то же: `services/device-collector-service/scripts/quick-check.sh`
+  из любого каталога или `./gradlew :services:device-collector-service:quickCheck`). Скрипт подбирает по правилу
+  шардирования по одному устройству для каждого шарда, отправляет их в `devices` и для каждого ждёт сохранения
+  (`CHECK_TIMEOUT`, по умолчанию 60 с), проверяет **напрямую в шардах**, что строка есть на ожидаемом шарде и её нет на
+  другом, затем читает устройство через Proxy и REST (поле `shard`). Успех — `All checks passed`, иначе номер упавшего
+  шага. Устройства `quick-check-*` остаются в реестре.
 
 ## 20. База данных реестра устройств: шарды, Proxy, миграции, реплики, резервные копии
 
