@@ -19,6 +19,7 @@ if [[ -z "${tags}" ]]; then
   exit 0
 fi
 require_nexus
+require_schema_registry
 
 worktree=""
 cleanup() { [[ -z "${worktree}" ]] || git worktree remove --force "${worktree}" >/dev/null 2>&1 || true; }
@@ -37,7 +38,7 @@ for tag in ${tags}; do
   git worktree add -q --detach "${worktree}" "${tag}"
   actual="$(avros_version "${worktree}")"
   [[ "${actual}" == "${version}" ]] || fail "в теге ${tag} version = '${actual}', ожидалась ${version}"
-  (cd "${worktree}" && with_publisher ./gradlew -q --console=plain :avros:publish -PnexusUrl="${NEXUS_URL}")
+  (cd "${worktree}" && with_publisher ./gradlew -q --console=plain :avros:publish -PnexusUrl="${NEXUS_URL}" "${REGISTRY_PROPS[@]}")
   cleanup
   worktree=""
 done

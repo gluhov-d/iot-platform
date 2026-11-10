@@ -3,14 +3,24 @@
 #
 # Идемпотентна: версия уже в Nexus и схемы совпадают - ничего не делает, код 0;
 # версия в Nexus есть, а схемы другие - ошибка (выпущенную версию не перезаписать, поднимите version);
-# версии нет - проверка совместимости с последней выпущенной, сборка, публикация.
-# Адрес и учётная запись Nexus - из окружения контейнера.
+# версии нет - проверка совместимости с последней выпущенной в Nexus и со схемами в Schema Registry, сборка,
+# публикация; проверка Schema Registry обязательна: нет ответа или схемы несовместимы - ошибка до загрузки в Nexus.
+# Адрес и учётная запись Nexus, адрес Schema Registry и имена тем - из окружения контейнера.
 set -euo pipefail
 
 : "${NEXUS_URL:?NEXUS_URL не задан}"
 : "${NEXUS_PUBLISH_USER:?NEXUS_PUBLISH_USER не задан}"
 : "${NEXUS_PUBLISH_PASSWORD:?NEXUS_PUBLISH_PASSWORD не задан}"
+: "${SCHEMA_REGISTRY_URL:?SCHEMA_REGISTRY_URL не задан}"
+EVENTS_TOPIC="${KAFKA_EVENTS_TOPIC:?KAFKA_EVENTS_TOPIC не задан}"
+DEVICES_TOPIC="${KAFKA_DEVICES_TOPIC:?KAFKA_DEVICES_TOPIC не задан}"
+EVENTS_DLT_TOPIC="${KAFKA_EVENTS_DLT_TOPIC:?KAFKA_EVENTS_DLT_TOPIC не задан}"
+DEVICES_DLT_TOPIC="${KAFKA_DEVICES_DLT_TOPIC:?KAFKA_DEVICES_DLT_TOPIC не задан}"
 ARTIFACT_PATH="com/github/gluhov/iotplatform/avros"
+
+# shellcheck source=schema-subjects.sh
+source "$(dirname "${BASH_SOURCE[0]}")/schema-subjects.sh"
+subjects="$(schema_subjects "${EVENTS_TOPIC}" "${EVENTS_DLT_TOPIC}" "${DEVICES_TOPIC}" "${DEVICES_DLT_TOPIC}")"
 
 cd /workspace
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
@@ -43,5 +53,6 @@ fi
 # Пароль - только в окружении процесса Gradle, не в командной строке
 ORG_GRADLE_PROJECT_nexusUsername="${NEXUS_PUBLISH_USER}" \
 ORG_GRADLE_PROJECT_nexusPassword="${NEXUS_PUBLISH_PASSWORD}" \
-  ./gradlew --no-daemon --console=plain :avros:build :avros:publish -x test -PnexusUrl="${NEXUS_URL}"
+  ./gradlew --no-daemon --console=plain :avros:build :avros:publish -x test -PnexusUrl="${NEXUS_URL}" \
+  -PschemaRegistryUrl="${SCHEMA_REGISTRY_URL}" -PschemaSubjects="${subjects}"
 echo "==> avros ${version} опубликована"

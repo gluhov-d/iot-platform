@@ -690,6 +690,8 @@ services:
   # ---------------------------------------------------------------------------
   # Публикация avros - одноразовая задача: собирает Avro-схемы платформы (avros/) и кладёт версию
   # в Nexus. Версия уже в Nexus с теми же схемами - пропускает; с другими схемами - ошибка.
+  # Перед загрузкой в Nexus схемы сверяются со всеми зарегистрированными в Schema Registry (FULL): нет ответа
+  # или схема несовместима - публикация завершается ошибкой, в Nexus ничего не попадает.
   # Сервисы собираются только после неё: их сборка берёт avros из Nexus с явной версией
   # ---------------------------------------------------------------------------
   avros-publish:
@@ -703,10 +705,17 @@ services:
     depends_on:
       nexus-init:
         condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
     environment:
       NEXUS_URL: http://nexus:8081
       NEXUS_PUBLISH_USER: ${NEXUS_PUBLISH_USER}
       NEXUS_PUBLISH_PASSWORD: ${NEXUS_PUBLISH_PASSWORD}
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------

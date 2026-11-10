@@ -28,7 +28,7 @@ INIT_SERVICES := kafka-init minio-init nexus-init avros-publish schema-register 
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-obs nexus-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
+.PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
         avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check schemas-register schemas
 
@@ -57,6 +57,11 @@ nexus-up: ## Поднять только Nexus и дождаться его на
 	@$(COMPOSE) up -d nexus-init
 	@$(COMPOSE) wait nexus-init >/dev/null || { \
 	  echo "!!! nexus-init завершился с ошибкой:"; $(COMPOSE) logs --no-log-prefix --tail=15 nexus-init; exit 1; }
+
+registry-up: ## Поднять Kafka и Schema Registry (проверка схем перед публикацией avros в Nexus без неё не работает)
+	@echo "==> Schema Registry: запуск"
+	@$(COMPOSE) up -d --wait schema-registry >/dev/null || { \
+	  echo "!!! Schema Registry не поднялась:"; $(COMPOSE) logs --no-log-prefix --tail=15 schema-registry; exit 1; }
 
 down: ## Остановить и удалить контейнеры всех профилей (тома сохраняются)
 	@echo "==> Остановка инфраструктуры"
@@ -235,17 +240,17 @@ dcs-quick-check: ## Быстрая проверка поднятого стен�
 	@$(DCS_DIR)/scripts/quick-check.sh
 
 ## ----------------------------------------------------------------- avros
-avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up)
-	@echo "==> avros: сборка и публикация в Nexus"
+avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up; Schema Registry поднимется сама)
+	@echo "==> avros: сверка со Schema Registry, сборка и публикация в Nexus"
 	@$(COMPOSE) up -d --build avros-publish
 	@$(COMPOSE) wait avros-publish >/dev/null || { \
 	  echo "!!! avros-publish завершился с ошибкой:"; $(COMPOSE) logs --no-log-prefix --tail=30 avros-publish; exit 1; }
 	@$(COMPOSE) logs --no-log-prefix avros-publish | grep '^==>'
-avros-check: ## Проверить схемы avros и совместимость с последней версией в Nexus (без публикации)
-	@$(GRADLE) :avros:checkAvrosCompatibility -PnexusUrl=http://localhost:$(call compose_env,NEXUS_PORT)
-avros-release: ## Релиз avros с хоста: совместимость -> сборка -> публикация -> тег (нужен make nexus-up)
+avros-check: registry-up ## Проверить схемы avros: совместимость с последней версией в Nexus и со схемами в Schema Registry (без публикации)
+	@$(ROOT_DIR)/avros/scripts/check.sh
+avros-release: registry-up ## Релиз avros с хоста: совместимость (Nexus, Schema Registry) -> сборка -> публикация -> тег (нужен make nexus-up)
 	@$(ROOT_DIR)/avros/scripts/publish.sh
-avros-bootstrap: ## Вернуть в Nexus выпущенные версии avros из git-тегов avros/v* (нужно, если сервис закреплён на старой версии)
+avros-bootstrap: registry-up ## Вернуть в Nexus выпущенные версии avros из git-тегов avros/v* (нужно, если сервис закреплён на старой версии)
 	@$(ROOT_DIR)/avros/scripts/bootstrap.sh
 schemas-register: ## Зарегистрировать схемы avros в Schema Registry (FULL_TRANSITIVE) одноразовой задачей compose (Schema Registry поднимает сама)
 	@echo "==> Schema Registry: регистрация схем avros"

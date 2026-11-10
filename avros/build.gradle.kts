@@ -256,6 +256,19 @@ fun jsonString(text: String): String = buildString {
     append('"')
 }
 
+// -PschemaSubjects: тема-value=ИмяЗаписи через запятую; общий разбор проверки перед публикацией и регистрации
+fun parseSubjects(spec: String?): List<Pair<String, String>> {
+    val subjects = (spec ?: throw GradleException("Не задан -PschemaSubjects (тема-value=ИмяЗаписи через запятую)"))
+        .split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        .map { entry ->
+            val (subject, record) = entry.split('=', limit = 2).takeIf { it.size == 2 }
+                ?: throw GradleException("schemaSubjects: '$entry' - ожидается тема-value=ИмяЗаписи")
+            subject to record
+        }
+    if (subjects.isEmpty()) throw GradleException("schemaSubjects пуст")
+    return subjects
+}
+
 val registerSchemas by tasks.registering {
     group = "publishing"
     description = "Регистрирует схемы avros/avro в Schema Registry (FULL_TRANSITIVE); повторный запуск ничего не меняет"
@@ -268,15 +281,7 @@ val registerSchemas by tasks.registering {
         if (level !in setOf("FULL_TRANSITIVE", "FULL")) {
             throw GradleException("schemaCompatibility = '$level': ожидается FULL_TRANSITIVE или FULL")
         }
-        val subjects = (providers.gradleProperty("schemaSubjects").orNull
-            ?: throw GradleException("Не задан -PschemaSubjects (тема-value=ИмяЗаписи через запятую)"))
-            .split(',').map { it.trim() }.filter { it.isNotEmpty() }
-            .map { entry ->
-                val (subject, record) = entry.split('=', limit = 2).takeIf { it.size == 2 }
-                    ?: throw GradleException("schemaSubjects: '$entry' - ожидается тема-value=ИмяЗаписи")
-                subject to record
-            }
-        if (subjects.isEmpty()) throw GradleException("schemaSubjects пуст")
+        val subjects = parseSubjects(providers.gradleProperty("schemaSubjects").orNull)
 
         val files = avroSchemasDir.asFile.listFiles { f -> f.extension == "avsc" }!!.sorted()
         val schemas = parseSchemas(files.associate { it.name to it.readText() })
@@ -358,6 +363,95 @@ val registerSchemas by tasks.registering {
     }
 }
 
+// ---------------------------------------------------------------- Сверка со Schema Registry перед публикацией
+// Обязательная часть публикации в Nexus: схемы этой версии сверяются со ВСЕМИ схемами, уже зарегистрированными
+// в subject платформы (по умолчанию FULL: новая читает старые данные и старая - новые; для Schema Registry это
+// FULL_TRANSITIVE). Проверка Nexus выше смотрит только на последнюю выпущенную версию, а история Nexus и
+// Schema Registry может расходиться: несовместимый релиз попал бы в maven-releases (перезаписать его уже нельзя),
+// и только потом schema-register отказался бы его регистрировать. Исключения для старшей версии здесь нет:
+// регистрация такой схемы в тот же subject тоже была бы отклонена.
+// Параметры те же, что у registerSchemas: -PschemaRegistryUrl, -PschemaSubjects. Нет параметра, Schema Registry
+// недоступна или схема несовместима - ошибка до загрузки артефакта.
+val checkRegisteredSchemas by tasks.registering {
+    group = "verification"
+    description = "Сверяет схемы avros/avro со всеми зарегистрированными в Schema Registry (FULL) до публикации в Nexus"
+    dependsOn(tasks.classes)
+    mustRunAfter(checkAvrosCompatibility)
+    // Результат зависит от содержимого Schema Registry, поэтому задача выполняется при каждом запуске
+    outputs.upToDateWhen { false }
+    doLast {
+        val registryUrl = providers.gradleProperty("schemaRegistryUrl").orNull?.trimEnd('/')
+            ?: throw GradleException(
+                "Не задан -PschemaRegistryUrl: публикация в Nexus без сверки со Schema Registry не выполняется " +
+                    "(make avros-up, make avros-release и make avros-bootstrap передают его сами)"
+            )
+        val level = compatibilityLevel.get().uppercase()
+        if (level !in setOf("FULL", "BACKWARD", "FORWARD")) {
+            throw GradleException("compatibilityLevel = '$level': ожидается FULL, BACKWARD или FORWARD")
+        }
+        val subjects = parseSubjects(providers.gradleProperty("schemaSubjects").orNull)
+
+        val files = avroSchemasDir.asFile.listFiles { f -> f.extension == "avsc" }!!.sorted()
+        val schemas = parseSchemas(files.associate { it.name to it.readText() })
+        val classesDir = layout.buildDirectory.dir("classes/java/main").get().asFile
+        val classLoader = URLClassLoader(arrayOf(classesDir.toURI().toURL()), Schema::class.java.classLoader)
+
+        val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
+        fun get(path: String): HttpResponse<String> = try {
+            val request = HttpRequest.newBuilder(URI.create("$registryUrl$path")).timeout(Duration.ofSeconds(20)).GET().build()
+            client.send(request, HttpResponse.BodyHandlers.ofString())
+        } catch (e: IOException) {
+            throw GradleException("Schema Registry недоступна ($registryUrl): $e. Публикация в Nexus не выполнена. Поднимите её: make registry-up", e)
+        }
+
+        val problems = mutableListOf<String>()
+        subjects.forEach { (subject, record) ->
+            val fullName = schemas.values.singleOrNull { it.name == record }?.fullName
+                ?: throw GradleException("$subject: в avros нет записи '$record' (есть: ${schemas.keys.sorted().joinToString()})")
+            // Схема - SCHEMA$ сгенерированного класса: именно её регистрирует registerSchemas и ищет сериализатор
+            val candidate = classLoader.loadClass(fullName).getMethod("getClassSchema").invoke(null) as Schema
+            val encoded = URLEncoder.encode(subject, Charsets.UTF_8)
+
+            val list = get("/subjects/$encoded/versions")
+            when (list.statusCode()) {
+                200 -> {}
+                404 -> {
+                    logger.lifecycle("$subject: в Schema Registry не зарегистрирован, сравнивать не с чем")
+                    return@forEach
+                }
+                else -> throw GradleException("$subject: GET /versions HTTP ${list.statusCode()}: ${list.body()}")
+            }
+            val versions = Regex("""\d+""").findAll(list.body()).map { it.value }.toList()
+            versions.forEach { version ->
+                val response = get("/subjects/$encoded/versions/$version/schema")
+                if (response.statusCode() != 200) {
+                    throw GradleException("$subject v$version: GET /schema HTTP ${response.statusCode()}: ${response.body()}")
+                }
+                val registered = parseSchemas(mapOf("$subject v$version" to response.body())).values.single()
+                // BACKWARD: новая схема (reader) читает данные зарегистрированной (writer); FORWARD - наоборот
+                val checks = buildList {
+                    if (level != "FORWARD") add("BACKWARD" to SchemaCompatibility.checkReaderWriterCompatibility(candidate, registered))
+                    if (level != "BACKWARD") add("FORWARD" to SchemaCompatibility.checkReaderWriterCompatibility(registered, candidate))
+                }
+                checks.filter { it.second.type != SchemaCompatibilityType.COMPATIBLE }.forEach { (direction, result) ->
+                    result.result.incompatibilities.forEach {
+                        problems += "$subject v$version [$direction] ${it.type} в ${it.location}: ${it.message}"
+                    }
+                }
+            }
+            logger.lifecycle("$subject: ${candidate.fullName} сверена с ${versions.size} зарегистрированными версиями ($level)")
+        }
+
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "Схемы несовместимы с зарегистрированными в Schema Registry ($level), публикация в Nexus не выполнена:\n" +
+                    problems.joinToString("\n") { "  - $it" } +
+                    "\nСделайте изменение совместимым (новые поля - с default) или поднимите старшую версию avros с новыми subject."
+            )
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Публикация
 publishing {
     publications {
@@ -383,7 +477,8 @@ publishing {
     }
 }
 
-// В Nexus попадает только версия, прошедшая проверку совместимости - даже при прямом вызове publish
+// В Nexus попадает только версия, прошедшая обе проверки - совместимость с последним релизом в Nexus и
+// со всеми схемами в Schema Registry, - даже при прямом вызове publish. Обе завершаются до загрузки артефакта
 tasks.withType<PublishToMavenRepository>().configureEach {
-    dependsOn(checkAvrosCompatibility)
+    dependsOn(checkAvrosCompatibility, checkRegisteredSchemas)
 }

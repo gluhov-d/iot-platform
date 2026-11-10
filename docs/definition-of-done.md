@@ -157,11 +157,16 @@ device-collector-service, проект avros и изменения в приём
 - [ ] Сборка генерирует Java-классы и публикует версионированный артефакт в Nexus (задача compose `avros-publish`,
   `avros/scripts/container-publish.sh`, `make avros-up`). Выпущенная версия не перезаписывается: публикация той же
   версии с другими схемами завершается ошибкой, с теми же схемами - ничего не меняет (код 0).
-- [ ] Совместимость проверяется в два этапа. До публикации `avros-publish` сверяет схемы с последней выпущенной
-  версией в Nexus в режиме FULL (`checkAvrosCompatibility`, `make avros-check`). При регистрации `schema-register`
+- [ ] Совместимость проверяется до публикации в Nexus и при регистрации. До загрузки артефакта `avros-publish` сверяет
+  схемы в режиме FULL и с последней выпущенной версией в Nexus (`checkAvrosCompatibility`), и со **всеми** версиями,
+  зарегистрированными в Schema Registry (`checkRegisteredSchemas`); обе проверки - зависимости `PublishToMavenRepository`,
+  прямой `./gradlew :avros:publish` их не обходит (`make avros-check` - без публикации). Нет параметров Schema Registry,
+  она недоступна или схема несовместима - ошибка до загрузки, в Nexus ничего не попало (проверено: несовместимая схема в
+  Schema Registry при чистой истории Nexus, остановленная Schema Registry, прямой `:avros:publish` без параметров; до
+  правки такая версия попадала в `maven-releases`). При регистрации `schema-register`
   (`avros/scripts/container-register.sh`) субъектам задаётся режим `FULL_TRANSITIVE`, и Schema Registry проверяет схему
   на совместимость со **всеми** зарегистрированными версиями. Несовместимое изменение (например, новое поле без
-  значения по умолчанию) останавливает конвейер с кодом ≠ 0 - проверено на временной ветке.
+  значения по умолчанию) останавливает конвейер с кодом ≠ 0.
 - [ ] После публикации в Nexus конвейер регистрирует схемы в Schema Registry; у субъектов `events-value`,
   `events-dlt-value`, `devices-value`, `devices-dlt-value` режим `FULL_TRANSITIVE`
   (`curl localhost:8081/config/<субъект>`); повторный запуск `make schemas-register` ничего не меняет.
@@ -259,12 +264,12 @@ device-collector-service, проект avros и изменения в приём
 
 ## Запуск
 
-- [ ] Порядок старта в Docker Compose: Nexus → сборка и публикация avros → регистрация схем → `db-migrator` →
+- [ ] Порядок старта в Docker Compose: Nexus, Kafka и Schema Registry → сверка схем и публикация avros → регистрация схем → `db-migrator` →
   сервисы. Каждый шаг ждёт успешного завершения предыдущего (`service_completed_successfully` или
   `service_healthy`), а не запуска контейнера. Проверки:
   - `make up` на чистом стенде (после `make clean`) завершается успешно; одноразовые задачи — `Exited (0)`;
   - если регистрация схем завершилась ошибкой, `db-migrator` и сервисы не стартуют;
-  - цепочка в `docker-compose.yaml`: `nexus` -> `nexus-init` -> `avros-publish` -> `schema-register` -> `db-migrator` ->
+  - цепочка в `docker-compose.yaml`: `nexus` -> `nexus-init`, `schema-registry` -> `avros-publish` -> `schema-register` -> `db-migrator` ->
     `shardingsphere-proxy` -> `device-collector-service` (`docker compose config` показывает `depends_on`);
     `events-collector-service` ждёт `schema-register`, `kafka-init`, `clickhouse-init`.
 - [ ] У всех образов явный тег, не `latest`.

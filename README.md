@@ -128,13 +128,15 @@ SHA-256 от набора полей, описывающих само устро
 iot-platform/
  ├── avros/# Gradle-проект :avros -> артефакт avros (публикуется в Nexus), все Avro-схемы платформы
 │   ├── Dockerfile                     # образ одноразовых задач avros-publish и schema-register
-│   ├── build.gradle.kts               # генерация классов, jar со схемами, проверка совместимости, maven-publish, регистрация в SR
+│   ├── build.gradle.kts               # генерация классов, jar со схемами, проверки совместимости (Nexus, SR), maven-publish, регистрация в SR
 │   ├── scripts/
 │   │   ├── container-publish.sh       # задача compose avros-publish: публикация в Nexus
 │   │   ├── container-register.sh      # задача compose schema-register: регистрация схем в Schema Registry
 │   │   ├── publish.sh                 # то же с хоста + тег релиза (make avros-release)
+│   │   ├── check.sh                   # проверки схем без публикации: Nexus и Schema Registry (make avros-check)
 │   │   ├── bootstrap.sh               # выпущенные версии из тегов avros/v* -> Nexus (make avros-bootstrap)
-│   │   └── nexus-env.sh               # общая часть: адрес Nexus и публикатор из .env (source)
+│   │   ├── schema-subjects.sh         # subject'ы Schema Registry (тема-value=ИмяЗаписи), общие для проверки и регистрации (source)
+│   │   └── nexus-env.sh               # общая часть: Nexus, публикатор, Schema Registry и subject'ы из .env (source)
 │   └── avro/                          # Avro-контракты — единый источник для кодогенерации
 │       ├── device-event.avsc          # DeviceEvent (+ блок данных устройства)
 │       ├── device-info.avsc           # DeviceInfo
@@ -278,17 +280,19 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
 
 ```bash
 make nexus-up              # только Nexus (make up поднимает его сам)
-make avros-check       # разбор схем + совместимость с последней выпущенной версией (без публикации)
-make avros-release     # проверка -> сборка -> публикация (avros/scripts/publish.sh)
+make registry-up       # Kafka и Schema Registry: без неё публикация в Nexus не выполняется (ниже её поднимают сами цели avros-*)
+make avros-check       # разбор схем + совместимость с Nexus и со Schema Registry (без публикации)
+make avros-release     # проверки -> сборка -> публикация (avros/scripts/publish.sh)
 make avros-up          # собрать и опубликовать текущую версию в Nexus задачей compose (make up вызывает сам)
 make avros-bootstrap   # выпущенные версии из git-тегов, которых нет в Nexus (если сервис закреплён на старой версии)
 ```
 
-`avros-release` берёт порт Nexus и учётную запись публикатора (`NEXUS_PUBLISH_USER`/`NEXUS_PUBLISH_PASSWORD`)
-из `.env` в том виде, как их разбирает Compose, проверяет, что Nexus принимает запись, и запускает
-`:avros:build :avros:publish`. Пароль передаётся Gradle через окружение — в командной строке и выводе
-его нет. Задача `checkAvrosCompatibility` встроена в `publish`, поэтому прямой
-`./gradlew :avros:publish` её тоже не обходит. Проверка:
+`avros-release` берёт порт Nexus и учётную запись публикатора (`NEXUS_PUBLISH_USER`/`NEXUS_PUBLISH_PASSWORD`),
+порт Schema Registry и имена тем из `.env` в том виде, как их разбирает Compose, проверяет, что Nexus принимает запись
+и Schema Registry отвечает, и запускает `:avros:build :avros:publish`. Пароль передаётся Gradle через окружение —
+в командной строке и выводе его нет. Обе проверки — `checkAvrosCompatibility` (Nexus) и `checkRegisteredSchemas`
+(Schema Registry, ниже) — встроены в `publish` как зависимости, поэтому прямой `./gradlew :avros:publish` их тоже
+не обходит: обе завершаются **до** загрузки артефакта в Nexus. Проверка по Nexus:
 
 1. разбирает все `avros/avro/*.avsc` одним парсером;
 2. находит последнюю выпущенную версию в `maven-releases` (`maven-metadata.xml`); если её нет — первая публикация,
@@ -301,6 +305,21 @@ make avros-bootstrap   # выпущенные версии из git-тегов, 
 только то, что проверяет Schema Registry. Совместимые изменения — новое поле с `default` (например,
 `["null", "string"]` с `null`), удаление поля, у которого был `default`. Удалённая схема или несовместимое
 изменение — ошибка с перечнем полей; пропускается оно, только если поднята старшая версия (с предупреждением).
+
+**Проверка по Schema Registry** (`checkRegisteredSchemas`, обязательная часть публикации). Проверка по Nexus смотрит
+только на последнюю выпущенную версию, а история Nexus и Schema Registry может расходиться: несовместимая версия
+попала бы в `maven-releases` (выпущенную версию не исправить), и только потом `schema-register` отказался бы её
+регистрировать и остановил запуск сервисов. Поэтому до загрузки в Nexus текущие схемы (`SCHEMA$` сгенерированных
+классов, как их регистрирует `registerSchemas`) сверяются со **всеми** версиями, зарегистрированными в subject
+платформы, в обе стороны (`FULL`; для Schema Registry это `FULL_TRANSITIVE`, уровень — тот же `-PcompatibilityLevel`):
+
+* subject берутся из `-PschemaSubjects` (`тема-value=ИмяЗаписи`; `avros/scripts/schema-subjects.sh`) — те же четыре,
+  что регистрирует `schema-register`; адрес — `-PschemaRegistryUrl`. Скрипты и compose передают их сами;
+* subject ещё не зарегистрирован (чистая Schema Registry) — сравнивать не с чем, проверка проходит;
+* нет `-PschemaRegistryUrl`, Schema Registry недоступна или схема несовместима — ошибка **до** загрузки в Nexus
+  (в перечне — subject, версия, направление и поле); исключения для старшей версии нет: такую схему
+  Schema Registry в тот же subject всё равно не примет;
+* `make avros-check` выполняет обе проверки без публикации.
 
 | Изменение | Версия |
 |---|---|
@@ -317,8 +336,10 @@ make avros-bootstrap   # выпущенные версии из git-тегов, 
 (`make avros-up`), поэтому на чистом клоне и после `make clean` Nexus снова получает ту версию, от которой зависят
 сервисы. Если сервис закреплён на более старой версии, `make avros-bootstrap` проходит по тегам `avros/v*` по
 возрастанию версий и каждую версию, которой нет в `maven-releases`, собирает во временном `git worktree` на её теге и
-публикует — с той же проверкой совместимости. Уже опубликованные версии пропускаются; тег, в котором `version`
-не совпадает с именем тега, — ошибка.
+публикует — своим `build.gradle.kts`, на котором поставлен тег (параметры Schema Registry передаются, но теги,
+созданные до проверки `checkRegisteredSchemas`, её не знают: это восстановление уже выпущенных версий). Скрипту
+нужна работающая Schema Registry (`make registry-up` выполняется сам). Уже опубликованные версии пропускаются; тег, в
+котором `version` не совпадает с именем тега, — ошибка.
 
 После релиза `make avros-check` на той же версии сообщает «Версия … уже опубликована»: перед изменением схем поднимите
 `version` в `avros/build.gradle.kts`.
@@ -327,10 +348,12 @@ make avros-bootstrap   # выпущенные версии из git-тегов, 
 
 Это две одноразовые задачи compose из образа `avros/Dockerfile` (порядок — раздел 10):
 
-1. `avros-publish` (`avros/scripts/container-publish.sh`) — публикует текущую версию в Nexus. Идемпотентна: версия
+1. `avros-publish` (`avros/scripts/container-publish.sh`) — публикует текущую версию в Nexus. Ждёт `nexus-init` и
+   `schema-registry: service_healthy` (Kafka и Schema Registry поднимаются до публикации). Идемпотентна: версия
    уже в Nexus и схемы совпадают — ничего не делает; версия есть, а схемы другие — ошибка (выпущенную версию не
    перезаписать, поднимите `version`); версии нет — проверка совместимости (`FULL`) с последней выпущенной версией
-   в Nexus, сборка, публикация.
+   в Nexus и со всеми схемами в Schema Registry, сборка, публикация. Не прошла любая проверка или Schema Registry
+   не отвечает — код 1, в Nexus ничего не загружено.
 2. `schema-register` (`avros/scripts/container-register.sh`) — после публикации регистрирует схемы в Schema Registry.
    Режим каждого субъекта задаётся явно — `FULL_TRANSITIVE` (`SCHEMA_COMPATIBILITY`), поэтому Schema Registry
    проверяет новую схему на совместимость **со всеми** зарегистрированными версиями; несовместимая схема — ошибка
@@ -524,7 +547,7 @@ make clean                    # остановить и удалить тома
 | Шаг | Контейнер | Ждёт | Что делает |
 |---|---|---|---|
 | 1 | `nexus`, затем `nexus-init` | `nexus: service_healthy` | Nexus; пароль `admin`, EULA, пользователь публикации |
-| 2 | `avros-publish` | `nexus-init` завершён | публикует avros в Nexus (раздел 6) |
+| 2 | `avros-publish` | `nexus-init` завершён, `schema-registry: service_healthy` | сверяет схемы со Schema Registry и публикует avros в Nexus (раздел 6) |
 | 3 | `schema-register` | `avros-publish` завершён, `schema-registry: service_healthy` | регистрирует схемы, `FULL_TRANSITIVE` |
 | 4 | `db-migrator` | `schema-register` завершён, оба шарда `service_healthy` | Flyway применяет миграции к каждому шарду и сверяет версии (раздел 20) |
 | 5 | `shardingsphere-proxy` | `db-migrator` завершён | логическая база `devices` поверх двух шардов |
@@ -539,7 +562,8 @@ make clean                    # остановить и удалить тома
 сервисы не стартуют. Причину показывает `make logs S=<контейнер>` (например, `S=schema-register`).
 
 Nexus — Maven-репозиторий, в который публикуется avros (Avro-схемы и классы платформы). Он входит в базовый
-стенд: `make up` сначала поднимает его (`make nexus-up`), затем задача compose `avros-publish` (`make avros-up`) публикует текущую версию avros
+стенд: `make up` сначала поднимает его (`make nexus-up`), затем задача compose `avros-publish` (`make avros-up`; она ждёт и
+поднимает Kafka и Schema Registry) сверяет схемы с зарегистрированными и публикует текущую версию avros
 (раздел 6) и только потом собирает и запускает остальные сервисы. Одноразовый `nexus-init` (`infrastructure/init/nexus/init-nexus.sh`) после `nexus: healthy`:
 
 * заменяет сгенерированный пароль `admin` на `NEXUS_ADMIN_PASSWORD`;
@@ -828,7 +852,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | Schema Registry недоступен | `make health`; `curl localhost:8081/subjects`; у сервиса `SCHEMA_REGISTRY_URL` должен указывать на `http://schema-registry:8081` внутри сети compose и на `http://localhost:8081` из IDE; SR стартует после `kafka: healthy` |
 | `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
 | сборка: `Could not resolve com.github.gluhov.iotplatform:avros` | Nexus не поднят или в нём нет версии: `make nexus-up && make avros-up` (для старой версии — `make avros-bootstrap`); другой порт Nexus — `-PnexusUrl=http://localhost:<NEXUS_PORT>`. В `docker build` — `Connection refused` к `host.docker.internal`: Nexus не поднят на хосте или сборка запущена без `extra_hosts` (собирайте через compose или `--add-host host.docker.internal:host-gateway`) |
-| `make avros-release` / `avros-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `avros/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `avros/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
+| `make avros-release` / `avros-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `avros/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `avros/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; «Схемы несовместимы с зарегистрированными в Schema Registry» — то же для subject и версии в Schema Registry (проверка перед загрузкой в Nexus: ничего не опубликовано), посмотреть зарегистрированное — `make schemas`; «Schema Registry недоступна» / «Не задан -PschemaRegistryUrl» — `make registry-up`, прямой `./gradlew :avros:publish` без `-PschemaRegistryUrl`/`-PschemaSubjects` не работает; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
 | Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |

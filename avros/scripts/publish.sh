@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Конвейер avros (Avro-схемы платформы): разбор схем и проверка совместимости -> сборка -> публикация в Nexus
+# Конвейер avros (Avro-схемы платформы): разбор схем, проверка совместимости с Nexus и со Schema Registry ->
+# сборка -> публикация в Nexus
 #
 # avros/scripts/publish.sh (обычно через make avros-release)
 #
@@ -13,8 +14,9 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/nexus-env.sh"
 cd "${ROOT_DIR}"
 
-echo "==> Nexus ${NEXUS_URL}"
+echo "==> Nexus ${NEXUS_URL}, Schema Registry ${SCHEMA_REGISTRY_URL}"
 require_nexus
+require_schema_registry
 
 version="$(avros_version "${ROOT_DIR}")"
 tag="avros/v${version}"
@@ -29,8 +31,8 @@ if ${release}; then
   fi
 fi
 
-echo "==> avros ${version}: проверка совместимости, сборка, публикация"
-with_publisher ./gradlew --console=plain :avros:build :avros:publish -PnexusUrl="${NEXUS_URL}"
+echo "==> avros ${version}: проверка совместимости (Nexus, Schema Registry), сборка, публикация"
+with_publisher ./gradlew --console=plain :avros:build :avros:publish -PnexusUrl="${NEXUS_URL}" "${REGISTRY_PROPS[@]}"
 
 if ${release}; then
   git tag -a "${tag}" -m "avros ${version}"
