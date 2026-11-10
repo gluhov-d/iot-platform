@@ -519,6 +519,10 @@ services:
       CGROUP_MEM_OPTS: "-Xms256m -Xmx512m"
       SHARD_DB_USER: ${SHARD_DB_USER}
       SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      # Сроки на стороне шардов: запрос, ожидание блокировки, соединение Proxy с шардом (см. database-devices.yaml)
+      SHARD_STATEMENT_TIMEOUT_MS: ${SHARD_STATEMENT_TIMEOUT_MS}
+      SHARD_LOCK_TIMEOUT_MS: ${SHARD_LOCK_TIMEOUT_MS}
+      SHARD_CONNECTION_TIMEOUT_MS: ${SHARD_CONNECTION_TIMEOUT_MS}
       SHARDING_PROXY_USER: ${SHARDING_PROXY_USER}
       SHARDING_PROXY_PASSWORD: ${SHARDING_PROXY_PASSWORD}
     entrypoint: ["/bin/bash", "/opt/init/render-config.sh"]
@@ -580,8 +584,9 @@ services:
       DEVICES_DLT_REQUEST_TIMEOUT_MS: ${DEVICES_DLT_REQUEST_TIMEOUT_MS}
       DEVICES_DLT_DELIVERY_TIMEOUT_MS: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS}
       # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
-      # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml)
-      DEVICES_DB_URL: "jdbc:postgresql://shardingsphere-proxy:3307/devices?connectTimeout=3&socketTimeout=15"
+      # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml);
+      # connectTimeout и socketTimeout - в секундах
+      DEVICES_DB_URL: "jdbc:postgresql://shardingsphere-proxy:3307/devices?connectTimeout=${DEVICES_DB_CONNECT_TIMEOUT_S}&socketTimeout=${DEVICES_DB_SOCKET_TIMEOUT_S}"
       DEVICES_DB_USERNAME: ${SHARDING_PROXY_USER}
       DEVICES_DB_PASSWORD: ${SHARDING_PROXY_PASSWORD}
       # Alloy поднимается профилем observability; без него трейсы просто не доставляются

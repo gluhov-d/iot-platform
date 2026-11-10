@@ -888,7 +888,8 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | `KAFKA_BOOTSTRAP_SERVERS`, `SCHEMA_REGISTRY_URL` | Kafka и Schema Registry | задаёт compose / `.env` |
 | `DEVICE_COLLECTOR_CONSUMER_GROUP` | consumer group | `device-collector` |
 | `KAFKA_DEVICES_TOPIC`, `KAFKA_DEVICES_DLT_TOPIC` | входная тема и DLT | `devices`, `devices-dlt` |
-| `DEVICES_DB_URL`, `DEVICES_DB_USERNAME`, `DEVICES_DB_PASSWORD` | логическая база `devices` в Proxy (пароль — `SHARDING_PROXY_PASSWORD`); `connectTimeout` и `socketTimeout` — параметры URL | задаёт compose |
+| `DEVICES_DB_URL`, `DEVICES_DB_USERNAME`, `DEVICES_DB_PASSWORD` | логическая база `devices` в Proxy (пароль — `SHARDING_PROXY_PASSWORD`); `connectTimeout` и `socketTimeout` в URL compose берёт из двух переменных ниже | задаёт compose |
+| `DEVICES_DB_CONNECT_TIMEOUT_S`, `DEVICES_DB_SOCKET_TIMEOUT_S` | `connectTimeout` и `socketTimeout` соединения сервиса с Proxy, секунды; сокет держать больше `SHARD_STATEMENT_TIMEOUT_MS` | `3`, `15` |
 | `DEVICES_MAX_ATTEMPTS` | всего попыток записи, включая первую | `3` |
 | `DEVICES_RETRY_INTERVAL` | пауза перед второй попыткой | `1s` |
 | `DEVICES_RETRY_MULTIPLIER` | во сколько раз растёт каждая следующая пауза | `2.0` |
@@ -900,9 +901,18 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | `APP_INSTANCE_ID` | `instanceId` в метриках и логах | hostname |
 | `MANAGEMENT_OTLP_ENDPOINT` | OTLP-экспорт трейсов | `http://alloy:4320/v1/traces` в compose |
 
-Тайм-ауты запросов к шардам заданы на стороне Proxy (`database-devices.yaml`: `connectionTimeoutMilliseconds`,
-`statement_timeout`, `lock_timeout` в URL источников), а `connectTimeout` и `socketTimeout` соединения сервиса с Proxy -
-в `DEVICES_DB_URL` (`docker-compose.yaml`). Остальные тайм-ауты, число попыток, паузы и их рост, пул - переменные из
+Тайм-ауты запросов к шардам задаёт Proxy (`database-devices.yaml`: `connectionTimeoutMilliseconds`,
+`statement_timeout`, `lock_timeout` в URL источников), значения берутся из `.env` и передаются контейнеру Proxy:
+
+| Переменная | Назначение | По умолчанию |
+|---|---|---|
+| `SHARD_STATEMENT_TIMEOUT_MS` | запрос дольше этого срока отменяет сам шард (отмена со стороны клиента через Proxy не работает) | `5000` |
+| `SHARD_LOCK_TIMEOUT_MS` | ожидание блокировки на шарде | `3000` |
+| `SHARD_CONNECTION_TIMEOUT_MS` | сколько Proxy ждёт соединение с шардом | `3000` |
+
+По истечении этих сроков обработка устройства прерывается, а после `DEVICES_MAX_ATTEMPTS` попыток сообщение уходит в
+`devices-dlt`. `connectTimeout` и `socketTimeout` соединения сервиса с Proxy - переменные `DEVICES_DB_CONNECT_TIMEOUT_S`
+и `DEVICES_DB_SOCKET_TIMEOUT_S` (в `DEVICES_DB_URL`, собирает `docker-compose.yaml`). Остальные тайм-ауты, число попыток, паузы и их рост, пул - переменные из
 таблицы выше; значения по умолчанию в `application.yaml` совпадают с `.env.example`. Фиксированы только значения,
 на которых держится поведение сервиса: `max-poll-records: 1`, ручное подтверждение offset, `acks: all`,
 `auto.register.schemas: false`.

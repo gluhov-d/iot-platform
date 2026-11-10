@@ -97,6 +97,9 @@ public abstract class AbstractItTest {
             .withEnv("CGROUP_MEM_OPTS", "-Xms256m -Xmx512m")
             .withEnv("SHARD_DB_USER", SHARD_USER)
             .withEnv("SHARD_DB_PASSWORD", SHARD_PASSWORD)
+            .withEnv("SHARD_STATEMENT_TIMEOUT_MS", "5000")
+            .withEnv("SHARD_LOCK_TIMEOUT_MS", "3000")
+            .withEnv("SHARD_CONNECTION_TIMEOUT_MS", "3000")
             .withEnv("SHARDING_PROXY_USER", PROXY_USER)
             .withEnv("SHARDING_PROXY_PASSWORD", PROXY_PASSWORD)
             .withCopyFileToContainer(MountableFile.forHostPath(REPO_ROOT.resolve("infrastructure/config/shardingsphere")),

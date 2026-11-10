@@ -219,8 +219,9 @@ device-collector-service, проект avros и изменения в приём
   задаются переменными окружения и перечислены в `.env.example`: `DEVICES_MAX_ATTEMPTS`, `DEVICES_RETRY_INTERVAL`,
   `DEVICES_RETRY_MULTIPLIER`, `DEVICES_MAX_FUTURE_SKEW`, `DEVICES_SHARD_CACHE_TTL`, `DEVICES_DB_POOL_SIZE`,
   `DEVICES_DB_CONNECTION_TIMEOUT_MS`, `DEVICES_DLT_MAX_BLOCK_MS`, `DEVICES_DLT_REQUEST_TIMEOUT_MS`,
-  `DEVICES_DLT_DELIVERY_TIMEOUT_MS`; тайм-ауты запросов и блокировок к шардам - на стороне Proxy
-  (`database-devices.yaml`), `connectTimeout`/`socketTimeout` - в `DEVICES_DB_URL`. Фиксированы только значения,
+  `DEVICES_DLT_DELIVERY_TIMEOUT_MS`; тайм-ауты запросов, блокировок и соединения с шардами - на стороне Proxy
+  (`SHARD_STATEMENT_TIMEOUT_MS`, `SHARD_LOCK_TIMEOUT_MS`, `SHARD_CONNECTION_TIMEOUT_MS`, шаблон `database-devices.yaml`),
+  `connectTimeout`/`socketTimeout` - `DEVICES_DB_CONNECT_TIMEOUT_S`, `DEVICES_DB_SOCKET_TIMEOUT_S` (в `DEVICES_DB_URL`). Фиксированы только значения,
   определяющие поведение (`max-poll-records: 1`, ручной ack, `acks: all`).
 - [ ] Миграций в сервисе нет: в `services/device-collector-service` нет Flyway и DDL
   (`grep -rniE "flyway|create table|alter table" services/device-collector-service/src/main` — пусто).
