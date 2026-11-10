@@ -2,6 +2,9 @@ package com.github.gluhov.iotplatform.devicecollector.it;
 
 import com.github.gluhov.iotplatform.dbmigrator.DbMigrator;
 import com.github.gluhov.iotplatform.dbmigrator.ShardTarget;
+import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
+import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -113,6 +116,7 @@ public abstract class AbstractItTest {
     static {
         Startables.deepStart(KAFKA, SCHEMA_REGISTRY, SHARD_0, SHARD_1).join();
         createTopics();
+        registerDltSchemas();
         // Как на стенде: схема на шардах до старта Proxy - Proxy читает метаданные таблиц при старте
         DbMigrator.migrateAll(List.of(target(0, SHARD_0), target(1, SHARD_1)));
         PROXY.start();
@@ -127,9 +131,8 @@ public abstract class AbstractItTest {
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("KAFKA_BOOTSTRAP_SERVERS", KAFKA::getBootstrapServers);
         registry.add("SCHEMA_REGISTRY_URL", AbstractItTest::schemaRegistryUrl);
-        // Schema Registry стенда тестов пуст, а задачи schema-register здесь нет: продюсер сервиса регистрирует схему сам
-        // (на стенде compose - auto.register.schemas=false, это проверяется там)
-        registry.add("spring.kafka.producer.properties.auto.register.schemas", () -> "true");
+        // auto.register.schemas остаётся false, как на стенде: схему devices-dlt-value регистрирует registerDltSchemas()
+        // (на стенде - задача schema-register), а не продюсер сервиса
         registry.add("DEVICES_DB_URL", () -> "jdbc:postgresql://%s:%d/devices?connectTimeout=3&socketTimeout=15"
                 .formatted(PROXY.getHost(), PROXY.getMappedPort(3307)));
         registry.add("DEVICES_DB_USERNAME", () -> PROXY_USER);
@@ -138,6 +141,14 @@ public abstract class AbstractItTest {
     }
 
     // ------------------------------------------------------------------ Kafka
+    // Как задача schema-register на стенде: в Schema Registry заранее лежит только схема devices-dlt-value (DeviceInfo)
+    private static void registerDltSchemas() {
+        try (var client = new CachedSchemaRegistryClient(schemaRegistryUrl(), 10)) {
+            client.register(DLT + "-value", new AvroSchema(DeviceInfo.getClassSchema()));
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to register the schema of " + DLT + "-value", e);
+        }
+    }
 
     protected static String schemaRegistryUrl() {
         return "http://%s:%d".formatted(SCHEMA_REGISTRY.getHost(), SCHEMA_REGISTRY.getMappedPort(8081));
@@ -151,6 +162,14 @@ public abstract class AbstractItTest {
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class,
                 "schema.registry.url", schemaRegistryUrl()))) {
             return producer.send(new ProducerRecord<>(DEVICES, partition, key, value)).get();
+        }
+    }
+
+    /** Avro-байты записи с настоящим schemaId: схема регистрируется под subject темы (topic-value), как у её продюсера. */
+    protected static byte[] avroBytes(String topic, Object value) {
+        try (var serializer = new KafkaAvroSerializer()) {
+            serializer.configure(Map.of("schema.registry.url", schemaRegistryUrl()), false);
+            return serializer.serialize(topic, value);
         }
     }
 

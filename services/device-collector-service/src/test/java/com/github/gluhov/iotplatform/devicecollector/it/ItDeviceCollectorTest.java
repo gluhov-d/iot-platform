@@ -1,5 +1,6 @@
 package com.github.gluhov.iotplatform.devicecollector.it;
 
+import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
@@ -158,6 +159,24 @@ class ItDeviceCollectorTest extends AbstractItTest {
 
     @Test
     @Order(7)
+    @DisplayName("Valid Avro of another type (DeviceEvent) with a registered schema: moved to devices-dlt with the original bytes, the next message is processed")
+    void givenAnotherAvroType_whenConsumed_thenDeadLetteredAsIsAndNextProcessed() throws Exception {
+        String id = deviceOnShard(0);
+        byte[] foreign = avroBytes("events", DeviceEvent.newBuilder()
+                .setEventId("evt-foreign").setDeviceId(id).setTimestampMs(T.toEpochMilli()).setEventType("TEMPERATURE").build());
+
+        RecordMetadata alien = sendRaw(id, foreign, 0);
+        RecordMetadata next = send(id, info(id, "evt-after-foreign", DeviceUpsertEventType.CREATED, T).build(), 0);
+
+        awaitCommitted(next);
+        ConsumerRecord<String, byte[]> dead = deadLetter(alien).orElseThrow();
+        assertThat(dead.value()).as("original bytes, not a re-serialized record").isEqualTo(foreign);
+        assertThat(header(dead, "kafka_dlt-exception-fqcn")).endsWith("DeserializationException");
+        assertThat(onShard(0, "SELECT last_event_id FROM devices WHERE device_id = '" + id + "'")).isEqualTo("evt-after-foreign");
+    }
+
+    @Test
+    @Order(8)
     @DisplayName("DeviceInfo of contracts 1.0.0 (module 2 before the upgrade) is stored as SNAPSHOT")
     void givenDeviceInfoOfVersion100_whenConsumed_thenStored() throws Exception {
         String id = deviceOnShard(0);
@@ -178,7 +197,7 @@ class ItDeviceCollectorTest extends AbstractItTest {
     }
 
     @Test
-    @Order(8)
+    @Order(9)
     @DisplayName("5. One shard down: its message fails and goes to devices-dlt after retries, the other shard keeps working")
     void givenShardDown_whenConsumed_thenOtherShardProcessed() throws Exception {
         String onDownShard = deviceOnShard(1);
@@ -229,7 +248,7 @@ class ItDeviceCollectorTest extends AbstractItTest {
     }
 
     @Test
-    @Order(9)
+    @Order(10)
     @DisplayName("6. Metrics are available through /actuator/prometheus")
     void givenProcessedMessages_whenScrape_thenRequiredMetricsExported() throws Exception {
         HttpResponse<String> scrape = get("/actuator/prometheus");
@@ -255,7 +274,7 @@ class ItDeviceCollectorTest extends AbstractItTest {
     }
 
     @Test
-    @Order(10)
+    @Order(11)
     @DisplayName("7. Proxy down: health DOWN (503) - the service has no way to the registry")
     void givenProxyDown_whenHealth_thenDown() {
         // Последний тест: Proxy не запускается снова (после рестарта у контейнера был бы другой порт на хосте)

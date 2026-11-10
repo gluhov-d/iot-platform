@@ -1,6 +1,7 @@
 package com.github.gluhov.iotplatform.eventscollector.it;
 
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
+import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceEventRepository;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
@@ -103,6 +104,27 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
         assertThat(storedEvents(firstEvent)).as("first event retried and stored").isEqualTo(1);
         assertThat(storedEvents(secondEvent)).isEqualTo(1);
         assertThat(deadLetter(first.offset())).as("transient error is not a dead letter").isEmpty();
+    }
+
+    @Test
+    @DisplayName("Valid Avro of another type (DeviceInfo) with a registered schema then moved to DLT with original bytes, offset committed, next event stored")
+    void givenAnotherAvroType_whenConsume_thenMovedToDltAsIsAndOffsetCommitted() throws Exception {
+        String nextEvent = unique("evt");
+        byte[] foreign;
+        try (var serializer = new KafkaAvroSerializer()) {
+            serializer.configure(Map.of("schema.registry.url", schemaRegistryUrl()), false);
+            foreign = serializer.serialize("devices", DeviceInfo.newBuilder()
+                    .setDeviceId("dev-errors").setEmittedAtMs(Instant.now().toEpochMilli()).build());
+        }
+
+        RecordMetadata alien = sendRaw(foreign);
+        RecordMetadata next = sendEvent(nextEvent);
+
+        await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isEqualTo(next.offset() + 1));
+        assertThat(storedEvents(nextEvent)).isEqualTo(1);
+        ConsumerRecord<String, byte[]> dead = deadLetter(alien.offset()).orElseThrow();
+        assertThat(dead.value()).as("original bytes, not a re-serialized record").isEqualTo(foreign);
+        assertThat(header(dead, "kafka_dlt-exception-fqcn")).endsWith("DeserializationException");
     }
 
     @Test

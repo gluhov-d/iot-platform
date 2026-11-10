@@ -22,6 +22,10 @@ spring:
         spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
         # SpecificRecord (сгенерированный DeviceEvent), а не GenericRecord
         specific.avro.reader: true
+        # Читаем только DeviceEvent: запись другого типа (даже с настоящим schemaId из Schema Registry) не десериализуется
+        # и уходит в events-dlt исходными байтами. Без этого её отдали бы listener как есть: ошибка приведения типа,
+        # а в events-dlt-value зарегистрирован только DeviceEvent - запись в DLT не удалась бы и раздел встал
+        specific.avro.value.type: com.github.gluhov.iotplatform.events.avro.DeviceEvent
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
