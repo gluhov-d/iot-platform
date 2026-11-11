@@ -1,17 +1,27 @@
-# Definition of Done - модуль 2, events-collector-service
+# Definition of Done — IoT Platform
 
-Отметка ставится, когда пункт подтвержден указанной проверкой.
-Пути - от корня репозитория. `dc` = `docker compose -f infrastructure/docker-compose.yaml`
+Критерии приёмки по частям платформы. Отметка ставится, когда пункт подтверждён указанной проверкой.
+Пути — от корня репозитория. `dc` = `docker compose -f infrastructure/docker-compose.yaml`,
 `svc` = `./gradlew :services:events-collector-service`.
+
+Каждая новая часть добавляет свою секцию. Если она меняет требования к уже сделанному, пункты прежней секции
+правятся на месте (прежние формулировки — в истории Git), а в новой секции есть перечень этих изменений.
+
+- [Приём событий (events-collector-service)](#приём-событий-events-collector-service)
+- [Реестр устройств (device-collector-service, avros)](#реестр-устройств-device-collector-service-avros)
+
+---
+
+# Приём событий (events-collector-service)
 
 ## Контракты и Kafka
 
-- [ ] `contracts/avro/device-event.avsc` и `contracts/avro/device-info.avsc` есть; поля и типы - как в схемах задания
-  (namespace - `com.github.gluhov.iotplatform.events.avro`, см. README, раздел 4).
+- [ ] Схемы `DeviceEvent` и `DeviceInfo` — в проекте `avros/` (см. «Реестр устройств», раздел avros); поля и типы — как
+  в задании, namespace — `com.github.gluhov.iotplatform.events.avro`. Локальных `.avsc` в сервисе нет.
 - [ ] Входная тема `events`, выходная `devices` (`.env.example`: `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`).
 - [ ] Ключ обеих тем - `deviceId`: `DeviceEvent` отправляется с ключом `deviceId` (`check-local.sh`, `ItEventsCollectorTest`),
         `DeviceInfo` - `KafkaDeviceInfoProducer` (`KafkaDeviceInfoProducerTest.givenDevice_whenPublish_thenSendKeyedByDeviceId`).
-- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=compact`, `events.DLT` - `cleanup.policy=delete`: `make topics`.
+- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=compact`, `events-dlt` - `cleanup.policy=delete`: `make topics`.
 - [ ] Темы создаются автоматически: контейнер `kafka-init` -> `infrastructure/init/kafka/init-topics.sh`,
         `make health` - у `kafka-init` exited, код 0.
 
@@ -26,7 +36,8 @@
 - [ ] Невалидные `eventId`/`deviceId`/`timestampMs` - ack не вызван, записи нет (`EventIngestionScenarioTest`,
   `givenBlank*`/`givenInvalidTimestamp*`).
 - [ ] Ни одно сообщение не пропускается молча: временный сбой Schema Registry повторяется, недесериализуемые и
-   невалидные сообщения откладываются в `events.DLT`, их offset подтверждается только после записи в DLT
+   невалидные сообщения откладываются в `events-dlt`; сообщение, не записанное в ClickHouse за `EVENTS_MAX_ATTEMPTS`
+   попыток, — тоже в `events-dlt`; offset подтверждается только после записи в DLT
    (`KafkaConfig`, `KafkaErrorClassifier`); committed offset после ошибки и следующего корректного сообщения -
    `ItKafkaErrorHandlingTest`.
 - [ ] Redis не участвует в приеме: `EventIngestionService` не зависит от Redis-портов.
@@ -52,8 +63,9 @@
 - [ ] Освобождение только при совпадении токена - Lua-скрипт (`RedisLeaseServiceTest.givenOwnerToken_whenRelease_thenKeyDeleted`,
    `givenForeignToken_whenRelease_thenKeyKept`; на настоящем Redis - `ItRedisLeaseServiceTest.givenOwnerToken_whenRelease_thenKeyDeleted`,
    `givenStaleToken_whenRelease_thenForeignLeaseKept`).
-- [ ] Учет устройств в `devices:published` (`RedisPublishedDeviceStore`).
-- [ ] `SADD` только после успешной отправки (`OutboxPublishingServiceTest.givenNewDevice_whenPublishBatch_thenPublishMarkAndSent`) -
+- [ ] Учет устройств в `devices:published` и отпечатков опубликованных данных в `devices:fingerprint`
+   (`RedisPublishedDeviceStore`); в `devices` уходит сообщение, только если устройство новое или отпечаток изменился.
+- [ ] `SADD` и запись отпечатка — только после успешной отправки (`OutboxPublishingServiceTest.givenNewDevice_whenPublishBatch_thenPublishMarkAndSent`) -
    `givenKafkaFailure_whenPublishBatch_thenFailedVersionWithIncrementedAttempts` - `markPublished` не вызван).
 - [ ] Без аренды публикации нет (`OutboxPublishingServiceTest.givenLeaseNotAcquired_whenPublishBatch_thenNothingPublished`).
 - [ ] Аренда проверяется и продлевается после выборки - перед каждой записью, в том числе первой, и перед каждой
@@ -105,7 +117,8 @@
 ## Репозиторий и документация
 
 - [ ] README со всеми разделами задания и таблицей типовых проблем.
-- [ ] Три Mermaid-диаграммы в `diagrams/`.
+- [ ] Диаграммы приёма событий в Mermaid: `component-events-collector.mmd`, `sequence-ingest.mmd`,
+   `sequence-outbox-publish.mmd`.
 - [ ] `infrastructure/docker-compose.yaml` без поля `version`; healthcheck у kafka, schema-registry, clickhouse, redis,
    events-collector-service; зависимости через `condition: service_healthy` / `service_completed_successfully`.
 - [ ] `init-topics.sh`, скрипт схемы ClickHouse (`01-schema.sh`), `.env.example` на месте.
@@ -114,3 +127,129 @@
 - [ ] Быстрая проверка `services/events-collector-service/scripts/check-local.sh` -> "All checks passed" - напрямую
    из любого каталога, через `make check-local` и `./gradlew :services:events-collector-service:checkLocal`;
    корневой `.env` передается Compose через `--env-file`, симлинк `infrastructure/.env` не нужен.
+
+---
+
+# Реестр устройств (device-collector-service, avros)
+
+device-collector-service, проект avros и изменения в приёме событий. Дополнительная часть задания
+(Patroni, PITR, учения) сюда не входит.
+
+## Дизайн
+
+- [ ] Все диаграммы в Mermaid, в `diagrams/`; файлов PlantUML в репозитории нет (`git ls-files '*.puml'` — пусто).
+- [ ] Обновлены: контекстная `context.mmd`, контейнерная `containers.mmd`, диаграммы events-collector-service,
+  которые затрагивают изменения: `component-events-collector.mmd`, `sequence-ingest.mmd`, `sequence-outbox-publish.mmd`.
+- [ ] Созданы для device-collector-service: компонентная `component-device-collector.mmd` и последовательности
+  `dcs-success-sequence.mmd`, `dcs-duplicate-sequence.mmd`, `dcs-error-sequence.mmd`.
+- [ ] Дизайн и этот DoD приняты преподавателем до начала работы над кодом.
+
+## Проект avros
+
+- [ ] `avros/` — отдельный проект монорепозитория со своими `build.gradle.kts` и `Dockerfile`.
+- [ ] Все Avro-схемы платформы лежат только в `avros/`: `git ls-files '*.avsc'` выводит только пути `avros/…`;
+  в events-collector-service локальных `.avsc` нет.
+- [ ] Сборка генерирует Java-классы и публикует версионированный артефакт в Nexus. Выпущенная версия
+  не перезаписывается: повторная публикация той же версии завершается ошибкой.
+- [ ] Перед публикацией конвейер проверяет совместимость с версиями, **зарегистрированными в Schema Registry**,
+  в режиме FULL. Несовместимое изменение (например, новое поле без значения по умолчанию) останавливает
+  конвейер до публикации — проверено на временной ветке.
+- [ ] После публикации в Nexus конвейер регистрирует схемы в Schema Registry; у subject'ов `events-value`
+  и `devices-value` режим FULL (`GET /config/<subject>`).
+- [ ] Оба сервиса подключают avros из Nexus с явной версией: в `build.gradle.kts` нет `+`, `latest`, диапазонов.
+- [ ] Продюсеры не регистрируют схемы сами: `auto.register.schemas=false`. Отправка с незарегистрированной
+  схемой завершается ошибкой, а не новой версией в Schema Registry.
+
+## Изменения в приёме событий
+
+Пункты секции «Приём событий» выше уже исправлены под эти изменения: avros, `events-dlt`, отпечаток.
+
+
+- [ ] `DeviceEvent` расширен блоком данных устройства: минимум имя, операционная система и её версия, версия
+  прошивки. Существующие поля не удалены и не переименованы; новые поля необязательные, со значением по умолчанию.
+- [ ] `DeviceInfo` несёт те же данные устройства.
+- [ ] Совместимость доказана тестом: сообщение предыдущей версии читается новой схемой и наоборот.
+- [ ] В таблицу событий ClickHouse новые колонки добавлены обратно совместимой миграцией
+  (`ADD COLUMN IF NOT EXISTS`, значения по умолчанию): повторный запуск на существующем томе проходит без ошибок,
+  старые строки читаются.
+- [ ] Дедупликация по набору полей устройства. Отпечаток — SHA-256 данных устройства без полей, меняющихся
+  с телеметрией (`lastSeenAtMs`, показания сенсоров); состав полей описан в дизайне. В `devices` уходит сообщение,
+  только если устройство новое или отпечаток изменился. Новый отпечаток сохраняется в Redis только после
+  подтверждения Kafka. Проверки:
+  - unit: те же данные — публикации нет; изменились имя, ОС или прошивка — `UPDATED`; новое устройство — `CREATED`;
+    сбой отправки — отпечаток не изменился, следующая попытка публикует;
+  - стенд: два события с одинаковыми данными устройства дают одно сообщение в `devices`.
+- [ ] Топик `events-dlt` создаётся автоматически (вместо `events.DLT`).
+- [ ] Невалидное сообщение сразу уходит в `events-dlt`. Сообщение, не записанное в ClickHouse за заданное число
+  попыток, уходит в `events-dlt`, после чего смещение подтверждается (lag группы — 0). Повторов без ограничения нет.
+- [ ] Число попыток и паузы задаются переменными окружения и перечислены в `.env.example`.
+
+## device-collector-service
+
+- [ ] Читает `devices` по одному сообщению (`max.poll.records=1`, `enable.auto.commit=false`); смещение
+  подтверждается только после `COMMIT` в PostgreSQL.
+- [ ] Работает только с ShardingSphere-Proxy: один datasource — логическая база `devices`; адресов шардов
+  в конфигурации сервиса нет.
+- [ ] Идемпотентность: повторное сообщение не меняет запись (`seen_count` не растёт); более старое сообщение
+  не перезаписывает более новое. Подтверждается IT.
+- [ ] Невалидные сообщения сразу уходят в `devices-dlt`; сообщения, не записанные за заданное число попыток, —
+  в `devices-dlt`; обработка следующих сообщений продолжается.
+- [ ] Все параметры, включая тайм-ауты (подключение, запрос, блокировка), число попыток, паузы и их рост,
+  задаются переменными окружения: в `application*.yaml` нет значений без `${…}`, все переменные есть
+  в `.env.example`.
+- [ ] Миграций в сервисе нет: в `services/device-collector-service` нет Flyway и DDL
+  (`grep -rniE "flyway|create table|alter table" services/device-collector-service/src/main` — пусто).
+
+## База данных
+
+- [ ] Два шарда PostgreSQL 18; стратегия по хешу, ключ `device_id`; запрос по `device_id` уходит на один шард.
+- [ ] ShardingSphere-Proxy — отдельный контейнер. Конфигурация лежит в репозитории, пароли подставляются
+  из переменных окружения: в репозитории только шаблоны, поиск паролей по `git grep` ничего не находит.
+- [ ] У каждого шарда есть реплика только для чтения с потоковой репликацией:
+  - на primary `pg_stat_replication` показывает реплику в состоянии `streaming`;
+  - на реплике `pg_is_in_recovery()` = `true`, запись отклоняется;
+  - строка, записанная через Proxy, появляется на реплике своего шарда.
+- [ ] Чтение на реплики не направляется: в конфигурации Proxy реплик нет.
+- [ ] Для каждого шарда есть резервная копия: `infrastructure/postgres/backup/backup-all-shards.sh` создаёт
+  отдельную копию на шард в `backups/<время>/` с контрольными суммами; восстановление из неё проверено
+  чтением устройства через Proxy.
+- [ ] Миграции выполняет только `db-migrator` на Flyway. Миграции обратно совместимы и написаны
+  с `IF NOT EXISTS`. Мигратор применяет схему напрямую к primary каждого шарда по очереди и затем сверяет
+  версии; способ описан в дизайне. Повторный запуск применяет 0 миграций; расхождение версий даёт код
+  завершения ≠ 0.
+
+## Запуск
+
+- [ ] Порядок старта в Docker Compose: Nexus → сборка и публикация avros → регистрация схем → `db-migrator` →
+  сервисы. Каждый шаг ждёт успешного завершения предыдущего (`service_completed_successfully` или
+  `service_healthy`), а не запуска контейнера. Проверки:
+  - `make up` на чистом стенде (после `make clean`) завершается успешно; одноразовые задачи — `Exited (0)`;
+  - если регистрация схем завершилась ошибкой, `db-migrator` и сервисы не стартуют.
+- [ ] У всех образов явный тег, не `latest`.
+- [ ] Секретов в репозитории нет; `.env.example` содержит все переменные с безопасными значениями-заглушками.
+
+## Наблюдаемость
+
+- [ ] Метрики со всех компонентов: оба сервиса (`/actuator/prometheus`), ShardingSphere-Proxy, шарды PostgreSQL
+  и их реплики (включая отставание реплики), Kafka. Все цели в Prometheus — `UP`.
+- [ ] Логи всех компонентов в Loki: по каждому контейнеру стенда находятся строки.
+- [ ] Один traceId проходит от события в `events` до записи в PostgreSQL через оба сервиса: в Tempo одна трасса
+  со спанами events-collector-service (приём, публикация outbox) и device-collector-service (обработка, запись).
+
+## Тесты реестра устройств и avros
+
+- [ ] Unit-тесты логики обоих сервисов; порог покрытия JaCoCo выполняется, сгенерированные Avro-классы
+  из отчёта исключены.
+- [ ] Интеграционные тесты обоих сервисов на Testcontainers.
+- [ ] Шардирование: поднимаются два контейнера PostgreSQL и ShardingSphere-Proxy. После сохранения через Proxy
+  тест проверяет напрямую в шардах, что запись есть на ожидаемом шарде и её нет на другом.
+- [ ] Тесты отправки в DLT для обоих сервисов: невалидное сообщение и исчерпание попыток.
+- [ ] `./gradlew check` проходит.
+
+## Что сдаётся
+
+- [ ] Ссылка на репозиторий.
+- [ ] Диаграммы и этот Definition of Done.
+- [ ] Снимки экрана Grafana в `docs/screenshots/`: панели с метриками (оба сервиса, Proxy, шарды, Kafka)
+  и одна сквозная трасса.
+- [ ] README: порядок запуска и способ проверить, на какой шард попал `deviceId`.

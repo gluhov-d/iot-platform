@@ -1,0 +1,20 @@
+%% C4 Level 1 — системный контекст IoT-платформы
+flowchart LR
+    engineer(["<b>Инженер</b><br/>DevOps-инженер: разворачивает и настраивает<br/>платформу, следит за её работой"])
+    iot_platform["<b>IoT Microservice Platform</b><br/>Микросервисная платформа сбора телеметрии<br/>и управления IoT-устройствами"]
+    device["<b>IoT-устройство</b><br/>Внешний датчик или контроллер: отправляет<br/>данные, получает команды"]
+    keycloak["<b>Keycloak</b><br/>Сервер аутентификации и авторизации<br/>(SSO, OIDC)"]
+    grafana["<b>Grafana</b><br/>Мониторинг: метрики, логи и дашборды"]
+
+    engineer -- "Управление и мониторинг платформы · HTTP/REST, UI" --> iot_platform
+    device -- "Телеметрия и команды · MQTT/HTTP" --> iot_platform
+    engineer -- "Просмотр метрик и логов · HTTP (dashboards)" --> grafana
+    iot_platform -- "Запрос токена / проверка JWT · OIDC" --> keycloak
+    iot_platform -- "Экспорт метрик и логов · Prometheus, Loki" --> grafana
+
+    classDef person fill:#08427b,stroke:#052e56,color:#fff
+    classDef system fill:#1168bd,stroke:#0b4884,color:#fff
+    classDef external fill:#999999,stroke:#6b6b6b,color:#fff
+    class engineer person
+    class iot_platform system
+    class device,keycloak,grafana external

@@ -1,16 +1,18 @@
-%% Компоненты events-collector-service и его окружение (модуль 2)
+%% Компоненты events-collector-service и его окружение (приём событий)
 flowchart LR
     producer(["Источник событий устройств"])
 
     subgraph kafka["Kafka 4.2 (KRaft)"]
         events[["events<br/>ключ deviceId · 3 раздела <br/>cleanup.policy=delete"]]
         devices[["devices<br/>ключ deviceId · 3 раздела <br/>cleanup.policy=compact"]]
+        eventsDlt[["events-dlt<br/>3 раздела · cleanup.policy=delete"]]
     end
-    sr[("Schema Registry 8.2<br/>DeviceEvent · DeviceInfo")]
+    sr[("Schema Registry 8.2<br/>DeviceEvent · DeviceInfo · FULL")]
 
     subgraph svc["events-collector-service (N реплик, одна consumer group)"]
         direction TB
         listener["KafkaEventListener<br/>adapter.in.kafka"]
+        errors["DefaultErrorHandler<br/>+ DeadLetterPublishingRecoverer<br/>невалидное — сразу; сбой ClickHouse — N попыток<br/>(пауза растёт, со случайным разбросом)"]
         job["OutboxPublisherJob<br/>adapter.in.scheduler"]
         ingest["EventIngestionService<br/>+ DeviceEventValidator<br/>+ DeviceEventMapper"]
         publish["OutboxPublishingService"]
@@ -23,6 +25,7 @@ flowchart LR
         metrics["MetricsFacade"]
 
         listener --> ingest
+        listener -. "исключение" .-> errors
         ingest --> eventRepo
         ingest --> outboxRepo
         job --> publish
@@ -44,6 +47,7 @@ flowchart LR
     subgraph redis["Redis 8.6"]
         kLease[/"outbox:lease<br/>SET NX PX · Lua extend/release"/]
         kPublished[/"devices:published<br/>Set&lt;deviceId&gt;"/]
+        kFingerprint[/"devices:fingerprint<br/>Hash deviceId → SHA-256 опубликованных<br/>данных устройства (без lastSeenAtMs<br/>и показаний сенсоров)"/]
     end
 
     subgraph obs["Наблюдаемость (профиль observability)"]
@@ -59,13 +63,15 @@ flowchart LR
     producer -- "DeviceEvent (Avro)" --> events
     events -- "poll: max.poll.records=1<br/>ack после записи" --> listener
     listener -. "схема" .- sr
-    kprod -. "схема" .- sr
+    kprod -. "схема по ID · auto.register.schemas=false" .- sr
     eventRepo -- "INSERT" --> tEvents
     outboxRepo -- "INSERT версии · SELECT FINAL" --> tOutbox
     auditRepo -- "INSERT попытки" --> tAudit
     lease --> kLease
     store --> kPublished
-    kprod -- "DeviceInfo (Avro)" --> devices
+    store -- "HSET только после ack Kafka" --> kFingerprint
+    kprod -- "DeviceInfo (Avro), только изменения" --> devices
+    errors -- "DeviceEvent (Avro) или исходные байты ·<br/>kafka_dlt-* · затем commit offset" --> eventsDlt
     devices --> downstream
 
     prom -- "/actuator/prometheus" --> svc
