@@ -1,4 +1,7 @@
-%% Фоновая публикация outbox: один активный публикатор через Redis-аренду
+%% Фоновая публикация outbox: один активный публикатор через Redis-аренду.
+%% Реестр устройств: DeviceInfo несёт тип изменения, eventId, время события и данные устройства.
+%% Ключ дедупликации - не deviceId, а набор полей устройства: в devices уходит сообщение, только если устройство
+%% новое или отпечаток (SHA-256) его данных отличается от последнего опубликованного
 sequenceDiagram
     autonumber
     participant J as OutboxPublisherJob
@@ -16,33 +19,47 @@ sequenceDiagram
     else аренда получена
         R-->>P: OK
         Note over P,R: LeaseGuard: фоновое продление extend.lua каждые ttlMs/3 до конца итерации -<br/>аренда не истекает во время выборки, отправки и записи
-        P->>CH: SELECT ... FROM device_outbox FINAL<br/>WHERE status IN ('NEW', 'FAILED') AND attempts < OUTBOX_MAX_ATTEMPTS<br/>ORDER BY created_at LIMIT OUTBOX_BATCH_SIZE
-        CH-->>P: outbox-записи
+        P->>CH: SELECT ... FROM device_outbox FINAL<br/>WHERE status IN ('NEW', 'FAILED') AND attempts < OUTBOX_MAX_ATTEMPTS<br/>ORDER BY created_at, source_timestamp_ms, event_id LIMIT OUTBOX_BATCH_SIZE
+        CH-->>P: outbox-записи (с device_snapshot и его схемой писателя)
         loop каждая запись, в том числе первая
             P->>R: EVAL extend.lua (PEXPIRE ttlMs, только если значение == ownerToken)
             break аренда потеряна (0 или ошибка Redis)
                 Note over P: пачка останавливается, остальные записи выберет следующая итерация
             end
             R-->>P: 1 - аренда продлена
+            opt предыдущая запись этого устройства в пачке не опубликована
+                Note over P: запись ждёт следующей итерации (DEFERRED) - порядок событий устройства сохраняется
+            end
             P->>R: SISMEMBER devices:published <deviceId>
             Note over P: спан outbox publish - дочерний к спану приема<br/>(trace_id/span_id из записи): один трейс на событие
-            alt уже опубликовано
-                R-->>P: 1
+            R-->>P: 0 / 1
+            opt у события есть снимок устройства
+                Note over P: отпечаток = SHA-256 полей устройства из снимка: имя, ОС и её версия, прошивка<br/>и остальные поля модели, кроме меняющихся с телеметрией (lastSeenAtMs, показания сенсоров)
+                P->>R: HGET devices:fingerprint <deviceId>
+                R-->>P: последний опубликованный отпечаток или nil
+            end
+            alt устройство известно и снимка нет (телеметрия) или отпечаток не изменился
+                opt отпечаток не изменился
+                    P->>R: EVAL mark.lua - только devices:snapshot-at (время снимка), под проверкой ownerToken
+                end
                 P->>R: EVAL extend.lua - контрольная точка
                 P->>CH: INSERT версия v+1, SENT
                 Note over P: outbox_publish_skipped_total++
-            else еще не опубликовано
-                R-->>P: 0
-                P->>K: send(devices, key=deviceId, DeviceInfo) - ждем подтверждения
+            else публикуем
+                Note over P: устройство не опубликовано → eventType = CREATED<br/>отпечаток изменился → UPDATED, или DELETED при status = DELETED
+                P->>K: send(devices, key=deviceId, DeviceInfo {deviceId, emittedAtMs = now, eventType,<br/>eventId = event_id, eventTimeMs = source_timestamp_ms, device = снимок или null}) - ждем подтверждения
                 alt отправка успешна
                     K-->>P: ack (acks=all)
                     P->>R: EVAL mark.lua - SADD devices:published, HSET snapshot-at и fingerprint,<br/>только если значение outbox:lease == ownerToken и снимок не старше сохранённого
-                    Note over P,R: аренда не наша (-1) - в Redis ничего не записано, версия outbox не пишется
+                    Note over P,R: аренда не наша (-1) - в Redis ничего не записано, версия outbox не пишется.<br/>Отметки только после ack: при сбое отправки отпечаток не меняется, следующая попытка снова опубликует
                     P->>R: EVAL extend.lua - контрольная точка
                     P->>CH: INSERT версия v+1, SENT
                     Note over P: outbox_publish_success_total++
-                else ошибка отправки
-                    K-->>P: ошибка / таймаут
+                else Kafka / Schema Registry недоступны (сеть, таймаут, 5xx)
+                    K-->>P: ошибка
+                    Note over P: DEFERRED: версия и аудит не пишутся, попытка не тратится,<br/>пачка останавливается - запись повторит следующая итерация
+                else сообщение отвергнуто (например, слишком большое)
+                    K-->>P: ошибка
                     P->>R: EVAL extend.lua - контрольная точка
                     P->>CH: INSERT версия v+1, FAILED, attempts+1, last_error
                     Note over P: outbox_publish_fail_total++
@@ -56,3 +73,4 @@ sequenceDiagram
         P->>R: EVAL release.lua (DEL, только если значение == ownerToken)
     end
     P->>CH: SELECT count() ... FINAL -> outbox_pending_count
+    Note over P,K: повторная публикация после потерянного ack несёт тот же eventId -<br/>device-collector-service распознаёт повтор по журналу
