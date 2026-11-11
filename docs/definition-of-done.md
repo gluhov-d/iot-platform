@@ -9,6 +9,7 @@
 
 - [Приём событий (events-collector-service)](#приём-событий-events-collector-service)
 - [Реестр устройств (device-collector-service, avros)](#реестр-устройств-device-collector-service-avros)
+- [Управление устройствами (device-service)](#управление-устройствами-device-service)
 
 ---
 
@@ -317,3 +318,19 @@ device-collector-service, проект avros и изменения в приём
   `grafana-kafka.png` — и одна сквозная трасса `tempo-trace-events-to-postgres.png` (события -> PostgreSQL через оба
   сервиса).
 - [ ] README: порядок запуска (раздел 10) и способ проверить, на какой шард попал `deviceId` (раздел 21).
+
+---
+
+# Управление устройствами (device-service)
+
+Критерии приёмки этой части — в [specs/001-device-service/spec.md](../specs/001-device-service/spec.md#критерии-приёмки-definition-of-done),
+раздел «Критерии приёмки (Definition of Done)»: дизайн готовится через Spec Kit, и критерии входят в spec.md. Здесь
+они не повторяются, чтобы не было двух версий.
+
+Что эта часть меняет в уже сделанном (пункты секций выше правятся на месте вместе с кодом):
+
+- avros 1.3.0: в `DeviceInfo` поле `operation`; оба сервиса подключают `avrosVersion = "1.3.0"` («Проект avros»).
+- Приём событий: Redis через Sentinel (`REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`) вместо прямого адреса («Redis»).
+- Реестр устройств: команды `CREATE`/`UPDATE`/`DELETE`, исход `IGNORED`, колонки `version`, `managed_at`, `deleted_by`
+  (миграция V3), сброс кэша после `COMMIT` («device-collector-service», «База данных»).
+- Запуск: Keycloak с realm из репозитория и Redis с Sentinel — в базовом стенде, а не в профиле `platform` («Запуск»).

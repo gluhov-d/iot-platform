@@ -1,89 +1,110 @@
-%% C4 Level 2 — контейнеры IoT-платформы. Маршруты: T — телеметрия и реестр устройств, C — команды, E — ошибки,
+%% C4 Level 2 — контейнеры IoT-платформы. Маршруты: T — телеметрия и реестр устройств, A — управление устройствами
+%% (запись через device-service), Q — чтение устройства (Cache-Aside), C — команды устройствам, E — ошибки,
 %% B — сборка и схема БД, M — метрики, L — логи, R — трейсы. Сплошные линии — данные и команды, пунктир — остальное.
 flowchart LR
     engineer(["<b>Инженер</b><br/>Регистрирует устройства, отправляет<br/>команды, смотрит телеметрию"])
     device["<b>IoT-устройство</b><br/>Датчик/контроллер: шлёт телеметрию,<br/>получает команды"]
     subgraph platform["IoT Platform"]
         subgraph apps["Прикладные сервисы · Spring Boot"]
-            gateway["<b>API Gateway</b><br/><i>Spring Cloud Gateway</i><br/>Единая точка входа прикладного API:<br/>проверка JWT, маршрутизация"]
-            orchestrator["<b>API Orchestrator</b><br/><i>Spring Boot</i><br/>Сценарии из нескольких шагов: запускает<br/>процессы Camunda, агрегирует ответы"]
+            gateway["<b>API Gateway</b><br/><i>Spring Cloud Gateway</i><br/>Единая точка входа прикладного API:<br/>проверка пользовательского JWT, маршрутизация"]
+            orchestrator["<b>API Orchestrator</b><br/><i>Spring Boot</i><br/>Сценарии из нескольких шагов. К device-service<br/>ходит через device-service-client<br/>со своим сервисным токеном"]
+            device_service["<b>device-service</b> ×2<br/><i>Spring Boot 4, OAuth2 Resource Server</i><br/>REST CRUD устройств, API First. Запись не хранит:<br/>DeviceInfo с operation в devices, 202 после ack.<br/>Чтение: Redis, промах — реплики через Proxy.<br/>Только сервисные токены, без состояния"]
             command_service["<b>Command Service</b><br/><i>Spring Boot</i><br/>Жизненный цикл команд: NEW → SENT →<br/>DONE/FAILED"]
             event_service["<b>Event Service</b><br/><i>Spring Boot</i><br/>Чтение телеметрии и событий для API"]
             device_gateway["<b>Device Gateway</b><br/><i>Spring Boot, MQTT/HTTP adapter</i><br/>Протокольный шлюз устройств: принимает<br/>MQTT/HTTP, проверяет устройство, публикует<br/>в Kafka; доставляет команды устройству"]
-            events_collector["<b>events-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>events -> ClickHouse (device_events с данными<br/>устройства + outbox); DeviceInfo в devices -<br/>только новое устройство или изменённые данные"]
-            device_collector["<b>device-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>Реестр устройств. devices -><br/>PostgreSQL через ShardingSphere-Proxy,<br/>идемпотентно; чтение по deviceId"]
+            events_collector["<b>events-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>events -> ClickHouse (device_events с данными<br/>устройства + outbox); DeviceInfo в devices<br/>(operation = null) - только новое устройство<br/>или изменённые данные"]
+            device_collector["<b>device-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>Единственный писатель реестра устройств:<br/>события роутера и команды CREATE / UPDATE /<br/>DELETE, идемпотентно; после COMMIT<br/>сбрасывает кэш устройства"]
             failed_processor["<b>Failed Events Processor</b><br/><i>Spring Boot, Kafka consumer</i><br/>Разбор DLT: сохраняет сбойные сообщения,<br/>повторяет обработку"]
         end
         subgraph kafka["Kafka · Message Broker"]
             topic_events[/"<b>events</b><br/><i>Kafka topic, delete</i><br/>Сырые события устройств (Avro<br/>DeviceEvent), ключ deviceId"/]
-            topic_device[/"<b>devices</b><br/><i>Kafka topic, compact</i><br/>Производные события устройств (Avro<br/>DeviceInfo: CREATED / UPDATED / DELETED,<br/>данные устройства), ключ deviceId"/]
+            topic_device[/"<b>devices</b><br/><i>Kafka topic, compact</i><br/>DeviceInfo, ключ deviceId: события роутера<br/>(operation = null) и команды device-service<br/>(operation CREATE / UPDATE / DELETE).<br/>Команда несёт все поля администратора"/]
             topic_events_dlt[/"<b>events-dlt</b><br/><i>Kafka topic, delete</i><br/>Не Avro / невалидные события и не<br/>записанные в ClickHouse за N попыток"/]
-            topic_devices_dlt[/"<b>devices-dlt</b><br/><i>Kafka topic, delete</i><br/>Невалидные DeviceInfo и сообщения, не<br/>записанные в PostgreSQL после повторов"/]
+            topic_devices_dlt[/"<b>devices-dlt</b><br/><i>Kafka topic, delete</i><br/>Невалидные DeviceInfo и команды, не<br/>записанные в PostgreSQL после повторов"/]
             topic_dlt[/"<b>iot.dlt</b><br/><i>Kafka topic</i><br/>Отклонённые шлюзом сообщения устройств<br/>(шлюз пока не реализован)"/]
         end
-        schema_registry["<b>Schema Registry</b><br/><i>Confluent</i><br/>Avro-схемы тем: events-value,<br/>devices-value, совместимость FULL.<br/>Схемы регистрирует только avros-register:<br/>у продюсеров auto.register.schemas=false"]
-        avros["<b>avros</b><br/><i>Проект монорепозитория: build.gradle.kts,<br/>Dockerfile; одноразовые задачи Compose</i><br/>Все Avro-схемы платформы. avros-publish:<br/>генерация классов, проверка FULL с<br/>зарегистрированными версиями, публикация<br/>в Nexus. avros-register: регистрация схем"]
-        nexus["<b>Nexus</b><br/><i>Sonatype Nexus 3, Maven</i><br/>Артефакт avros: выпущенная версия не<br/>перезаписывается; сервисы подключают явную<br/>версию и переходят на новую в своё время"]
-        startup["<b>Порядок старта (Docker Compose)</b><br/>Nexus → avros-publish → avros-register →<br/>db-migrator → сервисы. Каждый шаг ждёт<br/>успешного завершения предыдущего<br/>(service_completed_successfully / healthy)"]
+        schema_registry["<b>Schema Registry</b><br/><i>Confluent</i><br/>Avro-схемы тем, FULL_TRANSITIVE.<br/>Схемы регистрирует только avros-register:<br/>у продюсеров auto.register.schemas=false"]
+        avros["<b>avros</b><br/><i>Проект монорепозитория; одноразовые задачи Compose</i><br/>Все Avro-схемы платформы, 1.3.0: DeviceInfo.operation.<br/>avros-publish: проверка FULL с Nexus и Schema<br/>Registry, публикация. avros-register: регистрация"]
+        nexus["<b>Nexus</b><br/><i>Sonatype Nexus 3, Maven</i><br/>avros и device-service-client: выпущенная<br/>версия не перезаписывается, потребители<br/>подключают явную версию"]
+        startup["<b>Порядок старта (Docker Compose)</b><br/>Nexus → avros-publish → avros-register →<br/>db-migrator → Proxy; Redis + Sentinel, Keycloak<br/>(импорт realm) → сервисы. Каждый шаг ждёт<br/>успешного завершения предыдущего"]
+        keycloak["<b>Keycloak</b><br/><i>Keycloak 26, realm iot-platform</i><br/>Realm из репозитория импортируется при старте:<br/>клиент device-service (роли devices.read / write),<br/>клиенты-потребители с сервисной учётной записью"]
         subgraph registry["Реестр устройств"]
-            proxy["<b>ShardingSphere-Proxy</b><br/><i>Apache ShardingSphere 5.5.3, PostgreSQL protocol</i><br/>Логическая база devices: маршрутизация по<br/>#124;hashCode(device_id)#124; % 2,<br/>связанные таблицы"]
+            proxy["<b>ShardingSphere-Proxy</b><br/><i>Apache ShardingSphere 5.5.3, PostgreSQL protocol</i><br/>Маршрут #124;hashCode(device_id)#124; % 2. Логические базы:<br/>devices — основные узлы (запись, только DCS),<br/>devices_read — только реплики (чтение device-service)"]
             shard0[("<b>postgres-shard-0</b><br/><i>PostgreSQL 18, primary, база shard_0</i><br/>devices, processed_device_events — часть<br/>устройств")]
             shard1[("<b>postgres-shard-1</b><br/><i>PostgreSQL 18, primary, база shard_1</i><br/>devices, processed_device_events —<br/>остальные устройства")]
-            replica0[("<b>postgres-shard-0-replica</b><br/><i>PostgreSQL 18, hot standby</i><br/>Только чтение; Proxy на неё<br/>запросы не направляет")]
-            replica1[("<b>postgres-shard-1-replica</b><br/><i>PostgreSQL 18, hot standby</i><br/>Только чтение; Proxy на неё<br/>запросы не направляет")]
+            replica0[("<b>postgres-shard-0-replica</b><br/><i>PostgreSQL 18, hot standby</i><br/>Только чтение: источник devices_read,<br/>роль device_reader")]
+            replica1[("<b>postgres-shard-1-replica</b><br/><i>PostgreSQL 18, hot standby</i><br/>Только чтение: источник devices_read,<br/>роль device_reader")]
             backups[("<b>backups/</b><br/><i>pg_dump, каталог на хосте</i><br/>Копия каждого шарда, manifest, SHA-256")]
-            db_migrator["<b>db-migrator</b><br/><i>Java 25, Flyway 12.11</i><br/>Одноразовая задача: одни и те же миграции<br/>(IF NOT EXISTS) напрямую на primary каждого<br/>шарда по очереди, сверка версий схемы"]
+            db_migrator["<b>db-migrator</b><br/><i>Java 25, Flyway 12.11</i><br/>Одноразовая задача: миграции (IF NOT EXISTS)<br/>напрямую на primary каждого шарда,<br/>сверка версий схемы"]
         end
-        pg[("<b>PostgreSQL</b><br/><i>Реляционная БД</i><br/>device_commands; БД Keycloak и Camunda")]
-        redis[("<b>Redis</b><br/><i>In-Memory</i><br/>outbox:lease (аренда публикатора),<br/>devices:published, devices:fingerprint<br/>(отпечаток опубликованных данных<br/>устройства); кэш активных устройств")]
+        pg[("<b>PostgreSQL</b><br/><i>Реляционная БД</i><br/>device_commands; БД Camunda")]
+        subgraph redis_ha["Redis · общий для платформы"]
+            sentinel["<b>redis-sentinel</b> ×3<br/><i>Redis Sentinel, кворум 2</i><br/>Следит за master platform-redis,<br/>при отказе назначает новый; клиенты<br/>узнают адрес master у Sentinel"]
+            redis[("<b>redis</b> (master) + <b>redis-replica</b><br/><i>Redis 8</i><br/>outbox:lease, devices:published, devices:fingerprint;<br/>кэш device:v1:{deviceId} — данные, version,<br/>floor (минимальная версия для записи), TTL из env")]
+        end
         clickhouse[("<b>ClickHouse</b><br/><i>Колоночная БД</i><br/>iot_platform: device_events, device_outbox<br/>(ReplacingMergeTree),<br/>device_publication_audit (MergeTree)")]
         minio[("<b>MinIO</b><br/><i>Object Storage</i><br/>Бакеты iot-dlt, iot-attachments")]
         camunda["<b>Camunda</b><br/><i>BPM Engine</i><br/>Процесс выполнения команды: отправка,<br/>ожидание подтверждения, таймаут"]
         subgraph obs["Наблюдаемость"]
             alloy["<b>Alloy</b><br/><i>Grafana Alloy</i><br/>Агент: читает логи контейнеров проекта<br/>через Docker API, принимает OTLP-трейсы"]
-            loki[("<b>Loki</b><br/><i>Log storage</i><br/>Логи с метками service, container, cluster")]
+            loki[("<b>Loki</b><br/><i>Log storage</i><br/>Логи JSON с traceId; метки service, container")]
             tempo[("<b>Tempo</b><br/><i>Trace storage</i><br/>Трейсы")]
             prometheus[("<b>Prometheus</b><br/><i>TSDB, pull</i><br/>Метрики приложений и экспортёров")]
-            pg_exporter["<b>postgres-exporter</b><br/><i>Prometheus exporter, multi-target</i><br/>Метрики PostgreSQL платформы, шардов и<br/>реплик, отставание реплик, на :9187"]
+            pg_exporter["<b>postgres-exporter</b><br/><i>Prometheus exporter</i><br/>Метрики PostgreSQL платформы, шардов и<br/>реплик, отставание реплик"]
             kafka_exporter["<b>kafka-exporter</b><br/><i>Prometheus exporter</i><br/>Метрики Kafka на :9308"]
-            grafana["<b>Grafana</b><br/><i>Dashboards</i><br/>Дашборды поверх Prometheus, Loki, Tempo"]
+            grafana["<b>Grafana</b><br/><i>Dashboards</i><br/>Панели events-collector, device-collector,<br/>device-service, PostgreSQL"]
         end
     end
-    keycloak["<b>Keycloak</b><br/>OIDC-провайдер"]
     docker["<b>Docker Engine</b><br/>Логи контейнеров, метки Compose-проекта"]
 
     %% Вход инженера
-    engineer -- "Вход, получение токена · OIDC" --> keycloak
+    engineer -- "Вход, пользовательский токен · OIDC" --> keycloak
     engineer -- "Прикладной API с JWT · HTTPS/REST" --> gateway
     gateway -- "Проверка JWT (JWKS) · OIDC" --> keycloak
     gateway -- "Составные операции · REST" --> orchestrator
-    gateway -- "Устройство по deviceId (только чтение) · REST" --> device_collector
     gateway -- "Запросы телеметрии · REST" --> event_service
     %% T: приём телеметрии и реестр устройств
     device -- "T1. Телеметрия, состояние устройства · MQTT/HTTP" --> device_gateway
     device_gateway -- "T2. Устройство известно и активно? · Redis" --> redis
-    device_gateway -- "T3. DeviceEvent с данными устройства (имя,<br/>ОС и версия, прошивка) · Kafka, Avro" --> topic_events
+    device_gateway -- "T3. DeviceEvent с данными устройства · Kafka, Avro" --> topic_events
     events_collector -- "T4. Чтение, ack после записи · Kafka" --> topic_events
     events_collector -- "T5. device_events + outbox с данными<br/>устройства; сбой записи - N попыток · JDBC/HTTP" --> clickhouse
-    events_collector -- "T6. Аренда публикатора; отпечаток последних<br/>опубликованных данных устройства · Redis" --> redis
-    events_collector -- "T7. DeviceInfo, если устройство новое или его<br/>данные изменились (отпечаток): CREATED / UPDATED /<br/>DELETED (outbox) · Kafka, Avro" --> topic_device
-    device_collector -- "T8. Чтение по одному, ack после COMMIT · Kafka" --> topic_device
-    device_collector -- "T9. Журнал + состояние устройства в одной<br/>транзакции · JDBC, PostgreSQL" --> proxy
+    events_collector -- "T6. Аренда публикатора; отпечаток<br/>опубликованных данных · Redis" --> redis
+    events_collector -- "T7. DeviceInfo (operation = null), если устройство<br/>новое или его данные изменились · Kafka, Avro" --> topic_device
+    device_collector -- "T8. Чтение по одному, ack после COMMIT<br/>и сброса кэша · Kafka" --> topic_device
+    device_collector -- "T9. Журнал + состояние устройства в одной<br/>транзакции, RETURNING version · JDBC, база devices" --> proxy
     proxy -- "T10. Маршрут по device_id · JDBC" --> shard0
     proxy -- "T10. Маршрут по device_id · JDBC" --> shard1
     device_gateway -- "Схемы Avro · HTTP" --> schema_registry
     events_collector -- "Схемы Avro по ID, без авторегистрации · HTTP" --> schema_registry
     device_collector -- "Схемы Avro по ID · HTTP" --> schema_registry
+    device_service -- "Схемы Avro по ID, без авторегистрации · HTTP" --> schema_registry
     event_service -- "Выборки телеметрии · HTTP/SQL" --> clickhouse
+    %% A: управление устройствами (запись через Kafka)
+    orchestrator -- "A1. Сервисный токен · OAuth2 client credentials" --> keycloak
+    orchestrator -- "A2. POST / PUT / DELETE /api/v1/devices + JWT<br/>· REST (device-service-client)" --> device_service
+    device_service -- "A3. Ключи JWKS (кэш, обновление по kid) · HTTP" --> keycloak
+    device_service -- "A4. DeviceInfo: operation, eventId, поля администратора;<br/>ключ deviceId, acks=all; 202 только после ack · Kafka, Avro" --> topic_device
+    device_collector -- "A5. После COMMIT: floor = version, старые<br/>данные удалить (Lua) · Redis через Sentinel" --> redis
+    %% Q: чтение устройства (Cache-Aside)
+    orchestrator -- "Q1. GET /api/v1/devices/{deviceId} + JWT<br/>· REST (device-service-client)" --> device_service
+    device_service -- "Q2. device:v1:{deviceId}; при промахе - запись,<br/>только если version ≥ floor (Lua), TTL · Redis" --> redis
+    device_service -- "Q3. Промах: SELECT по device_id,<br/>база devices_read · JDBC" --> proxy
+    proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica0
+    proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica1
+    apps -. "Адрес текущего master · Sentinel :26379" .-> sentinel
+    sentinel -. "Наблюдение, failover" .-> redis
     %% B: сборка и схема БД
-    events_collector -. "B1. Сборка: avros, явная версия · Maven" .-> nexus
-    device_collector -. "B1. Сборка: avros, явная версия · Maven" .-> nexus
+    events_collector -. "B1. Сборка: avros 1.3.0, явная версия · Maven" .-> nexus
+    device_collector -. "B1. Сборка: avros 1.3.0, явная версия · Maven" .-> nexus
+    device_service -. "B1. Сборка: avros 1.3.0; B3. публикация<br/>device-service-client (DTO + HTTP Service Client<br/>из OpenAPI) · Maven" .-> nexus
+    orchestrator -. "B4. Подключает device-service-client<br/>явной версии · Maven" .-> nexus
     db_migrator -. "B2. Flyway migrate · JDBC" .-> shard0
     db_migrator -. "B2. Flyway migrate · JDBC" .-> shard1
     avros -. "B0. Проверка FULL с зарегистрированными<br/>версиями; после публикации - регистрация · HTTP" .-> schema_registry
     avros -. "B0. Публикация артефакта avros (версия<br/>не перезаписывается) · Maven" .-> nexus
-    shard0 -. "Потоковая репликация WAL" .-> replica0
-    shard1 -. "Потоковая репликация WAL" .-> replica1
+    shard0 -. "Потоковая репликация WAL (асинхронная)" .-> replica0
+    shard1 -. "Потоковая репликация WAL (асинхронная)" .-> replica1
     shard0 -. "Резервная копия (pg_dump)" .-> backups
     shard1 -. "Резервная копия (pg_dump)" .-> backups
     %% C: выполнение команд
@@ -98,7 +119,7 @@ flowchart LR
     %% E: обработка ошибок
     device_gateway -. "E1. Неизвестное устройство / невалидное<br/>сообщение · Kafka" .-> topic_dlt
     events_collector -. "E1. Не Avro / невалидное событие / не записано<br/>за N попыток, ack после записи в DLT · Kafka" .-> topic_events_dlt
-    device_collector -. "E1. Невалидное сообщение / шард недоступен<br/>после 3 попыток (пауза растёт, со случайным<br/>разбросом), ack после записи в DLT · Kafka" .-> topic_devices_dlt
+    device_collector -. "E1. Невалидное сообщение или команда /<br/>шард недоступен после N попыток · Kafka" .-> topic_devices_dlt
     failed_processor -. "E2. Чтение DLT · Kafka" .-> topic_dlt
     failed_processor -. "E2. Чтение DLT · Kafka" .-> topic_events_dlt
     failed_processor -. "E2. Чтение DLT · Kafka" .-> topic_devices_dlt
@@ -108,7 +129,8 @@ flowchart LR
     camunda -. "E5. Таймаут ack → FAILED · External Task / REST" .-> command_service
     %% M: метрики (Prometheus забирает сам, pull)
     prometheus -. "M1. /actuator/prometheus · HTTP" .-> events_collector
-    prometheus -. "M1. /actuator/prometheus: devices_*, shard ·<br/>HTTP" .-> device_collector
+    prometheus -. "M1. /actuator/prometheus: devices_*, shard · HTTP" .-> device_collector
+    prometheus -. "M1. /actuator/prometheus: http_server_requests,<br/>device_commands_*, device_cache_* · HTTP" .-> device_service
     prometheus -. "M1. Скрейп /metrics · HTTP :9187" .-> pg_exporter
     pg_exporter -. "M2. Статистика pg_stat_* · SQL" .-> pg
     pg_exporter -. "M2. pg_stat_*, pg_stat_replication · SQL" .-> shard0
@@ -125,7 +147,7 @@ flowchart LR
     alloy -. "L1. Контейнеры проекта и их stdout/stderr ·<br/>Docker API, фильтр com.docker.compose.project" .-> docker
     alloy -. "L2. Отправка логов · HTTP push :3100" .-> loki
     %% R: трейсы
-    apps -. "R1. Трейсы (один трейс: events -> devices -><br/>PostgreSQL) · OTLP gRPC :4319 / HTTP :4320" .-> alloy
+    apps -. "R1. Трейсы (один трейс: HTTP device-service -> devices -><br/>device-collector-service -> PostgreSQL) · OTLP" .-> alloy
     alloy -. "R2. Батчи трейсов · OTLP gRPC :4317" .-> tempo
     %% Просмотр
     grafana -- "Запросы метрик · PromQL" --> prometheus
@@ -135,21 +157,25 @@ flowchart LR
 
     classDef person fill:#08427b,stroke:#052e56,color:#fff
     classDef container fill:#1168bd,stroke:#0b4884,color:#fff
+    classDef newcontainer fill:#0b6e4f,stroke:#064d37,color:#fff
     classDef store fill:#438dd5,stroke:#2e6295,color:#fff
     classDef queue fill:#438dd5,stroke:#2e6295,color:#fff
     classDef external fill:#999999,stroke:#6b6b6b,color:#fff
     classDef boundary fill:#ffffff,stroke:#8a8a8a,stroke-dasharray:6 4,color:#333
     class engineer person
-    class device,keycloak,docker external
-    class startup,gateway,orchestrator,command_service,event_service,device_gateway,events_collector,device_collector,failed_processor,schema_registry,avros,nexus,proxy,db_migrator,camunda,alloy,pg_exporter,kafka_exporter,grafana container
+    class device,docker external
+    class startup,gateway,orchestrator,command_service,event_service,device_gateway,events_collector,device_collector,failed_processor,schema_registry,avros,nexus,proxy,db_migrator,camunda,alloy,pg_exporter,kafka_exporter,grafana,keycloak container
+    class device_service,sentinel newcontainer
     class topic_events,topic_device,topic_events_dlt,topic_devices_dlt,topic_dlt queue
     class shard0,shard1,replica0,replica1,backups,pg,redis,clickhouse,minio,loki,tempo,prometheus store
-    class platform,apps,kafka,registry,obs boundary
-    %% Цвета маршрутов. Номер — порядок связи в файле (с 0): добавили связь — пересчитать
-    linkStyle 6,7,8,9,10,11,12,13,14,15,16 stroke:#1565C0,stroke-width:2px,color:#1565C0
-    linkStyle 21,22,23,24,25,26 stroke:#5D4037,stroke-width:2px,color:#5D4037
-    linkStyle 31,32,33,34,35,36,37 stroke:#2E7D32,stroke-width:2px,color:#2E7D32
-    linkStyle 39,40,41,42,43,44,45,46,47,48 stroke:#C62828,stroke-width:2px,color:#C62828
-    linkStyle 49,50,51,52,53,54,55,56,57,58,59,60,61,62 stroke:#EF6C00,stroke-width:2px,color:#EF6C00
-    linkStyle 63,64 stroke:#6A1B9A,stroke-width:2px,color:#6A1B9A
-    linkStyle 65,66 stroke:#00838F,stroke-width:2px,color:#00838F
+    class platform,apps,kafka,registry,obs,redis_ha boundary
+    %% Цвета маршрутов. Номер — порядок связи в файле (с 0): добавили связь — пересчитать (relink.py)
+    linkStyle 5,6,7,8,9,10,11,12,13,14,15 stroke:#1565C0,stroke-width:2px,color:#1565C0
+    linkStyle 21,22,23,24,25 stroke:#AD1457,stroke-width:2px,color:#AD1457
+    linkStyle 26,27,28,29,30 stroke:#827717,stroke-width:2px,color:#827717
+    linkStyle 33,34,35,36,37,38,39,40 stroke:#5D4037,stroke-width:2px,color:#5D4037
+    linkStyle 45,46,47,48,49,50,51 stroke:#2E7D32,stroke-width:2px,color:#2E7D32
+    linkStyle 53,54,55,56,57,58,59,60,61,62 stroke:#C62828,stroke-width:2px,color:#C62828
+    linkStyle 63,64,65,66,67,68,69,70,71,72,73,74,75,76,77 stroke:#EF6C00,stroke-width:2px,color:#EF6C00
+    linkStyle 78,79 stroke:#6A1B9A,stroke-width:2px,color:#6A1B9A
+    linkStyle 80,81 stroke:#00838F,stroke-width:2px,color:#00838F

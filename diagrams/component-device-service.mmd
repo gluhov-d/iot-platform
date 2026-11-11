@@ -1,0 +1,78 @@
+%% Компоненты device-service и его окружение (управление устройствами)
+flowchart LR
+    consumer(["Сервис-потребитель<br/>API Orchestrator · device-service-client<br/>сервисный токен (client credentials)"])
+
+    subgraph build["Сборка: API First"]
+        direction TB
+        spec["device-service.yaml<br/>OpenAPI 3.0.3 — источник истины<br/>services/device-service-client/src/main/openapi"]
+        gen["OpenAPI Generator 7.17 (Gradle, при каждой сборке)<br/>модели: spring + useBeanValidation<br/>интерфейс: spring-http-interface без моделей<br/>сгенерированное не в Git"]
+        client["device-service-client X.Y.Z<br/>DevicesApi (@HttpExchange) + DTO<br/>версия = info.version спецификации"]
+        spec --> gen --> client
+    end
+
+    subgraph svc["device-service (2 экземпляра, без состояния)"]
+        direction TB
+        subgraph sec["adapter.in.web.security"]
+            chain["SecurityFilterChain<br/>STATELESS · oauth2ResourceServer.jwt<br/>GET → devices.read · POST/PUT/DELETE → devices.write<br/>/actuator/health/** открыт"]
+            jwtval["JwtDecoder + валидаторы<br/>подпись (JWKS), iss, exp/nbf, aud = device-service,<br/>ServiceAccountValidator: токен сервисной учётной записи"]
+            roles["KeycloakRolesConverter<br/>resource_access.device-service.roles → authorities"]
+            problem401["ProblemAuthenticationEntryPoint<br/>ProblemAccessDeniedHandler<br/>401 / 403 в Problem Details"]
+        end
+        controller["DeviceController<br/>adapter.in.web<br/>implements DevicesApi (из клиента), @Valid<br/>202 + Location · 200 · Problem Details"]
+        advice["ProblemDetailsAdvice<br/>adapter.in.web<br/>код ошибки + traceId, без стека и SQL"]
+        mapper["DeviceMapper (MapStruct)<br/>DTO ↔ модель; модель → DeviceInfo / DeviceSnapshot<br/>unmappedTargetPolicy = ERROR"]
+        command["DeviceCommandService<br/>domain.service<br/>проверка → eventId (UUID), eventTimeMs →<br/>публикация, ждёт ack Kafka"]
+        query["DeviceQueryService<br/>domain.service<br/>Cache-Aside: кэш → реплики → кэш<br/>Redis недоступен — читает реплики"]
+        rules["DeviceRules<br/>domain.service<br/>существует / не существует для POST, PUT, DELETE;<br/>правила предметной области"]
+        pub["KafkaDeviceCommandPublisher<br/>adapter.out.kafka (порт DeviceCommandPublisher)<br/>DeviceInfo Avro, ключ deviceId, acks=all, idempotence,<br/>auto.register.schemas=false, send().get(тайм-аут)"]
+        cache["RedisDeviceCache<br/>adapter.out.redis (порт DeviceCache)<br/>Sentinel · хеш device:v1:{id}: body, version, floor<br/>запись только если version ≥ floor (Lua), TTL из env"]
+        repo["JdbcDeviceReadRepository<br/>adapter.out.postgres (порт DeviceReadRepository)<br/>JdbcClient · база devices_read · read-only пользователь"]
+        metrics["DeviceServiceMetrics<br/>device_commands_*, device_cache_*<br/>(без deviceId в метках)"]
+
+        chain --> jwtval
+        chain --> roles
+        chain -. "отказ" .-> problem401
+        chain --> controller
+        controller --> mapper
+        controller --> command
+        controller --> query
+        controller -. "исключение" .-> advice
+        command --> rules
+        rules --> query
+        command --> pub
+        query --> cache
+        query --> repo
+        command -.-> metrics
+        query -.-> metrics
+    end
+
+    subgraph ext["Окружение"]
+        kc["Keycloak · realm iot-platform<br/>JWKS /protocol/openid-connect/certs"]
+        topic[["Kafka: devices<br/>ключ deviceId · compact"]]
+        sr[("Schema Registry<br/>devices-value · FULL_TRANSITIVE")]
+        sentinel["Redis Sentinel ×3 → master"]
+        proxy["ShardingSphere-Proxy<br/>логическая база devices_read"]
+        replicas[("postgres-shard-N-replica<br/>hot standby")]
+        dcs["device-collector-service<br/>применяет команду, после COMMIT<br/>сбрасывает кэш (floor = version)"]
+        nexus["Nexus"]
+    end
+
+    subgraph obs["Наблюдаемость"]
+        prom["Prometheus"]
+        alloy["Grafana Alloy → Loki / Tempo"]
+    end
+
+    consumer -- "HTTP + Bearer JWT, traceparent" --> chain
+    consumer -. "подключает" .-> client
+    client -- "публикация (версия не перезаписывается)" --> nexus
+    client -. "интерфейс и DTO" .-> controller
+    jwtval -- "ключи по kid, кэш" --> kc
+    pub -- "DeviceInfo(operation), traceparent" --> topic
+    pub -. "схема по subject, без авторегистрации" .- sr
+    cache -- "адрес master" --> sentinel
+    repo -- "SELECT … WHERE device_id = ?" --> proxy
+    proxy -- "маршрут по device_id" --> replicas
+    topic --> dcs
+    dcs -- "Lua: floor, удаление старых данных" --> sentinel
+    prom -- "/actuator/prometheus" --> svc
+    svc -- "логи JSON (traceId, spanId) · OTLP-трейсы" --> alloy

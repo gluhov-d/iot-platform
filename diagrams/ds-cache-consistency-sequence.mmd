@@ -1,0 +1,20 @@
+%% Почему в кэш не попадают старые данные: гонка «чтение старой версии — запись — сброс — SET старой версии»
+sequenceDiagram
+    autonumber
+    participant A as device-service (чтение A)
+    participant RD as Redis device:v1:dev-42
+    participant R as Реплика шарда
+    participant DC as device-collector-service
+    participant S as Основной узел шарда
+
+    A->>RD: HMGET body version floor
+    RD-->>A: промах, floor = 6
+    A->>R: SELECT … WHERE device_id = 'dev-42'
+    R-->>A: version = 6 (старые данные)
+    DC->>S: UPDATE … version = 7, COMMIT
+    DC->>RD: Lua: floor = 7, удалить body, если version < 7
+    A->>RD: Lua: записать version = 6, если 6 ≥ floor
+    RD-->>A: отказ: 6 < floor 7, кэш пуст
+    S--)R: репликация WAL: version = 7
+    Note over A,R: Следующий промах читает с реплики version 7 ≥ floor 7 и кладёт её в кэш.<br/>Без floor старая version 6 жила бы в кэше до конца TTL
+    Note over RD: floor живёт в том же хеше, его TTL = DEVICE_CACHE_TTL. Redis недоступен при сбросе —<br/>device-collector-service пишет WARN и метрику, ack не задерживает, устаревание ограничено TTL
