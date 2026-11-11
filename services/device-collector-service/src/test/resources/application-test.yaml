@@ -1,0 +1,12 @@
+# Интеграционные тесты: адреса контейнеров приходят из @DynamicPropertySource (AbstractItTest).
+# Повторы при ошибке хранилища - с короткой паузой, чтобы сценарий с остановленным шардом шёл секунды
+app:
+  instance-id: it
+  processing:
+    retry-interval: 200ms
+
+management:
+  tracing:
+    export:
+      otlp:
+        enabled: false

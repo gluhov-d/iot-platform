@@ -3,7 +3,16 @@
 !gradle/**
 !settings.gradle.kts
 !build.gradle.kts
-!contracts/avro/**
+!gradle.properties
+!avros/**
+avros/build
+avros/.gradle
 !services/events-collector-service/**
 services/events-collector-service/build
 services/events-collector-service/.gradle
+!services/db-migrator/**
+services/db-migrator/build
+services/db-migrator/.gradle
+!services/device-collector-service/**
+services/device-collector-service/build
+services/device-collector-service/.gradle

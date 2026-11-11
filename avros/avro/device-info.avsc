@@ -1,0 +1,48 @@
+{
+  "type": "record",
+  "name": "DeviceInfo",
+  "namespace": "com.github.gluhov.iotplatform.events.avro",
+  "doc": "Производное событие темы devices: создание, изменение или удаление устройства. Ключ сообщения - deviceId.",
+  "fields": [
+    {
+      "name": "deviceId",
+      "type": "string",
+      "doc": "Идентификатор устройства (с версии 1.0.0)."
+    },
+    {
+      "name": "emittedAtMs",
+      "type": "long",
+      "doc": "Время публикации производного события в миллисекундах Unix-времени; у повторной публикации - новое."
+    },
+    {
+      "name": "eventType",
+      "type": {
+        "type": "enum",
+        "name": "DeviceUpsertEventType",
+        "doc": "Тип изменения, которое нужно применить к модели устройства.",
+        "symbols": ["CREATED", "UPDATED", "DELETED", "SNAPSHOT"],
+        "default": "SNAPSHOT"
+      },
+      "default": "SNAPSHOT",
+      "doc": "Сообщение версии 1.0.0 читается как SNAPSHOT."
+    },
+    {
+      "name": "eventId",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Идентификатор исходного события из outbox: одинаков при любом числе попыток публикации, ключ идемпотентности потребителя."
+    },
+    {
+      "name": "eventTimeMs",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Время исходного события в миллисекундах Unix-времени: по нему потребитель отсекает устаревшие события."
+    },
+    {
+      "name": "device",
+      "type": ["null", "DeviceSnapshot"],
+      "default": null,
+      "doc": "Полная модель устройства; null - сообщение версии 1.0.0 или событие без снимка."
+    }
+  ]
+}

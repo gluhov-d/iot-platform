@@ -49,6 +49,11 @@ public final class LeaseGuard implements AutoCloseable {
         return lost.get();
     }
 
+    // Токен владельца аренды: по нему Redis-операции проверяют владение атомарно, внутри самой записи
+    public String ownerToken() {
+        return ownerToken;
+    }
+
     // Остановить фоновое продление (саму аренду освобождает вызывающий код)
     @Override
     public void close() {

@@ -4,24 +4,37 @@ import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientExcept
 import org.apache.kafka.common.errors.RetriableException;
 import org.springframework.kafka.support.serializer.DeserializationException;
 
-import java.io.IOException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.net.http.HttpTimeoutException;
 
-// Какие ошибки приема из Kafka повторять, а какие - откладывать в DLT
+/** Какие ошибки приёма из Kafka повторять, а какие - откладывать в DLT (как в device-collector-service). */
 public final class KafkaErrorClassifier {
 
     private KafkaErrorClassifier() {
     }
 
-    // "Ядовитое" сообщение: не десериализуется по существу (не Avro, нет схемы) - повтор не поможет
+    /** Сообщение не десериализуется по существу (не Avro, нет схемы, повреждённое тело) - повтор не поможет. */
     public static boolean isPoisonPill(Throwable exception) {
-        return hasCause(exception, DeserializationException.class) && !isTransient(exception);
+        return isDeserializationFailure(exception) && !isTransient(exception);
     }
 
-    // Временный сбой: сеть или таймаут (IOException, в т. ч. SocketTimeoutException), retriable-ошибка Kafka,
-    // ответ Schema Registry 5xx - после восстановления то же сообщение обработается
+    public static boolean isDeserializationFailure(Throwable exception) {
+        return hasCause(exception, DeserializationException.class);
+    }
+
+    /**
+     * Временный сбой - после восстановления то же сообщение обработается: сеть до Schema Registry (нет соединения,
+     * таймаут, имя не разрешается), retriable-ошибка Kafka, ответ Schema Registry 5xx.
+     * Не любой IOException: обрезанное или повреждённое тело Avro даёт EOFException/IOException декодера -
+     * это свойство самого сообщения, иначе раздел повторял бы его бесконечно.
+     */
     public static boolean isTransient(Throwable exception) {
         for (Throwable e = exception; e != null; e = e.getCause() == e ? null : e.getCause()) {
-            if (e instanceof IOException || e instanceof RetriableException) {
+            if (e instanceof SocketException || e instanceof SocketTimeoutException
+                    || e instanceof UnknownHostException || e instanceof HttpTimeoutException
+                    || e instanceof RetriableException) {
                 return true;
             }
             if (e instanceof RestClientException rest && rest.getStatus() >= 500) {

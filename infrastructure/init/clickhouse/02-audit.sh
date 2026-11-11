@@ -1,14 +1,13 @@
 #!/bin/bash
 # Таблица технического аудита публикаций outbox (дополнительное задание 4).
-# Выполняется entrypoint-ом образа после 01-schema.sh - только на пустом томе clickhouse-data.
-# На уже инициализированном томе применить вручную (IF NOT EXISTS - повторный запуск безопасен):
-#   docker compose -f infrastructure/docker-compose.yaml exec clickhouse bash /docker-entrypoint-initdb.d/02-audit.sh
+# Выполняется entrypoint-ом образа после 01-schema.sh на пустом томе clickhouse-data и одноразовым
+# clickhouse-init на каждом запуске стенда (IF NOT EXISTS - повторный запуск безопасен).
 set -euo pipefail
 
 DB="${CLICKHOUSE_DB:-iot_platform}"
 
 ch() {
-  clickhouse-client --host 127.0.0.1 \
+  clickhouse-client --host "${CLICKHOUSE_HOST:-127.0.0.1}" \
     --user "${CLICKHOUSE_USER:-default}" --password "${CLICKHOUSE_PASSWORD:-}" "$@"
 }
 

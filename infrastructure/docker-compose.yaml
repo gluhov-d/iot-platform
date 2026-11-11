@@ -9,6 +9,29 @@ x-logging: &default-logging
 x-restart: &default-restart
   restart: unless-stopped
 
+# Общая часть экспортёров метрик шардов (postgres-exporter-shard-*): образ, healthcheck, профиль
+x-shard-exporter: &shard-exporter
+  # Версия своя, не POSTGRES_EXPORTER_VERSION: v0.15.0 платформенного postgres-exporter не знает pg_stat_bgwriter PostgreSQL 17+
+  image: quay.io/prometheuscommunity/postgres-exporter:${POSTGRES_SHARD_EXPORTER_VERSION}
+  profiles: [observability]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # postmaster - время запуска сервера (панель Uptime), stat_replication - отставание реплик в байтах WAL (на шарде);
+  # оба сборщика по умолчанию выключены
+  command: ["--collector.postmaster", "--collector.stat_replication"]
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- -T 3 http://127.0.0.1:9187/metrics | grep -q '^pg_up 1'"]
+    interval: 20s
+    timeout: 5s
+    retries: 5
+    start_period: 15s
+  networks: [iot-net]
+
+
 services:
 
   # ---------------------------------------------------------------------------
@@ -97,6 +120,41 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
+  # Изменения схемы ClickHouse на уже инициализированном томе — одноразовая задача.
+  # Те же скрипты init/clickhouse/*.sh, что entrypoint выполняет на пустом томе; все идемпотентны
+  # (CREATE ... IF NOT EXISTS, ADD COLUMN IF NOT EXISTS), поэтому выполняются на каждом запуске стенда
+  # ---------------------------------------------------------------------------
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}
+    container_name: iot-clickhouse-init
+    platform: ${CLICKHOUSE_PLATFORM}
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - ./init/clickhouse:/opt/init/clickhouse:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # healthy у clickhouse наступает ещё во время init-сервера entrypoint-а, который слушает только localhost:
+        # ждём, пока основной сервер начнёт принимать соединения по сети
+        for _ in $$(seq 1 30); do
+          clickhouse-client --host clickhouse --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" \
+            --query 'SELECT 1' >/dev/null 2>&1 && break
+          sleep 2
+        done
+        set -e
+        for f in /opt/init/clickhouse/*.sh; do bash "$$f"; done
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
   # Kafka 4.x (KRaft, без ZooKeeper) — шина событий
   # ---------------------------------------------------------------------------
   kafka:
@@ -150,6 +208,8 @@ services:
       KAFKA_BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
       KAFKA_TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
     volumes:
@@ -173,7 +233,8 @@ services:
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://kafka:${KAFKA_INTERNAL_PORT}"
       SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:${SCHEMA_REGISTRY_PORT}"
       SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
-      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+      # Умолчание для subject без своего режима; у subject платформы режим задаёт schema-register
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: full_transitive
       SCHEMA_REGISTRY_HEAP_OPTS: "-Xms256m -Xmx512m"
     ports:
       - "${SCHEMA_REGISTRY_PORT}:${SCHEMA_REGISTRY_PORT}"
@@ -190,19 +251,27 @@ services:
   # ---------------------------------------------------------------------------
   events-collector-service:
     build:
-      # Контекст - корень репозитория: сборке нужны contracts/avro
+      # Контекст - корень репозитория: сборке нужны корневые файлы Gradle
       context: ..
       dockerfile: services/events-collector-service/Dockerfile
+      # Gradle внутри сборки берёт avros из Nexus хоста (localhost в сборке - сам контейнер);
+      # host-gateway - адрес хоста и в Docker Desktop, и в Linux
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
     image: iot-platform/events-collector-service:${EVENTS_COLLECTOR_IMAGE_TAG}
     <<: *default-restart
     logging: *default-logging
     depends_on:
+      schema-register:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       schema-registry:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -213,6 +282,7 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP}
       CLICKHOUSE_URL: "jdbc:clickhouse://clickhouse:8123"
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
@@ -225,6 +295,16 @@ services:
       OUTBOX_MAX_ATTEMPTS: ${OUTBOX_MAX_ATTEMPTS}
       OUTBOX_LEASE_TTL_MS: ${OUTBOX_LEASE_TTL_MS}
       OUTBOX_PUBLISH_INTERVAL_MS: ${OUTBOX_PUBLISH_INTERVAL_MS}
+      EVENTS_MAX_ATTEMPTS: ${EVENTS_MAX_ATTEMPTS}
+      EVENTS_RETRY_INTERVAL: ${EVENTS_RETRY_INTERVAL}
+      EVENTS_RETRY_MULTIPLIER: ${EVENTS_RETRY_MULTIPLIER}
+      CLICKHOUSE_POOL_SIZE: ${CLICKHOUSE_POOL_SIZE}
+      CLICKHOUSE_CONNECTION_TIMEOUT_MS: ${CLICKHOUSE_CONNECTION_TIMEOUT_MS}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT}
+      KAFKA_SEND_TIMEOUT: ${KAFKA_SEND_TIMEOUT}
+      KAFKA_PRODUCER_MAX_BLOCK_MS: ${KAFKA_PRODUCER_MAX_BLOCK_MS}
+      KAFKA_PRODUCER_REQUEST_TIMEOUT_MS: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS}
+      KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS}
       # Alloy поднимается профилем observability; без него трейсы просто не доставляются
       MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
       JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
@@ -239,6 +319,289 @@ services:
       retries: 12
       start_period: 40s
     networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Шарды реестра устройств: PostgreSQL 18, одинаковая схема (db-migrator), данные разные.
+  # Порты на хост не публикуются: приложение ходит только через ShardingSphere-Proxy,
+  # db-migrator и скрипты бэкапа - по сети compose и через docker compose exec
+  # ---------------------------------------------------------------------------
+  postgres-shard-0:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-0
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: shard_0
+      POSTGRES_USER: ${SHARD_DB_USER}
+      POSTGRES_PASSWORD: ${SHARD_DB_PASSWORD}
+    # hba_file: правила доступа из репозитория (роль replicator, см. config/postgres/pg_hba.conf);
+    # max_slot_wal_keep_size: остановленная реплика не заполнит диск шарда - после 1 ГБ WAL слот отключается
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - max_slot_wal_keep_size=1GB
+    volumes:
+      # PostgreSQL 18: данные в /var/lib/postgresql/18/docker, том монтируется на /var/lib/postgresql
+      - postgres-shard-0-data:/var/lib/postgresql
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_0" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [ iot-net ]
+
+  postgres-shard-1:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-1
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: shard_1
+      POSTGRES_USER: ${SHARD_DB_USER}
+      POSTGRES_PASSWORD: ${SHARD_DB_PASSWORD}
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - max_slot_wal_keep_size=1GB
+    volumes:
+      # PostgreSQL 18: данные в /var/lib/postgresql/18/docker, том монтируется на /var/lib/postgresql
+      - postgres-shard-1-data:/var/lib/postgresql
+      - ./config/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d shard_1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Подготовка шардов к репликации - одноразовая задача: роль replicator и слоты replica_N на каждом шарде.
+  # Идемпотентна, безопасна на шардах с данными. Реплики стартуют после неё
+  # ---------------------------------------------------------------------------
+  shard-replication-init:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-shard-replication-init
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+    environment:
+      SHARD_DB_USER: ${SHARD_DB_USER}
+      SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      SHARD_REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+      SHARD_EXPORTER_PASSWORD: ${SHARD_EXPORTER_PASSWORD}
+    entrypoint: [ "/bin/sh", "/opt/init/shard-replication-init.sh" ]
+    volumes:
+      - ./init/shards/shard-replication-init.sh:/opt/init/shard-replication-init.sh:ro
+    networks: [ iot-net ]
+
+  # Реплика шарда 0: только чтение, потоковая репликация. Приложение и Proxy её не используют
+  # (в конфигурации Proxy только шарды); нужна для отказоустойчивости и как источник копий. Порты на хост не публикуются
+  postgres-shard-0-replica:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-0-replica
+    <<: *default-restart
+    logging: *default-logging
+    # Пустой том принадлежит postgres: pg_basebackup и сервер работают без root
+    user: postgres
+    depends_on:
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      # POSTGRES_USER нужен только проверке здоровья: данные и роли реплика получает от шарда
+      POSTGRES_USER: ${SHARD_DB_USER}
+      PRIMARY_HOST: postgres-shard-0
+      REPLICATION_SLOT: replica_0
+      REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+    entrypoint: [ "/bin/sh", "/opt/init/replica-entrypoint.sh" ]
+    # hot_standby_feedback: запросы на реплике (например, копия) не отменяются очисткой на шарде
+    command: [ "postgres", "-c", "hot_standby=on", "-c", "hot_standby_feedback=on" ]
+    volumes:
+      - postgres-shard-0-replica-data:/var/lib/postgresql
+      - ./init/shards/replica-entrypoint.sh:/opt/init/replica-entrypoint.sh:ro
+    healthcheck:
+      # healthy - сервер принимает подключения и работает как standby
+      test: [ "CMD-SHELL", "[ \"$$(psql -U \"$${POSTGRES_USER}\" -d shard_0 -Atc 'SELECT pg_is_in_recovery()')\" = t ]" ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [ iot-net ]
+
+  # Реплика шарда 1: только чтение, потоковая репликация. Приложение и Proxy её не используют
+  # (в конфигурации Proxy только шарды); нужна для отказоустойчивости и как источник копий. Порты на хост не публикуются
+  postgres-shard-1-replica:
+    image: postgres:${POSTGRES_SHARD_VERSION}
+    container_name: iot-postgres-shard-1-replica
+    <<: *default-restart
+    logging: *default-logging
+    # Пустой том принадлежит postgres: pg_basebackup и сервер работают без root
+    user: postgres
+    depends_on:
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      # POSTGRES_USER нужен только проверке здоровья: данные и роли реплика получает от шарда
+      POSTGRES_USER: ${SHARD_DB_USER}
+      PRIMARY_HOST: postgres-shard-1
+      REPLICATION_SLOT: replica_1
+      REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
+    entrypoint: [ "/bin/sh", "/opt/init/replica-entrypoint.sh" ]
+    # hot_standby_feedback: запросы на реплике (например, копия) не отменяются очисткой на шарде
+    command: [ "postgres", "-c", "hot_standby=on", "-c", "hot_standby_feedback=on" ]
+    volumes:
+      - postgres-shard-1-replica-data:/var/lib/postgresql
+      - ./init/shards/replica-entrypoint.sh:/opt/init/replica-entrypoint.sh:ro
+    healthcheck:
+      # healthy - сервер принимает подключения и работает как standby
+      test: [ "CMD-SHELL", "[ \"$$(psql -U \"$${POSTGRES_USER}\" -d shard_1 -Atc 'SELECT pg_is_in_recovery()')\" = t ]" ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [ iot-net ]
+
+  # ---------------------------------------------------------------------------
+  # Миграции Flyway на каждый шард — одноразовая задача (services/db-migrator).
+  # Схема шардов меняется только здесь: сервис миграций не выполняет и адресов шардов не знает
+  # ---------------------------------------------------------------------------
+  db-migrator:
+    build:
+      context: ..
+      dockerfile: services/db-migrator/Dockerfile
+    image: iot-platform/db-migrator:${DB_MIGRATOR_IMAGE_TAG}
+    container_name: iot-db-migrator
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      schema-register:
+        condition: service_completed_successfully
+    environment:
+      DB_SHARDS: shard_0,shard_1
+      DB_SHARD_0_URL: jdbc:postgresql://postgres-shard-0:5432/shard_0
+      DB_SHARD_1_URL: jdbc:postgresql://postgres-shard-1:5432/shard_1
+      DB_USER: ${SHARD_DB_USER}
+      DB_PASSWORD: ${SHARD_DB_PASSWORD}
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # ShardingSphere-Proxy — логическая база devices (PostgreSQL-протокол) поверх шардов.
+  # Конфигурация - шаблоны infrastructure/config/shardingsphere, пароли подставляет render-config.sh.
+  # Стартует после миграций: метаданные таблиц Proxy загружает при запуске
+  # ---------------------------------------------------------------------------
+  shardingsphere-proxy:
+    image: apache/shardingsphere-proxy:${SHARDINGSPHERE_PROXY_VERSION}
+    container_name: iot-shardingsphere-proxy
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      db-migrator:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3307
+      # Агент метрик (Prometheus, порт 9090 контейнера, наружу не публикуется): плагин входит в образ, конфигурация - config/shardingsphere-agent
+      PROXY_AGENT_ENABLED: "true"
+      # Без этого start.sh в контейнере не задаёт кучу, и JVM берёт до четверти памяти Docker
+      CGROUP_MEM_OPTS: "-Xms256m -Xmx512m"
+      SHARD_DB_USER: ${SHARD_DB_USER}
+      SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      # Сроки на стороне шардов: запрос, ожидание блокировки, соединение Proxy с шардом (см. database-devices.yaml)
+      SHARD_STATEMENT_TIMEOUT_MS: ${SHARD_STATEMENT_TIMEOUT_MS}
+      SHARD_LOCK_TIMEOUT_MS: ${SHARD_LOCK_TIMEOUT_MS}
+      SHARD_CONNECTION_TIMEOUT_MS: ${SHARD_CONNECTION_TIMEOUT_MS}
+      SHARDING_PROXY_USER: ${SHARDING_PROXY_USER}
+      SHARDING_PROXY_PASSWORD: ${SHARDING_PROXY_PASSWORD}
+    entrypoint: ["/bin/bash", "/opt/init/render-config.sh"]
+    ports:
+      - "${SHARDING_PROXY_PORT}:3307"
+    volumes:
+      - ./config/shardingsphere:/opt/init/conf:ro
+      - ./config/shardingsphere/render-config.sh:/opt/init/render-config.sh:ro
+      - ./config/shardingsphere-agent/agent.yaml:/opt/shardingsphere-proxy/agent/conf/agent.yaml:ro
+    healthcheck:
+      # Порт Proxy открывается после загрузки конфигурации и метаданных таблиц; curl/psql в образе нет
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3307"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # device-collector-service — реестр устройств: devices -> ShardingSphere-Proxy -> шарды PostgreSQL
+  # ---------------------------------------------------------------------------
+  device-collector-service:
+    build:
+      context: ..
+      dockerfile: services/device-collector-service/Dockerfile
+      # Gradle внутри сборки берёт avros из Nexus хоста (как у events-collector-service)
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: iot-platform/device-collector-service:${DEVICE_COLLECTOR_IMAGE_TAG}
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      schema-register:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      shardingsphere-proxy:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      # Та же группа, что читают shard-backup.sh и shard-restore.sh (offset копии и восстановления)
+      DEVICE_COLLECTOR_CONSUMER_GROUP: ${DEVICE_COLLECTOR_CONSUMER_GROUP:-device-collector}
+      DEVICES_MAX_ATTEMPTS: ${DEVICES_MAX_ATTEMPTS}
+      DEVICES_RETRY_INTERVAL: ${DEVICES_RETRY_INTERVAL}
+      DEVICES_RETRY_MULTIPLIER: ${DEVICES_RETRY_MULTIPLIER}
+      DEVICES_MAX_FUTURE_SKEW: ${DEVICES_MAX_FUTURE_SKEW}
+      DEVICES_SHARD_CACHE_TTL: ${DEVICES_SHARD_CACHE_TTL}
+      DEVICES_DB_POOL_SIZE: ${DEVICES_DB_POOL_SIZE}
+      DEVICES_DB_CONNECTION_TIMEOUT_MS: ${DEVICES_DB_CONNECTION_TIMEOUT_MS}
+      DEVICES_DLT_MAX_BLOCK_MS: ${DEVICES_DLT_MAX_BLOCK_MS}
+      DEVICES_DLT_REQUEST_TIMEOUT_MS: ${DEVICES_DLT_REQUEST_TIMEOUT_MS}
+      DEVICES_DLT_DELIVERY_TIMEOUT_MS: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS}
+      # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
+      # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml);
+      # connectTimeout и socketTimeout - в секундах
+      DEVICES_DB_URL: "jdbc:postgresql://shardingsphere-proxy:3307/devices?connectTimeout=${DEVICES_DB_CONNECT_TIMEOUT_S}&socketTimeout=${DEVICES_DB_SOCKET_TIMEOUT_S}"
+      DEVICES_DB_USERNAME: ${SHARDING_PROXY_USER}
+      DEVICES_DB_PASSWORD: ${SHARDING_PROXY_PASSWORD}
+      # Alloy поднимается профилем observability; без него трейсы просто не доставляются
+      MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
+    ports:
+      # Диапазон, а не один порт: при --scale каждая реплика получает свой порт
+      - "${DEVICE_COLLECTOR_PORTS}:8080"
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /actuator/health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
   # Kafka UI — темы, сообщения (Avro через Schema Registry) и consumer group
@@ -273,6 +636,116 @@ services:
       retries: 10
       start_period: 30s
     networks: [iot-net]
+
+
+  # ---------------------------------------------------------------------------
+  # Nexus - Maven-репозиторий для avros (Avro-схемы платформы): из него сборка сервисов берёт схемы
+  # ---------------------------------------------------------------------------
+  nexus:
+    image: sonatype/nexus3:${NEXUS_VERSION}
+    container_name: iot-nexus
+    <<: *default-restart
+    logging: *default-logging
+    environment:
+      # По умолчанию Nexus берет до 2,7 ГБ кучи; для контрактов хватает 1 ГБ.
+      # userRoot - из исходного значения переменной в образе
+      INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx1g -XX:MaxDirectMemorySize=512m -Djava.util.prefs.userRoot=/nexus-data/javaprefs"
+    ports:
+      - "${NEXUS_PORT}:8081"
+    volumes:
+      - nexus-data:/nexus-data
+    healthcheck:
+      # writable отвечает 200, только когда Nexus принимает запросы на запись
+      test: ["CMD-SHELL", "wget -qO /dev/null -T 3 http://127.0.0.1:8081/service/rest/v1/status/writable"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Настройка Nexus - одноразовая задача: пароль admin, EULA, пользователь публикации
+  # ---------------------------------------------------------------------------
+  nexus-init:
+    image: sonatype/nexus3:${NEXUS_VERSION}
+    container_name: iot-nexus-init
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      nexus:
+        condition: service_healthy
+    environment:
+      NEXUS_URL: http://nexus:8081
+      NEXUS_ADMIN_PASSWORD: ${NEXUS_ADMIN_PASSWORD}
+      NEXUS_PUBLISH_USER: ${NEXUS_PUBLISH_USER}
+      NEXUS_PUBLISH_PASSWORD: ${NEXUS_PUBLISH_PASSWORD}
+      NEXUS_ACCEPT_EULA: ${NEXUS_ACCEPT_EULA}
+    volumes:
+      # Только чтение: нужен сгенерированный при первом старте /nexus-data/admin.password
+      - nexus-data:/nexus-data:ro
+      - ./init/nexus/init-nexus.sh:/opt/init/init-nexus.sh:ro
+    entrypoint: ["/bin/sh", "/opt/init/init-nexus.sh"]
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Публикация avros - одноразовая задача: собирает Avro-схемы платформы (avros/) и кладёт версию
+  # в Nexus. Версия уже в Nexus с теми же схемами - пропускает; с другими схемами - ошибка.
+  # Перед загрузкой в Nexus схемы сверяются со всеми зарегистрированными в Schema Registry (FULL): нет ответа
+  # или схема несовместима - публикация завершается ошибкой, в Nexus ничего не попадает.
+  # Сервисы собираются только после неё: их сборка берёт avros из Nexus с явной версией
+  # ---------------------------------------------------------------------------
+  avros-publish:
+    build:
+      context: ..
+      dockerfile: avros/Dockerfile
+    image: iot-platform/avros-publish:${AVROS_IMAGE_TAG}
+    container_name: iot-avros-publish
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      nexus-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+    environment:
+      NEXUS_URL: http://nexus:8081
+      NEXUS_PUBLISH_USER: ${NEXUS_PUBLISH_USER}
+      NEXUS_PUBLISH_PASSWORD: ${NEXUS_PUBLISH_PASSWORD}
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+    networks: [ iot-net ]
+
+  # ---------------------------------------------------------------------------
+  # Регистрация схем avros в Schema Registry - одноразовая задача после публикации в Nexus.
+  # Subject <тема>-value, режим FULL_TRANSITIVE; повторный запуск ничего не меняет, несовместимая схема -
+  # ошибка. Сервисы работают с auto.register.schemas=false: незарегистрированную схему они не запишут
+  # ---------------------------------------------------------------------------
+  schema-register:
+    build:
+      context: ..
+      dockerfile: avros/Dockerfile
+    # Тот же образ, что у avros-publish (схемы и кеш Gradle), другая точка входа
+    image: iot-platform/avros-publish:${AVROS_IMAGE_TAG}
+    container_name: iot-schema-register
+    restart: "no"
+    logging: *default-logging
+    depends_on:
+      avros-publish:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      SCHEMA_COMPATIBILITY: FULL_TRANSITIVE
+    entrypoint: [ "/workspace/avros/scripts/container-register.sh" ]
+    networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
   # MinIO — объектное хранилище (DLT + вложения)
@@ -427,6 +900,59 @@ services:
       retries: 5
       start_period: 15s
     networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # Экспортёры метрик шардов и их реплик: по одному postgres-exporter на каждый сервер PostgreSQL
+  # (профиль observability). Под ролью exporter (pg_monitor), создаёт её shard-replication-init.
+  # Порты на хост не публикуются: метрики читает Prometheus по сети compose
+  # ---------------------------------------------------------------------------
+  postgres-exporter-shard-0:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-0
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-0:5432/shard_0?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
+
+  postgres-exporter-shard-0-replica:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-0-replica
+    depends_on:
+      postgres-shard-0-replica:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-0-replica:5432/shard_0?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
+
+  postgres-exporter-shard-1:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-1
+    depends_on:
+      postgres-shard-1:
+        condition: service_healthy
+      shard-replication-init:
+        condition: service_completed_successfully
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-1:5432/shard_1?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
+
+  postgres-exporter-shard-1-replica:
+    <<: *shard-exporter
+    container_name: iot-postgres-exporter-shard-1-replica
+    depends_on:
+      postgres-shard-1-replica:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: "postgres-shard-1-replica:5432/shard_1?sslmode=disable"
+      DATA_SOURCE_USER: exporter
+      DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
 
   # ---------------------------------------------------------------------------
   # kafka-exporter — метрики Kafka (лаг консьюмер-групп) для Prometheus
@@ -618,3 +1144,8 @@ volumes:
   tempo-data:
   alloy-data:
   grafana-data:
+  nexus-data:
+  postgres-shard-0-data:
+  postgres-shard-1-data:
+  postgres-shard-0-replica-data:
+  postgres-shard-1-replica-data:

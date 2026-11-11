@@ -8,4 +8,5 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "app.kafka")
 public record KafkaProperties(String eventsTopic,
                               String devicesTopic,
+                              @DefaultValue("events-dlt") String dltTopic,
                               @DefaultValue("20s") Duration sendTimeout) {}

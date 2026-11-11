@@ -22,15 +22,22 @@ spring:
         spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
         # SpecificRecord (сгенерированный DeviceEvent), а не GenericRecord
         specific.avro.reader: true
+        # Читаем только DeviceEvent: запись другого типа (даже с настоящим schemaId из Schema Registry) не десериализуется
+        # и уходит в events-dlt исходными байтами. Без этого её отдали бы listener как есть: ошибка приведения типа,
+        # а в events-dlt-value зарегистрирован только DeviceEvent - запись в DLT не удалась бы и раздел встал
+        specific.avro.value.type: com.github.gluhov.iotplatform.events.avro.DeviceEvent
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
       acks: all
       properties:
+        # Схемы регистрирует только задача schema-register (avros); продюсер лишь ищет схему в Schema Registry.
+        # Незарегистрированная схема - ошибка сериализации, а не молчаливая новая версия
+        auto.register.schemas: false
         enable.idempotence: true
-        max.block.ms: 5000
-        request.timeout.ms: 5000
-        delivery.timeout.ms: 15000
+        max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS:5000}
+        request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:5000}
+        delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:15000}
     listener:
       type: single
       ack-mode: manual_immediate
@@ -45,7 +52,9 @@ spring:
     driver-class-name: com.clickhouse.jdbc.Driver
     hikari:
       pool-name: clickhouse
-      maximum-pool-size: 5
+      maximum-pool-size: ${CLICKHOUSE_POOL_SIZE:5}
+      # Сколько ждать свободное соединение из пула, мс
+      connection-timeout: ${CLICKHOUSE_CONNECTION_TIMEOUT_MS:30000}
       # Не падать при старте, если ClickHouse еще не готов: запросы повторит обработчик ошибок
       initialization-fail-timeout: -1
       connection-test-query: SELECT 1
@@ -55,7 +64,7 @@ spring:
       host: ${REDIS_HOST}
       port: ${REDIS_PORT}
       password: ${REDIS_PASSWORD:}
-      timeout: 2s
+      timeout: ${REDIS_TIMEOUT:2s}
 
 app:
   # Пусто или не задано -> hostname контейнера
@@ -63,12 +72,18 @@ app:
     kafka:
       events-topic: ${KAFKA_EVENTS_TOPIC:events}
       devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
-      send-timeout: 20s
+      dlt-topic: ${KAFKA_EVENTS_DLT_TOPIC:events-dlt}
+      send-timeout: ${KAFKA_SEND_TIMEOUT:20s}
     outbox:
       batch-size: ${OUTBOX_BATCH_SIZE:100}
       max-attempts: ${OUTBOX_MAX_ATTEMPTS:10}
       lease-ttl-ms: ${OUTBOX_LEASE_TTL_MS:30000}
       publish-interval-ms: ${OUTBOX_PUBLISH_INTERVAL_MS:2000}
+    processing:
+      # Ошибка записи в ClickHouse: 3 попытки с паузами 1 с и 2 с, затем events-dlt
+      max-attempts: ${EVENTS_MAX_ATTEMPTS:3}
+      retry-interval: ${EVENTS_RETRY_INTERVAL:1s}
+      retry-multiplier: ${EVENTS_RETRY_MULTIPLIER:2.0}
 
 # Только технические точки: health, metrics, prometheus
 management:

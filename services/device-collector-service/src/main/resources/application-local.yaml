@@ -1,0 +1,8 @@
+# Запуск из IDE против локального стенда (make up): порты хоста из .env.example
+KAFKA_BOOTSTRAP_SERVERS: localhost:29092
+SCHEMA_REGISTRY_URL: http://localhost:8081
+DEVICES_DB_URL: jdbc:postgresql://localhost:3307/devices?connectTimeout=3&socketTimeout=15
+DEVICES_DB_USERNAME: devices_app
+APP_INSTANCE_ID: ide-local
+server:
+  port: 8095

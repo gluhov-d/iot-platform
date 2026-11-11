@@ -1,7 +1,11 @@
 package com.github.gluhov.iotplatform.eventscollector.it;
 
+import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
+import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.eventscollector.config.ClickHouseTestContainerConfig;
 import com.github.gluhov.iotplatform.eventscollector.config.SchemaRegistryTestContainerConfig;
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
+import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -10,6 +14,8 @@ import org.testcontainers.clickhouse.ClickHouseContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.lifecycle.Startables;
+
+import java.util.List;
 
 import static com.github.gluhov.iotplatform.eventscollector.config.ClickHouseTestContainerConfig.CLICK_HOUSE_CONTAINER;
 import static com.github.gluhov.iotplatform.eventscollector.config.ClickHouseTestContainerConfig.DATABASE;
@@ -31,6 +37,7 @@ public abstract class AbstractItTest {
     static {
         Startables.deepStart(kafka, schemaRegistry, clickhouse, redis).join();
         createTopics();
+        registerSchemas();
     }
     
     @DynamicPropertySource
@@ -38,6 +45,8 @@ public abstract class AbstractItTest {
         registry.add("KAFKA_BOOTSTRAP_SERVERS", kafka::getBootstrapServers);
         registry.add("KAFKA_CONSUMER_GROUP", () -> "events-collector-it");
         registry.add("SCHEMA_REGISTRY_URL", SchemaRegistryTestContainerConfig::schemaRegistryUrl);
+        // auto.register.schemas остаётся false, как на стенде: схемы регистрирует registerSchemas()
+        // (на стенде - задача schema-register), а не продюсер сервиса
         registry.add("CLICKHOUSE_URL", ClickHouseTestContainerConfig::jdbcUrl);
         registry.add("CLICKHOUSE_DATABASE", () -> DATABASE);
         registry.add("CLICKHOUSE_USERNAME", clickhouse::getUsername);
@@ -56,6 +65,20 @@ public abstract class AbstractItTest {
             }
         } catch (Exception e) {
             throw new IllegalStateException("Failed to create Kafka topics", e);
+        }
+    }
+
+    // Как задача schema-register на стенде (auto.register.schemas у сервиса false): заранее регистрируются
+    // devices-value (DeviceInfo) - в неё пишет outbox, и схема DeviceEvent для тем DLT
+    // (events-dlt у стенда; events-errors-dlt-it - у ItKafkaErrorHandlingTest)
+    private static void registerSchemas() {
+        try (var client = new CachedSchemaRegistryClient(SchemaRegistryTestContainerConfig.schemaRegistryUrl(), 10)) {
+            client.register("devices-value", new AvroSchema(DeviceInfo.getClassSchema()));
+            for (String subject : List.of("events-dlt-value", "events-errors-dlt-it-value")) {
+                client.register(subject, new AvroSchema(DeviceEvent.getClassSchema()));
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to register schemas", e);
         }
     }
 }

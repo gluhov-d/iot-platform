@@ -1,6 +1,11 @@
 package com.github.gluhov.iotplatform.eventscollector.domain.service;
 
+import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
+import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
+import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.LeaseLostException;
+import com.github.gluhov.iotplatform.eventscollector.domain.exception.PublisherUnavailableException;
 import com.github.gluhov.iotplatform.eventscollector.domain.model.*;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.in.PublishOutboxUseCase;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.*;
@@ -14,6 +19,9 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.EnumMap;
+import java.util.HashSet;
+import java.util.OptionalLong;
+import java.util.Set;
 import java.util.Map;
 import java.util.Optional;
 import java.util.List;
@@ -66,8 +74,17 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     private BatchResult publishBatch(LeaseGuard guard) {
         List<OutboxRecord> pending = outboxRepository.findPending(policy.maxAttempts(), policy.batchSize());
         Map<PublishOutcome, Integer> outcomes = new EnumMap<>(PublishOutcome.class);
+        // Устройства, у которых в этой пачке запись не опубликована: их следующие записи ждут следующей итерации,
+        // иначе более позднее событие ушло бы раньше (CREATED/UPDATED перепутались бы, в compacted-теме остался бы
+        // устаревший снимок)
+        Set<String> blockedDevices = new HashSet<>();
         boolean leaseLost = false;
         for (int i = 0; i < pending.size(); i++) {
+            OutboxRecord record = pending.get(i);
+            if (blockedDevices.contains(record.deviceId())) {
+                outcomes.merge(PublishOutcome.DEFERRED, 1, Integer::sum);
+                continue;
+            }
             // Контрольная точка перед каждой записью, в том числе первой: выборка могла длиться дольше TTL,
             // и аренду уже получил другой экземпляр. Не продлилась - публиковать дальше нельзя
             if (!renewLease(guard)) {
@@ -76,7 +93,18 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
                 break;
             }
             try {
-                outcomes.merge(processOne(pending.get(i), guard), 1, Integer::sum);
+                PublishOutcome outcome = processOne(record, guard);
+                outcomes.merge(outcome, 1, Integer::sum);
+                if (outcome == PublishOutcome.DEFERRED) {
+                    // Kafka/Schema Registry недоступны: остальные записи пачки упали бы так же
+                    outcomes.merge(PublishOutcome.DEFERRED, pending.size() - i - 1, Integer::sum);
+                    log.warn("DeviceInfo publisher unavailable, batch stopped: {} of {} records processed",
+                            i, pending.size());
+                    break;
+                }
+                if (outcome == PublishOutcome.FAILED || outcome == PublishOutcome.ERROR) {
+                    blockedDevices.add(record.deviceId());
+                }
             } catch (LeaseLostException e) {
                 // Аренда потеряна во время обработки записи: новая версия outbox не записана
                 leaseLost = true;
@@ -90,7 +118,8 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
                 outcomes.getOrDefault(PublishOutcome.SKIPPED, 0),
                 outcomes.getOrDefault(PublishOutcome.FAILED, 0),
                 outcomes.getOrDefault(PublishOutcome.ERROR, 0),
-                leaseLost);
+                leaseLost,
+                outcomes.getOrDefault(PublishOutcome.DEFERRED, 0));
         if (!pending.isEmpty()) {
             log.info("Outbox batch completed: {}", result);
         }
@@ -141,37 +170,118 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         }
     }
 
+    // Правило публикации (реестр устройств):
+    //   устройства нет в devices:published          -> CREATED (со снимком, если он есть);
+    //   устройство есть, у события есть снимок      -> UPDATED;
+    //   снимок со статусом DELETED                   -> DELETED (в том числе для нового устройства);
+    //   устройство есть, снимка нет (телеметрия)    -> SKIPPED: поток devices не раздувается;
+    //   снимок старше уже опубликованного снимка     -> SKIPPED: в compacted-теме devices последним по ключу
+    //                                                   остаётся самое позднее состояние устройства;
+    //   данные устройства те же, что в опубликованном -> SKIPPED: отпечаток (DeviceFingerprint) совпал с devices:fingerprint,
+    //                                                   меняются только время активности и показания сенсоров.
     private PublishOutcome publishOrSkip(OutboxRecord record, LeaseGuard guard) {
         boolean alreadyPublished = step("redis devices:published check")
                 .observe(() -> publishedDeviceStore.isPublished(record.deviceId()));
-        if (alreadyPublished) {
-            ensureLease(guard);
-            step("append SENT version").observe(() -> outboxRepository.insert(record.sent(now())));
-            metrics.publishSkipped();
-            logOutcome(PublishOutcome.SKIPPED, null);
-            audit(record, PublishOutcome.SKIPPED, null);
-            return PublishOutcome.SKIPPED;
+        if (alreadyPublished && !record.hasSnapshot()) {
+            return skip(record, guard, "no device snapshot, device already published");
+        }
+        OptionalLong lastSnapshotAt = record.hasSnapshot() && alreadyPublished
+                ? step("redis devices:snapshot-at get").observe(() -> publishedDeviceStore.lastSnapshotAt(record.deviceId()))
+                : OptionalLong.empty();
+        if (lastSnapshotAt.isPresent() && record.sourceTimestampMs() < lastSnapshotAt.getAsLong()) {
+            return skip(record, guard, "snapshot is older than the published one");
         }
 
+        DeviceSnapshot snapshot;
         try {
-            step("publish devices").observe(() -> publisher.publish(record.deviceId(), now().toEpochMilli()));
-        } catch (RuntimeException e) {
-            ensureLease(guard);
-            outboxRepository.insert(record.failed(now(), describe(e)));
+            snapshot = DeviceSnapshotJson.fromJson(record.deviceSnapshot(), record.deviceSnapshotSchema());
+        } catch (IllegalArgumentException e) {
+            // Снимок не читается: дефект записи, повтор не поможет - FAILED с attempts + 1, а не ERROR каждые 2 с
+            return failed(record, guard, e);
+        }
+        String fingerprint = snapshot == null ? null : DeviceFingerprint.of(snapshot);
+        if (alreadyPublished && fingerprint != null && isUnchanged(record, fingerprint)) {
+            // Свежее время события запоминается и у пропущенного снимка: иначе запоздавший снимок с другими
+            // данными (время между двумя событиями) был бы опубликован поверх более позднего состояния
+            markPublication("redis devices:snapshot-at set", record, guard, false,
+                    OptionalLong.of(record.sourceTimestampMs()), null);
+            return skip(record, guard, "device data unchanged");
+        }
+        DeviceInfo deviceInfo = toDeviceInfo(record, snapshot, alreadyPublished);
+        // Тип изменения - в MDC на всё время публикации, включая журнал ошибки отправки
+        try (var ignored = MDC.putCloseable("eventType", deviceInfo.getEventType().name())) {
+            return publish(record, deviceInfo, guard, fingerprint);
+        }
+    }
+
+    private boolean isUnchanged(OutboxRecord record, String fingerprint) {
+        Optional<String> published = step("redis devices:fingerprint get")
+                .observe(() -> publishedDeviceStore.fingerprint(record.deviceId()));
+        return published.filter(fingerprint::equals).isPresent();
+    }
+
+    private PublishOutcome skip(OutboxRecord record, LeaseGuard guard, String reason) {
+        ensureLease(guard);
+        step("append SENT version").observe(() -> outboxRepository.insert(record.sent(now())));
+        metrics.publishSkipped();
+        log.debug("Outbox record skipped: {}", reason);
+        logOutcome(PublishOutcome.SKIPPED, null);
+        audit(record, PublishOutcome.SKIPPED, null);
+        return PublishOutcome.SKIPPED;
+    }
+
+    private PublishOutcome failed(OutboxRecord record, LeaseGuard guard, RuntimeException e) {
+        ensureLease(guard);
+        outboxRepository.insert(record.failed(now(), describe(e)));
+        metrics.publishFailed();
+        logOutcome(PublishOutcome.FAILED, e);
+        audit(record, PublishOutcome.FAILED, e);
+        return PublishOutcome.FAILED;
+    }
+
+    private PublishOutcome publish(OutboxRecord record, DeviceInfo deviceInfo, LeaseGuard guard, String fingerprint) {
+        try {
+            step("publish devices").observe(() -> publisher.publish(deviceInfo));
+        } catch (PublisherUnavailableException e) {
+            // Недоступна Kafka или Schema Registry: запись не меняется (attempts тот же), аудит не пишется
             metrics.publishFailed();
-            logOutcome(PublishOutcome.FAILED, e);
-            audit(record, PublishOutcome.FAILED, e);
-            return PublishOutcome.FAILED;
+            logOutcome(PublishOutcome.DEFERRED, e);
+            return PublishOutcome.DEFERRED;
+        } catch (RuntimeException e) {
+            return failed(record, guard, e);
         }
 
-        // Только после подтверждения Kafka: иначе устройство могло бы остаться неопубликованным навсегда
-        step("redis devices:published add").observe(() -> publishedDeviceStore.markPublished(record.deviceId()));
+        // Только после подтверждения Kafka: иначе устройство или изменение его данных могли бы так и не уйти в devices.
+        // Отметка публикации, время снимка и отпечаток - одной атомарной записью под проверкой аренды: процесс,
+        // проспавший TTL, не затрёт состояние, которое уже сохранил новый владелец
+        OptionalLong snapshotAt = record.hasSnapshot() ? OptionalLong.of(record.sourceTimestampMs()) : OptionalLong.empty();
+        markPublication("redis devices:published add", record, guard, true, snapshotAt, fingerprint);
         ensureLease(guard);
         step("append SENT version").observe(() -> outboxRepository.insert(record.sent(now())));
         metrics.publishSucceeded();
         logOutcome(PublishOutcome.PUBLISHED, null);
         audit(record, PublishOutcome.PUBLISHED, null);
         return PublishOutcome.PUBLISHED;
+    }
+
+    // eventId - ключ идемпотентности потребителя: одинаков при повторной публикации той же записи outbox,
+    // а emittedAtMs - время этой попытки. eventTimeMs - время исходного события: по нему отсекаются устаревшие
+    private DeviceInfo toDeviceInfo(OutboxRecord record, DeviceSnapshot snapshot, boolean alreadyPublished) {
+        DeviceUpsertEventType eventType;
+
+        if (snapshot != null && snapshot.getStatus() == DeviceStatus.DELETED) {
+            eventType = DeviceUpsertEventType.DELETED;
+        } else {
+            eventType = alreadyPublished ? DeviceUpsertEventType.UPDATED : DeviceUpsertEventType.CREATED;
+        }
+        return DeviceInfo.newBuilder()
+                .setDeviceId(record.deviceId())
+                .setEmittedAtMs(now().toEpochMilli())
+                .setEventType(eventType)
+                .setEventId(record.eventId())
+                .setEventTimeMs(record.sourceTimestampMs())
+                .setDevice(snapshot)
+                .build();
     }
 
     private void refreshPendingCount() {
@@ -221,6 +331,21 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     // Контрольная точка: продлить аренду сейчас (синхронно, в спане шага)
     private boolean renewLease(LeaseGuard guard) {
         return step("redis outbox:lease extend").observe(guard::renew);
+    }
+
+    // Отметки публикации в Redis (одна атомарная запись): скрипт проверяет ownerToken и не откатывает время снимка
+    // и отпечаток назад. Аренда потеряна - в Redis не записано ничего, версия outbox не пишется, новый владелец
+    // опубликует запись заново (at-least-once). Снимок в Redis уже новее - записи нечего менять, публикация завершена
+    private void markPublication(String stepName, OutboxRecord record, LeaseGuard guard, boolean published,
+                                 OptionalLong snapshotAt, String fingerprint) {
+        PublicationMarkResult result = step(stepName).observe(() -> publishedDeviceStore.markPublication(
+                guard.ownerToken(), record.deviceId(), published, snapshotAt, fingerprint));
+        if (result == PublicationMarkResult.LEASE_LOST) {
+            throw new LeaseLostException("Outbox lease lost before marking the publication in Redis");
+        }
+        if (result == PublicationMarkResult.STALE) {
+            log.debug("Redis already holds a newer snapshot of the device, snapshot time and fingerprint kept");
+        }
     }
 
     // Перед записью новой версии outbox после внешних вызовов: аренда должна быть нашей, иначе два публикатора

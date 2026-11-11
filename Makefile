@@ -7,6 +7,9 @@ SERVICE_DIR   := $(ROOT_DIR)/services/events-collector-service
 # Многомодульная сборка: wrapper в корне, задачи сервиса - по пути Gradle-проекта
 GRADLE        := cd $(ROOT_DIR) && ./gradlew
 SERVICE_PROJ  := :services:events-collector-service
+# device-collector-service (реестр устройств)
+DCS_DIR       := $(ROOT_DIR)/services/device-collector-service
+DCS_PROJ      := :services:device-collector-service
 
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
@@ -21,12 +24,13 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
-INIT_SERVICES := kafka-init minio-init
+INIT_SERVICES := kafka-init minio-init nexus-init avros-publish schema-register clickhouse-init shard-replication-init db-migrator
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-obs down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage
+.PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
+        psql redis-cli clickhouse-cli topics check check-local test integration-test coverage \
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -39,12 +43,25 @@ help: ## Показать список команд
 ## ------------------------------------------------------------ Жизненный цикл
 up: ## Поднять всю инфраструктуру (PROFILES=observability - с наблюдаемостью) и дождаться готовности
 	@echo "==> Запуск инфраструктуры IoT Platform (профили: $(if $(PROFILES),$(PROFILES),базовый))"
+	@$(MAKE) --no-print-directory nexus-up
+	@$(MAKE) --no-print-directory avros-up
 	@$(COMPOSE) up -d --build --remove-orphans
 	@$(MAKE) --no-print-directory wait
 	@$(MAKE) --no-print-directory urls
 
 up-obs: ## То же, что make up PROFILES=observability
 	@$(MAKE) --no-print-directory up PROFILES=observability
+
+nexus-up: ## Поднять только Nexus и дождаться его настройки (nexus-init)
+	@echo "==> Nexus: запуск и настройка (первый старт - 1-2 минуты)"
+	@$(COMPOSE) up -d nexus-init
+	@$(COMPOSE) wait nexus-init >/dev/null || { \
+	  echo "!!! nexus-init завершился с ошибкой:"; $(COMPOSE) logs --no-log-prefix --tail=15 nexus-init; exit 1; }
+
+registry-up: ## Поднять Kafka и Schema Registry (проверка схем перед публикацией avros в Nexus без неё не работает)
+	@echo "==> Schema Registry: запуск"
+	@$(COMPOSE) up -d --wait schema-registry >/dev/null || { \
+	  echo "!!! Schema Registry не поднялась:"; $(COMPOSE) logs --no-log-prefix --tail=15 schema-registry; exit 1; }
 
 down: ## Остановить и удалить контейнеры всех профилей (тома сохраняются)
 	@echo "==> Остановка инфраструктуры"
@@ -66,7 +83,7 @@ clean: ## Удалить контейнеры всех профилей вмес
 
 reset: clean up ## Полный пересоздание окружения с нуля
 
-KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service
+KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service device-collector-service
 
 kafka-reset: ## Пересоздать только том Kafka (сообщения, офсеты и схемы будут потеряны)
 	@echo "!!! Будут удалены ВСЕ данные Kafka: сообщения во всех топиках, офсеты"
@@ -130,10 +147,14 @@ urls: ## Показать адреса всех сервисов
 	echo "  ------------------------  ------------------------------------------------"; \
 	port=$$($(COMPOSE) port events-collector-service 8080 2>/dev/null | head -1 | sed 's/.*://'); \
 	echo "  events-collector-service  http://localhost:$${port:-<не запущен>}/actuator/health  (/actuator/prometheus; порт из диапазона $$(v EVENTS_COLLECTOR_PORTS))"; \
+	dport=$$($(COMPOSE) port device-collector-service 8080 2>/dev/null | head -1 | sed 's/.*://'); \
+    echo "  device-collector-service  http://localhost:$${dport:-<не запущен>}/actuator/health  (GET /api/v1/devices/{deviceId}; порт из диапазона $$(v DEVICE_COLLECTOR_PORTS))"; \
+    echo "  ShardingSphere-Proxy      postgresql://localhost:$$(v SHARDING_PROXY_PORT)/devices  (make proxy-sql, make shard-of ID=<deviceId>)"; \
 	echo "  Kafka                     localhost:$$(v KAFKA_EXTERNAL_PORT)"; \
 	echo "  Schema Registry           http://localhost:$$(v SCHEMA_REGISTRY_PORT)"; \
 	echo "  ClickHouse                http://localhost:$$(v CLICKHOUSE_HTTP_PORT)  (native: $$(v CLICKHOUSE_NATIVE_PORT))"; \
 	echo "  Redis                     redis://localhost:$$(v REDIS_PORT)"; \
+	echo "  Nexus                     http://localhost:$$(v NEXUS_PORT)  (maven-public: /repository/maven-public/)"; \
 	echo "  --- профиль tools"; \
 	echo "  Kafka UI                  http://localhost:$$(v KAFKA_UI_PORT)"; \
 	echo "  --- профиль observability"; \
@@ -143,6 +164,7 @@ urls: ## Показать адреса всех сервисов
 	echo "  Tempo                     http://localhost:$$(v TEMPO_HTTP_PORT)  (OTLP: $$(v TEMPO_OTLP_GRPC_PORT)/$$(v TEMPO_OTLP_HTTP_PORT))"; \
 	echo "  Alloy                     http://localhost:$$(v ALLOY_PORT)"; \
 	echo "  kafka-exporter            http://localhost:$$(v KAFKA_EXPORTER_PORT)/metrics"; \
+	echo "  Proxy и шарды (метрики)   только сеть compose: shardingsphere-proxy:9090, postgres-exporter-shard-N[-replica]:9187 (читает Prometheus)"; \
 	echo "  --- профиль platform"; \
 	echo "  PostgreSQL                postgresql://localhost:$$(v POSTGRES_PORT)/$$(v POSTGRES_DB)"; \
 	echo "  postgres-exporter         http://localhost:$$(v POSTGRES_EXPORTER_PORT)/metrics"; \
@@ -165,13 +187,26 @@ clickhouse-cli: ## Открыть clickhouse-client
 topics: ## Описание топиков Kafka (разделы, cleanup, policy)
 	@$(COMPOSE) exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:$(call compose_env,KAFKA_INTERNAL_PORT) --describe --exclude-internal
 
+## ------------------------------------------------------------ Реестр устройств
+proxy-sql: ## psql к логической базе devices через ShardingSphere-Proxy (SQL="..." - выполнить и выйти)
+	@$(INFRA_DIR)/config/shardingsphere/proxy-sql.sh $(if $(SQL),-c "$(SQL)")
+
+shard-of: ## На какой шард попадает устройство: make shard-of ID=<deviceId> (PREVIEW в Proxy)
+	@[ -n "$(ID)" ] || { echo "Укажите устройство: make shard-of ID=<deviceId>"; exit 1; }
+	@$(INFRA_DIR)/config/shardingsphere/proxy-sql.sh -c "PREVIEW SELECT * FROM devices WHERE device_id = '$(ID)'"
+
+replication-status: ## Репликация шардов: клиенты и слоты на шардах, режим и приёмник WAL на репликах (код 1 при сбое)
+	@COMPOSE_CMD="$(COMPOSE)" bash $(INFRA_DIR)/config/postgres/replication-status.sh
+
+shard-backup: ## Копия каждого шарда с его реплики без остановки сервисов (backups/<время>/, manifest: SHA-256, offset Kafka)
+	@$(INFRA_DIR)/config/postgres/shard-backup.sh
+
+shard-restore: ## УДАЛЯЕТ данные шардов и восстанавливает из копии: make shard-restore CONFIRM=yes [BACKUP=backups/<время>]
+	@$(INFRA_DIR)/config/postgres/shard-restore.sh $(if $(filter yes,$(CONFIRM)),--yes) $(BACKUP)
+
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml
 	@$(COMPOSE) --profile '*' config --quiet && echo "docker-compose.yaml — OK"
-
-diagrams: ## Отрендерить C4-диаграммы в PNG (нужен plantuml)
-	@command -v plantuml >/dev/null 2>&1 || { echo "plantuml не установлен: brew install plantuml"; exit 1; }
-	@plantuml -tpng -o . $(ROOT_DIR)/diagrams/*.puml && echo "PNG сохранены в diagrams/"
 
 ## ----------------------------------------------------------------- events-collector-service
 check-local: ## Быстрая проверка поднятого стенда (scripts/check-local.sh)
@@ -185,3 +220,48 @@ integration-test: ## Интеграционные тесты сервиса (Tes
 
 coverage: ## Все тесты + проверка порога покрытия 65% + HTML-отчет
 	@$(GRADLE) $(SERVICE_PROJ):check && echo "Отчет: $(SERVICE_DIR)/build/reports/jacoco/test/html/index.html"
+
+## ----------------------------------------------------------------- device-collector-service (реестр устройств)
+dcs-test: ## Модульные тесты device-collector-service (Docker не нужен)
+	@$(GRADLE) $(DCS_PROJ):test
+
+dcs-it: ## Интеграционные тесты device-collector-service (Testcontainers, нужен Docker)
+	@$(GRADLE) $(DCS_PROJ):integrationTest
+
+dcs-coverage: ## Все тесты device-collector-service + порог покрытия 70% + HTML-отчёт
+	@$(GRADLE) $(DCS_PROJ):check && echo "Отчёт: $(DCS_DIR)/build/reports/jacoco/test/html/index.html"
+
+dcs-quick-check: ## Быстрая проверка поднятого стенда: устройство сохраняется на ожидаемом шарде (scripts/quick-check.sh)
+	@$(DCS_DIR)/scripts/quick-check.sh
+
+## ----------------------------------------------------------------- avros
+avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up; Schema Registry поднимется сама)
+	@echo "==> avros: сверка со Schema Registry, сборка и публикация в Nexus"
+	@$(COMPOSE) up -d --build avros-publish
+	@$(COMPOSE) wait avros-publish >/dev/null || { \
+	  echo "!!! avros-publish завершился с ошибкой:"; $(COMPOSE) logs --no-log-prefix --tail=30 avros-publish; exit 1; }
+	@$(COMPOSE) logs --no-log-prefix avros-publish | grep '^==>'
+avros-check: registry-up ## Проверить схемы avros: совместимость с последней версией в Nexus и со схемами в Schema Registry (без публикации)
+	@$(ROOT_DIR)/avros/scripts/check.sh
+avros-release: registry-up ## Релиз avros с хоста: совместимость (Nexus, Schema Registry) -> сборка -> публикация -> тег (нужен make nexus-up)
+	@$(ROOT_DIR)/avros/scripts/publish.sh
+avros-bootstrap: registry-up ## Вернуть в Nexus выпущенные версии avros из git-тегов avros/v* (нужно, если сервис закреплён на старой версии)
+	@$(ROOT_DIR)/avros/scripts/bootstrap.sh
+schemas-register: ## Зарегистрировать схемы avros в Schema Registry (FULL_TRANSITIVE) одноразовой задачей compose (Schema Registry поднимает сама)
+	@echo "==> Schema Registry: регистрация схем avros"
+	@$(COMPOSE) up -d --wait schema-registry >/dev/null
+	@$(COMPOSE) build -q schema-register >/dev/null
+	@set -o pipefail; $(COMPOSE) run -T --rm --no-deps schema-register 2>&1 | grep -v -e 'SVE' -e '^$$' \
+	  || { echo "!!! schema-register завершился с ошибкой (см. вывод выше)"; exit 1; }
+schemas: ## Показать зарегистрированные схемы: subject, версии, режим совместимости
+	@url=http://localhost:$(call compose_env,SCHEMA_REGISTRY_PORT); \
+	curl -fsS "$$url/subjects" >/dev/null || { echo "!!! Schema Registry недоступен: $$url"; exit 1; }; \
+	printf "%-22s %-9s %-12s %s\n" SUBJECT VERSIONS "ID(посл.)" COMPATIBILITY; \
+	for s in $$(curl -fsS "$$url/subjects" | tr -d '[]"' | tr ',' ' '); do \
+	  v=$$(curl -fsS "$$url/subjects/$$s/versions" | tr -d '[]' ); \
+	  id=$$(curl -fsS "$$url/subjects/$$s/versions/latest" | sed -n 's/.*"id":\([0-9]*\).*/\1/p'); \
+	  c=$$(curl -sS "$$url/config/$$s" | sed -n 's/.*"compatibilityLevel":"\([A-Z_]*\)".*/\1/p'); \
+	  printf "%-22s %-9s %-12s %s\n" "$$s" "$$v" "$$id" "$${c:-(глобальный)}"; \
+	done
+
+
