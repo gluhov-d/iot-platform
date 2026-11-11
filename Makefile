@@ -29,7 +29,7 @@ WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli topics diagrams check check-local test integration-test coverage \
+        psql redis-cli clickhouse-cli topics check check-local test integration-test coverage \
         avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
@@ -207,11 +207,6 @@ shard-restore: ## УДАЛЯЕТ данные шардов и восстанав
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml
 	@$(COMPOSE) --profile '*' config --quiet && echo "docker-compose.yaml — OK"
-
-diagrams: ## Отрендерить C4-диаграммы в PNG (нужен plantuml)
-	@command -v plantuml >/dev/null 2>&1 || { echo "plantuml не установлен: brew install plantuml"; exit 1; }
-	@# Лимит по умолчанию - 4096 px: шире PlantUML обрезает картинку
-	@PLANTUML_LIMIT_SIZE=12000 plantuml -tpng -o . $(ROOT_DIR)/diagrams/*.puml && echo "PNG сохранены в diagrams/"
 
 ## ----------------------------------------------------------------- events-collector-service
 check-local: ## Быстрая проверка поднятого стенда (scripts/check-local.sh)
