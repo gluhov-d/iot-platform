@@ -18,7 +18,7 @@ flowchart LR
         end
         subgraph kafka["Kafka · Message Broker"]
             topic_events[/"<b>events</b><br/><i>Kafka topic, delete</i><br/>Сырые события устройств (Avro<br/>DeviceEvent), ключ deviceId"/]
-            topic_device[/"<b>devices</b><br/><i>Kafka topic, compact</i><br/>DeviceInfo, ключ deviceId: события роутера<br/>(operation = null) и команды device-service<br/>(operation CREATE / UPDATE / DELETE).<br/>Команда несёт все поля администратора"/]
+            topic_device[/"<b>devices</b><br/><i>Kafka topic, compact, min.compaction.lag 7 суток</i><br/>DeviceInfo, ключ deviceId: события роутера<br/>(operation = null) и команды device-service<br/>(operation CREATE / UPDATE / DELETE).<br/>Команда несёт все поля администратора"/]
             topic_events_dlt[/"<b>events-dlt</b><br/><i>Kafka topic, delete</i><br/>Не Avro / невалидные события и не<br/>записанные в ClickHouse за N попыток"/]
             topic_devices_dlt[/"<b>devices-dlt</b><br/><i>Kafka topic, delete</i><br/>Невалидные DeviceInfo и команды, не<br/>записанные в PostgreSQL после повторов"/]
             topic_dlt[/"<b>iot.dlt</b><br/><i>Kafka topic</i><br/>Отклонённые шлюзом сообщения устройств<br/>(шлюз пока не реализован)"/]

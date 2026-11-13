@@ -323,14 +323,15 @@ device-collector-service, проект avros и изменения в приём
 
 # Управление устройствами (device-service)
 
-Критерии приёмки этой части — в [specs/001-device-service/spec.md](../specs/001-device-service/spec.md#критерии-приёмки-definition-of-done),
-раздел «Критерии приёмки (Definition of Done)»: дизайн готовится через Spec Kit, и критерии входят в spec.md. Здесь
-они не повторяются, чтобы не было двух версий.
+Критерии приёмки этой части — в [specs/001-device-service/spec.md](../specs/001-device-service/spec.md): раздел
+«Requirements» (у каждого требования — проверка) и «Критерии приёмки (Definition of Done)». Дизайн готовится через
+Spec Kit, и критерии входят в spec.md; здесь они не повторяются, чтобы не было двух версий.
 
-Что эта часть меняет в уже сделанном (пункты секций выше правятся на месте вместе с кодом):
+Что эта часть меняет в уже сделанном (пункты секций выше правятся на месте вместе с кодом, задача T070):
 
 - avros 1.3.0: в `DeviceInfo` поле `operation`; оба сервиса подключают `avrosVersion = "1.3.0"` («Проект avros»).
 - Приём событий: Redis через Sentinel (`REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`) вместо прямого адреса («Redis»).
 - Реестр устройств: команды `CREATE`/`UPDATE`/`DELETE`, исход `IGNORED`, колонки `version`, `managed_at`, `deleted_by`
-  (миграция V3), сброс кэша после `COMMIT` («device-collector-service», «База данных»).
+  (миграция V3), сброс кэша после `COMMIT`, Redis как новая зависимость («device-collector-service», «База данных»).
+- Тема `devices`: `min.compaction.lag.ms`; предупреждение `shard-restore.sh` о старой копии («База данных», бэкап).
 - Запуск: Keycloak с realm из репозитория и Redis с Sentinel — в базовом стенде, а не в профиле `platform` («Запуск»).

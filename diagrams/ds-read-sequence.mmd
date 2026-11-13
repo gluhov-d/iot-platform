@@ -19,7 +19,7 @@ sequenceDiagram
         DS->>P: SELECT поля устройства, version, deleted_at FROM devices WHERE device_id = ?
         P->>R: маршрут |hashCode(device_id)| % 2 → реплика нужного шарда
         R-->>DS: строка (version = 6, реплика отстаёт) или пусто
-        alt строки нет или устройство удалено
+        alt строки нет, устройство удалено или у него нет карточки
             DS-->>C: 404 Problem Details (DEVICE_NOT_FOUND)
         else version ≥ floor (реплика догнала последнюю запись)
             DS->>RD: Lua: записать body и version, если version ≥ floor и не меньше уже лежащей,<br/>EXPIRE DEVICE_CACHE_TTL

@@ -1,72 +1,92 @@
 # Specification Analysis Report — 001-device-service
 
-Проверка согласованности `constitution.md`, `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `research.md`,
-контракта, ADR и диаграмм (`/speckit.analyze`, Spec Kit 1.4.0). Механическая часть — скрипт: покрытие требований
-задачами, ссылки между файлами, имена тестов и переменных окружения, устаревшие термины. Отчёт — после исправлений;
-в колонке «Статус» — что сделано.
+Сверка `constitution.md`, `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `research.md`, `quickstart.md`, контракта,
+ADR и диаграмм (`/speckit-analyze`, Spec Kit 1.4.0), 2026-11-13. Механическая часть (покрытие требований задачами, пути в задачах,
+предположения → задачи, ссылки, переменные окружения) — скриптом. Отчёт — по состоянию после исправлений; файлы
+анализ не меняет, исправления внесены отдельно и перечислены в колонке «Статус».
 
 | ID | Category | Severity | Location(s) | Summary | Статус |
 |----|----------|----------|-------------|---------|--------|
-| A1 | Inconsistency | HIGH | research.md, ADR-0009 | Пример теории: `spring-http-interface` + `useBeanValidation`. Генератор 7.17.0 отключает эту опцию — DTO без ограничений, FR-011 и 400 на невалидное тело не выполнились бы | Исправлено: два прогона генератора (модели `spring`, интерфейс `spring-http-interface`), проверено `openapi-generator-cli` |
-| A2 | Inconsistency | HIGH | contracts/device-service.yaml | `pattern: '\S'`: в OpenAPI — поиск в строке, в `@Pattern` — совпадение всей строки; принимались бы только односимвольные `tenantId`, `deviceType` | Исправлено: `'^.*\S.*$'`; контракт валиден |
-| A3 | Ambiguity | MEDIUM | data-model.md | `deleted_by` у строк, удалённых роутером до V3, — `NULL`; правило «удалено администратором» для них не определено | Исправлено: `NULL` = `DEVICE` |
-| A4 | Underspecification | MEDIUM | tasks.md T020 | device-collector-service получает новую зависимость — Redis; переменные и Redis в его IT не были названы | Исправлено: в T020 |
-| A5 | Underspecification | MEDIUM | ADR-0008 | `volatile-lru` может вытеснить аренду `outbox:lease`; безопасность этого — предположение | В spike: research #11 (T005), запасной вариант — без `maxmemory` |
-| C1 | Constitution | MEDIUM | plan.md (VII), SC-001, T037 | Полный путь PUT → GET на Testcontainers зависит от research #8 | Открыто до spike; запасной вариант описан |
-| C2 | Constitution | LOW | plan.md Complexity Tracking | `floor` + Lua, вторая база Proxy, Keycloak в базовом стенде — отступления от простейшего варианта | Обоснованы в Complexity Tracking и ADR |
-| D1 | Duplication | LOW | spec.md (таблица правил), ADR-0005, dcs-operations-sequence.mmd | Правила применения команд в трёх местах | Оставлено: таблица — критерий приёмки, ADR — причина, диаграмма — поток; формулировки сверены |
-| U1 | Underspecification | LOW | ADR-0007 | Срок жизни access token (5 мин) не входит в DoD | Принято: настройка realm, проверяется при T018 |
-| T1 | Terminology | LOW | диаграммы | `DeviceApi` в черновике против `DevicesApi`, который даёт генератор (тег `devices`) | Исправлено везде |
+| I1 | Inconsistency | CRITICAL | ADR-0001, spec.md (Edge Cases) | Тема `devices` сжимаемая: команда администратора, за которой пришло событие роутера, исчезает при сжатии; повторное чтение темы при восстановлении возвращает удалённое устройство и перезаписывает ручные поля | Исправлено: FR-022, ADR-0010 (`min.compaction.lag.ms`, предупреждение при восстановлении), T015, T016 |
+| I2 | Inconsistency | HIGH | contracts, data-model.md | `DeviceResponse` требует `tenantId` и `deviceType`, а в реестре есть устройства без карточки (эти поля пусты) | Исправлено: такие устройства — `404` (FR-003, правило чтения в data-model.md) |
+| I3 | Inconsistency | HIGH | research.md, ADR-0009 | Пример теории (`spring-http-interface` + `useBeanValidation`): генератор 7.17.0 отключает проверки полей в этом режиме | Исправлено: два прогона генератора (R2, T004) |
+| I4 | Inconsistency | HIGH | contracts | `pattern: '\S'` в OpenAPI — поиск в строке, в `@Pattern` — совпадение всей строки | Исправлено: шаблоны с якорями (R3) |
+| U1 | Underspecification | HIGH | tasks.md | Задачи без путей к файлам и слишком крупные для исполнения агентом (путь был у 8 из 42) | Исправлено: 73 задачи, у каждой файлы или команда; тест раньше кода; Checkpoint с командами |
+| U2 | Underspecification | HIGH | репозиторий | Нет каркаса Spec Kit (`.specify/scripts`, шаблоны) и правил для агента — `implement` и `converge` не запускались | Исправлено: `specify init` 1.4.0, `AGENTS.md`, `quickstart.md` |
+| U3 | Underspecification | MEDIUM | tasks.md | Необратимые шаги (публикация avros 1.3.0 и клиента в Nexus) не отделены от работы агента | Исправлено: задачи **ЧЕЛОВЕК** T013, T071, T072; принцип в конституции 1.1.0 |
+| D1 | Duplication | MEDIUM | spec.md, ADR-0005 | Требования и критерии приёмки повторяли друг друга; таблица исходов — в трёх местах | Исправлено: проверка — часть требования; таблица только в FR-015 |
+| A1 | Ambiguity | MEDIUM | spec.md | В спецификации были имена тестов, скриптов и колонок | Исправлено: перенесены в plan.md, data-model.md, tasks.md |
+| A2 | Ambiguity | MEDIUM | data-model.md | `deleted_by` у устройств, удалённых до миграции, не определён | Исправлено: `NULL` = `DEVICE` |
+| C1 | Constitution | MEDIUM | plan.md (VII), FR-026, SC-001 | Полный путь PUT → GET в Testcontainers — предположение R12 | Открыто: проверяет T064, запасной вариант в research.md |
+| R1 | Risk | MEDIUM | research.md | 6 предположений о сторонних компонентах не проверены (R7, R10–R14); 8 решений проверены, из них 5 — на прототипе | Открыто: у каждого предположения — проверяющая задача до зависящего кода и запасной вариант |
+| I6 | Inconsistency | HIGH | data-model.md, ADR-0004 | Прототип: с ролью чтения в `pg_read_all_data` Proxy не загружает метаданные таблицы | Исправлено: `SELECT` на `devices`, права выдаёт миграция V3 (R5, T017, T018) |
+| I7 | Inconsistency | HIGH | ADR-0004, plan.md | Прототип: Proxy не стартует при недоступной реплике — останавливается и запись | Принято как ограничение: порядок старта и правило эксплуатации в ADR-0004, T019; отдельный Proxy для чтения отложен |
+| I8 | Inconsistency | HIGH | ADR-0008, research.md | Прототип: Sentinel по именам хостов не переключается; роль узла из командной строки ломает перезапуск | Исправлено: статические адреса (R9); роль узла у Sentinel — предположение R14, T020 |
+| I9 | Inconsistency | MEDIUM | tasks.md | Прототип: ограничения на `@PathVariable` в реализации интерфейса дают `500` на всех методах | Исправлено: `deviceId` проверяется явно (R4, T010) |
+| I5 | Inconsistency | LOW | plan.md | Тайм-аут Redis расходился с `.env.example` | Исправлено: используется существующий `REDIS_TIMEOUT` |
+| T1 | Terminology | LOW | diagrams | `DeviceApi` против `DevicesApi` генератора; на компонентной диаграмме был класс, которого нет в плане | Исправлено |
 
 **Coverage Summary Table:**
 
 | Requirement | Has Task? | Task IDs |
 |---|---|---|
-| FR-001 | ✅ | T030, T031, T033, T034 |
-| FR-002 | ✅ | T030, T031, T032 |
-| FR-003 | ✅ | T025, T026, T027 |
-| FR-004 | ✅ | T033 |
-| FR-005 | ✅ | T031, T033 |
-| FR-006 | ✅ | T023 |
-| FR-007 | ✅ | T028 |
-| FR-008 | ✅ | T008, T035 |
-| FR-009 | ✅ | T004, T022 |
-| FR-010 | ✅ | T004, T018 |
-| FR-011 | ✅ | T001, T002, T011 |
-| FR-012 | ✅ | T011, T036 |
-| FR-013 | ✅ | T013 |
+| FR-001 | ✅ | T047, T048, T049, T050, T051, T052, T053, T054, T055, T056, T057, T058, T059 |
+| FR-002 | ✅ | T048, T051, T052, T053 |
+| FR-003 | ✅ | T039, T040, T041, T042, T043, T045, T046 |
+| FR-004 | ✅ | T054, T056 |
+| FR-005 | ✅ | T048, T049, T053, T054, T055, T056, T057 |
+| FR-006 | ✅ | T036, T038, T045, T052 |
+| FR-007 | ✅ | T044, T046 |
+| FR-008 | ✅ | T060, T061 |
+| FR-009 | ✅ | T036, T037 |
+| FR-010 | ✅ | T022, T069 |
+| FR-011 | ✅ | T003, T004, T010 |
+| FR-012 | ✅ | T005, T063, T071 |
+| FR-013 | ✅ | T011, T012, T013, T032 |
 | FR-014 | ✅ | T014 |
-| FR-015 | ✅ | T019, T021 |
-| FR-016 | ✅ | T015, T019, T021, T034 |
-| FR-017 | ✅ | T019, T021 |
-| FR-018 | ✅ | T020, T021, T026 |
-| FR-019 | ✅ | T003, T015, T016, T025 |
-| FR-020 | ✅ | T005, T014, T017, T026 |
-| FR-021 | ✅ | T020, T027 |
-| FR-022 | ✅ | T038 |
-| FR-023 | ✅ | T007, T039 |
-| FR-024 | ✅ | T012, T035 |
-| SC-001 | ✅ | T037 |
-| SC-002 | ✅ | T040 |
-| SC-003 | ✅ | T029 |
-| SC-004 | ✅ | T024 |
+| FR-015 | ✅ | T017, T023, T024, T025, T026, T027, T028, T029, T033 |
+| FR-016 | ✅ | T017, T025, T028, T033, T059 |
+| FR-017 | ✅ | T025, T028 |
+| FR-018 | ✅ | T030, T031, T033, T040, T043, T046 |
+| FR-019 | ✅ | T018, T019, T042, T062 |
+| FR-020 | ✅ | T020, T021, T034, T043, T068 |
+| FR-021 | ✅ | T030, T031, T033, T040, T046, T068 |
+| FR-022 | ✅ | T015, T016 |
+| FR-023 | ✅ | T041, T049, T065, T066 |
+| FR-024 | ✅ | T007, T051, T065, T067 |
+| FR-025 | ✅ | T001, T002, T007, T008, T060 |
+| FR-026 | ✅ | T006, T009, T035, T064 |
+| SC-001 | ✅ | T062, T064 |
+| SC-002 | ✅ | T062 |
+| SC-003 | ✅ | T046 |
+| SC-004 | ✅ | T036 |
 
-**Constitution Alignment Issues:** C1 (принцип VII до результата spike).
+**Предположения research.md → проверяющие задачи:**
 
-**Unmapped Tasks:** T009 (итоги spike), T010 (подключение подпроектов), T041 (README, DoD, диаграммы), T042
-(`converge`) — служебные, обеспечивают сдачу.
+| Предположение | Задачи |
+|---|---|
+| R7 | T062 |
+| R10 | T020 |
+| R11 | T067 |
+| R12 | T064 |
+| R13 | T061 |
+| R14 | T020 |
+
+**Constitution Alignment Issues:** C1 (принцип VII — до проверки R12).
+
+**Unmapped Tasks:** T070, T072, T073 — документы, снимки экрана и `converge`.
 
 **Metrics:**
 
-- Total Requirements: 28 (24 FR, 4 SC)
-- Total Tasks: 42
-- Coverage: 100 % (28/28)
-- Ambiguity Count: 1 (A3, исправлено)
-- Duplication Count: 1 (D1, оставлено намеренно)
-- Critical Issues Count: 0
+- Total Requirements: 30 (26 FR, 4 SC); у каждого FR есть проверка
+- Total Tasks: 73; без файла или команды — 0; шагов человека — 3
+- Coverage: 100 % (30/30)
+- Ambiguity Count: 2 (исправлены)
+- Duplication Count: 1 (исправлено)
+- Critical Issues Count: 1 (I1, исправлено); открытых критических — 0
 
 ## Next Actions
 
-- CRITICAL нет. Перед `implement` — spike (Phase 0, T001–T009); если сработает запасной вариант, поправить plan.md и ADR
-  и повторить `analyze`.
-- После реализации — `converge` до `Converged`.
+- Открытых CRITICAL нет: после приёма дизайна можно запускать `/speckit-implement`.
+- Задачи с пометкой `(Rn)` идут первыми в своих блоках; при провале предположения — запасной вариант, правка plan.md
+  и ADR, повторный `/speckit-analyze`.

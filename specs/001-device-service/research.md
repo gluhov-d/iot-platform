@@ -1,29 +1,23 @@
 # Research: device-service
 
-Что предполагается о стороннем ПО и как проверяется до кода (фаза 0 `tasks.md`, T001–T010). У каждого пункта —
-запасной вариант; если сработал запасной, правится plan.md и соответствующий ADR.
+Решения о сторонних компонентах. «Проверено» — выполнено при подготовке дизайна; «на прототипе» — на одноразовом стенде
+(Spring Boot 4.0.3, Java 25, Keycloak 26.0.8, Redis 8.6.7, ShardingSphere-Proxy 5.5.3), код прототипа в репозиторий не
+входит. «Предположение» — не проверялось: первая задача соответствующего блока tasks.md проверяет его до зависящего
+кода; не подтвердилось — агент останавливается, применяется запасной вариант, правятся plan.md и ADR, повторяется `analyze`.
 
-## Уже проверено при подготовке дизайна
-
-| Вопрос | Результат |
-|---|---|
-| Контракт валиден | `openapi-generator-cli:v7.17.0 validate` — `No validation issues detected` |
-| `spring` + `library spring-http-interface` даёт Bean Validation, как в примере теории | **Нет.** Генератор 7.17.0 пишет: «For Spring HTTP Interface following options are disabled: … useBeanValidation, performBeanValidation». Интерфейс `DevicesApi` (`@HttpExchange`, `@RequestBody`, `@PathVariable`) генерируется, модели — без ограничений |
-| Как получить DTO с ограничениями | Два прогона генератора по одной спецификации: модели — генератор `spring` (`-Dmodels`, `useBeanValidation=true`) дают `@NotNull`, `@Size`, `@Pattern`; интерфейс — `spring-http-interface` без моделей (`-Dapis`, `generateModels=false`) |
-| `pattern` из OpenAPI → `@Pattern` | OpenAPI ищет совпадение в строке, `@Pattern` требует совпадения всей строки. `pattern: '\S'` пропустил бы только односимвольные значения, поэтому в контракте шаблоны записаны целиком: `'^.*\S.*$'`, `'^[^/\s]+$'` |
-
-## Spike (до кода)
-
-| # | Вопрос | Если не работает |
-|---|---|---|
-| 1 | Схема двух прогонов генератора в Gradle (`org.openapi.generator` 7.17.0) компилируется на Spring Boot 4 / Framework 7; модели в Git не попадают | генерировать серверный интерфейс `spring` (`interfaceOnly`) для контроллера и отдельно клиент; задание «контроллер реализует интерфейс клиента» — отклонение в ADR-0009 |
-| 2 | Контроллер, реализующий `DevicesApi`, получает маршруты Spring MVC из `@HttpExchange` и проверку тела (`@Valid` на параметре реализации) без `ConstraintDeclarationException` | `@Validated` на классе + явный `Validator` в сервисном слое |
-| 3 | ShardingSphere-Proxy 5.5.3: вторая логическая база `devices_read` с источниками-репликами (hot standby) и пользователь, которому доступна только она (`privilege: DATABASE_PERMITTED`) | read-only пользователь Proxy без ограничения базы + `device_reader` на репликах (запись невозможна физически); крайний случай — второй экземпляр Proxy |
-| 4 | Keycloak 26: `start-dev --import-realm`, подстановка секретов клиентов из окружения в файл realm, повторный старт без ошибок | одноразовая задача `keycloak-config-cli` после старта |
-| 5 | Один `iss` для токенов с хоста и из сети Compose (`KC_HOSTNAME`), сервис берёт JWKS по внутреннему адресу | `issuer-uri` не задавать: `jwk-set-uri` + явный валидатор `iss` |
-| 6 | Признак сервисной учётной записи в токене Keycloak 26 (`client_id`, `preferred_username = service-account-*`) | свой claim `token_type = service` через mapper только у клиентов-потребителей |
-| 7 | Redis Sentinel в Compose: `resolve-hostnames`/`announce-hostnames`, Lettuce находит master, `EVAL` идёт на master, после failover сервисы работают без перезапуска | `announce-ip` статических адресов сети Compose |
-| 8 | Полный путь в IT: Testcontainers `ComposeContainer` поднимает нужные сервисы платформенного Compose (Kafka, SR, шарды с репликами, db-migrator, Proxy, device-collector-service, Redis, Keycloak) за приемлемое время | IT device-service — до Kafka и с репликой без device-collector-service; полный путь — задача Gradle против поднятого стенда (`e2eTest`, как `quickCheck`) |
-| 9 | Один traceId: observation у `KafkaTemplate` device-service и listener device-collector-service, `traceparent` в заголовке | явная передача контекста через `KafkaTemplate` interceptor |
-| 10 | Память Mac: Keycloak (~600 МБ), 2 × device-service, Redis ×5 поверх текущего стенда | второй экземпляр device-service — профилем `scale`, по умолчанию один |
-| 11 | `volatile-lru`: вытеснение `outbox:lease` при нехватке памяти не ломает публикацию events-collector-service (проверка `ownerToken`, `ItRedisPublishedDeviceStoreTest`) | `maxmemory` не задавать (как сейчас): вытеснения нет, объём кэша ограничен TTL |
+| # | Решение | Статус | Проверка | Запасной вариант |
+|---|---|---|---|---|
+| R1 | Контракт `contracts/device-service.yaml` валиден | Проверено: `openapi-generator-cli:v7.17.0 validate` — без замечаний | — | — |
+| R2 | DTO и интерфейс — два прогона генератора 7.17.0: модели `spring` + `useBeanValidation`, интерфейс `spring` + `library=spring-http-interface` без моделей. Версии зависимостей библиотеки — `api(platform(spring-boot-dependencies))`, а не плагин dependency-management (иначе публикация падает: «dependencies without a version») | Проверено на прототипе: один прогон `spring-http-interface` отключает `useBeanValidation` (как в примере теории делать нельзя); два прогона в Gradle собираются, клиент через `HttpServiceProxyFactory` получает `202`, `Location` и тело | — | — |
+| R3 | `pattern` в контракте записан с якорями (`^…$`) | Проверено: OpenAPI ищет совпадение в строке, `@Pattern` — во всей строке; `'\S'` пропускал бы один символ | — | — |
+| R4 | Контроллер, реализующий интерфейс с `@HttpExchange`, получает маршруты Spring MVC без `@RequestMapping`; тело проверяется `@Valid` на параметре реализации. `deviceId` из пути проверяется явно (`Validator`): ограничения на `@PathVariable` в реализации дают ошибку объявления (HV000151) и ответ `500` на всех методах | Проверено на прототипе | — | — |
+| R5 | ShardingSphere-Proxy 5.5.3: вторая логическая база на репликах и пользователь с доступом только к ней (`DATABASE_PERMITTED`). Роли чтения на шардах выдаётся `SELECT` на таблицу: с членством в `pg_read_all_data` Proxy не загружает метаданные («Table or view 'devices' does not exist»). Proxy не стартует, пока недоступна хотя бы одна реплика (ADR-0004) | Проверено на прототипе: 20 из 20 устройств читаются с реплики своего шарда, запись через базу чтения отклоняется, сессий пользователя чтения на основных узлах нет | — | — |
+| R6 | Keycloak 26: `--import-realm`, секреты клиентов — `${VAR}` из окружения; роли клиента описываются в `roles.client`, роли сервисной учётной записи — в `users[]` с `serviceAccountClientId`. Перезапуск контейнера сохраняет ключи, пересоздание — импортирует realm заново с новыми ключами | Проверено на прототипе | — | — |
+| R7 | Один `iss` для токенов с хоста и из сети Compose: `KC_HOSTNAME` + `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`; сервис берёт ключи по внутреннему адресу (`jwk-set-uri`) и сверяет `iss` с внешним | Предположение: в Keycloak проверено на прототипе, с ресурс-сервером Spring — нет | T062 | `issuer-uri` по имени, одинаково разрешаемому с хоста и из сети Compose |
+| R8 | Сервисный токен Keycloak 26: есть `client_id`, нет `sid`; у пользовательского — наоборот | Проверено на прототипе | — | — |
+| R9 | Redis Sentinel в Compose со статическими адресами сети: переключение за ~7 с, Lettuce переподключается сам. По именам хостов переключение не произошло | Проверено на прототипе: 4 переключения из 4 | — | — |
+| R10 | `maxmemory-policy volatile-lru`: вытеснение `outbox:lease` равносильно её истечению и не ломает публикацию events-collector-service | Предположение | T020 | не задавать `maxmemory` (как сейчас), объём кэша ограничен TTL |
+| R11 | Один `traceId` HTTP → Kafka → device-collector-service: observation у `KafkaTemplate` и слушателя | Предположение (для пары сервисов events/device-collector уже работает) | T067 | явная передача `traceparent` в заголовке |
+| R12 | Полный путь PUT → GET в Testcontainers: Compose-файл платформы через `ComposeContainer` | Предположение | T064 | тест против поднятого стенда (`e2eTest`, как `quickCheck`), в `check` не входит |
+| R13 | Память стенда на Mac. По отдельности измерено на прототипе: Keycloak 420–520 МБ, Proxy с двумя базами ~375 МБ, пять контейнеров Redis ~20 МБ | Предположение (сумма на Mac, Keycloak под эмуляцией `linux/amd64`) | T061 | `KEYCLOAK_PLATFORM` под архитектуру хоста; второй экземпляр — параметром `--scale` |
+| R14 | Узел Redis при старте узнаёт роль у Sentinel (скрипт запуска), а не из командной строки: иначе перезапуск узла, ставшего основным, даёт ~36 с недоступности, а пересоздание контейнеров может потерять записи | Предположение: проблема наблюдалась на прототипе, решение не проверялось | T020 | роль в командной строке + правило эксплуатации: после переключения узлы Redis не пересоздавать |

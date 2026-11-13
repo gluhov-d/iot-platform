@@ -14,20 +14,19 @@ flowchart LR
         direction TB
         subgraph sec["adapter.in.web.security"]
             chain["SecurityFilterChain<br/>STATELESS · oauth2ResourceServer.jwt<br/>GET → devices.read · POST/PUT/DELETE → devices.write<br/>/actuator/health/** открыт"]
-            jwtval["JwtDecoder + валидаторы<br/>подпись (JWKS), iss, exp/nbf, aud = device-service,<br/>ServiceAccountValidator: токен сервисной учётной записи"]
+            jwtval["JwtDecoder + валидаторы<br/>подпись (JWKS), iss, exp/nbf, aud = device-service,<br/>AudienceValidator, ServiceAccountValidator:<br/>токен сервисной учётной записи"]
             roles["KeycloakRolesConverter<br/>resource_access.device-service.roles → authorities"]
             problem401["ProblemAuthenticationEntryPoint<br/>ProblemAccessDeniedHandler<br/>401 / 403 в Problem Details"]
         end
         controller["DeviceController<br/>adapter.in.web<br/>implements DevicesApi (из клиента), @Valid<br/>202 + Location · 200 · Problem Details"]
         advice["ProblemDetailsAdvice<br/>adapter.in.web<br/>код ошибки + traceId, без стека и SQL"]
-        mapper["DeviceMapper (MapStruct)<br/>DTO ↔ модель; модель → DeviceInfo / DeviceSnapshot<br/>unmappedTargetPolicy = ERROR"]
-        command["DeviceCommandService<br/>domain.service<br/>проверка → eventId (UUID), eventTimeMs →<br/>публикация, ждёт ack Kafka"]
+        mapper["DeviceMapper (MapStruct)<br/>модель → DeviceResponse<br/>незаполненное поле — ошибка сборки"]
+        command["DeviceCommandService<br/>domain.service<br/>есть / нет устройства (409, 404) → eventId (UUID),<br/>время приёма → публикация, ждёт ack Kafka"]
         query["DeviceQueryService<br/>domain.service<br/>Cache-Aside: кэш → реплики → кэш<br/>Redis недоступен — читает реплики"]
-        rules["DeviceRules<br/>domain.service<br/>существует / не существует для POST, PUT, DELETE;<br/>правила предметной области"]
-        pub["KafkaDeviceCommandPublisher<br/>adapter.out.kafka (порт DeviceCommandPublisher)<br/>DeviceInfo Avro, ключ deviceId, acks=all, idempotence,<br/>auto.register.schemas=false, send().get(тайм-аут)"]
+        pub["KafkaDeviceCommandPublisher · DeviceInfoFactory<br/>adapter.out.kafka (порт DeviceCommandPublisher)<br/>DeviceInfo Avro, ключ deviceId, acks=all, idempotence,<br/>auto.register.schemas=false, send().get(тайм-аут)"]
         cache["RedisDeviceCache<br/>adapter.out.redis (порт DeviceCache)<br/>Sentinel · хеш device:v1:{id}: body, version, floor<br/>запись только если version ≥ floor (Lua), TTL из env"]
         repo["JdbcDeviceReadRepository<br/>adapter.out.postgres (порт DeviceReadRepository)<br/>JdbcClient · база devices_read · read-only пользователь"]
-        metrics["DeviceServiceMetrics<br/>device_commands_*, device_cache_*<br/>(без deviceId в метках)"]
+        metrics["MicrometerDeviceServiceMetrics (порт DeviceServiceMetrics)<br/>device_commands_*, device_cache_*<br/>(без deviceId в метках)"]
 
         chain --> jwtval
         chain --> roles
@@ -37,8 +36,7 @@ flowchart LR
         controller --> command
         controller --> query
         controller -. "исключение" .-> advice
-        command --> rules
-        rules --> query
+        command -- "есть ли устройство" --> query
         command --> pub
         query --> cache
         query --> repo

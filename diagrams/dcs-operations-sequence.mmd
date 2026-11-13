@@ -11,7 +11,7 @@ sequenceDiagram
     L->>S: process(key, DeviceInfo)
     S->>S: валидация: ключ = deviceId, у CREATE / UPDATE есть device,<br/>operation = UNKNOWN (новее схемы потребителя) → devices-dlt
     S->>P: BEGIN · SELECT … FOR UPDATE (version, last_state_at, managed_at, deleted_at, deleted_by)
-    S->>S: исход по таблице правил (spec.md, «Изменения в реестре устройств»)
+    S->>S: исход по таблице правил (spec.md, FR-015)
     S->>P: INSERT processed_device_events (outcome) ON CONFLICT DO NOTHING
     alt 0 строк — повтор доставки
         S->>P: COMMIT, устройство не меняется (DUPLICATE)

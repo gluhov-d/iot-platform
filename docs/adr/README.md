@@ -11,3 +11,4 @@
 | [0007](0007-service-tokens-only.md) | Только сервисные токены Keycloak |
 | [0008](0008-redis-sentinel.md) | Redis через Sentinel для всей платформы |
 | [0009](0009-api-first-client-library.md) | API First и клиентская библиотека |
+| [0010](0010-devices-topic-compaction-lag.md) | Сжатие темы devices и команды администратора |
