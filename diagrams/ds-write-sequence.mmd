@@ -1,0 +1,55 @@
+%% device-service: изменение устройства (PUT). POST и DELETE идут так же, отличия — в заметках
+sequenceDiagram
+    autonumber
+    participant C as Сервис-потребитель
+    participant KC as Keycloak
+    participant DS as device-service
+    participant RD as Redis (Sentinel)
+    participant RP as Proxy devices_read → реплика
+    participant K as Kafka devices
+    participant DC as device-collector-service
+    participant P as Proxy devices → шард
+    participant R as Реплика шарда
+
+    C->>KC: client credentials (client_id, secret)
+    KC-->>C: сервисный JWT (aud device-service, роль devices.write)
+    C->>DS: PUT /api/v1/devices/dev-42 + Bearer JWT, traceparent
+    DS->>DS: подпись по JWKS (кэш), iss, exp/nbf, aud, сервисная учётная запись, роль
+    alt токена нет, он невалиден или чужая аудитория
+        DS-->>C: 401 Problem Details (UNAUTHORIZED, traceId)
+    else пользовательский токен или нет роли devices.write
+        DS-->>C: 403 Problem Details (SERVICE_TOKEN_REQUIRED / FORBIDDEN)
+    end
+    DS->>DS: Bean Validation по OpenAPI (deviceId ≤ 128, обязательные поля, длины)
+    alt тело невалидно
+        DS-->>C: 400 Problem Details (VALIDATION_FAILED, поля с ошибками)
+    end
+    DS->>RD: HGET device:v1:dev-42 (есть ли устройство)
+    opt промах или Redis недоступен
+        DS->>RP: SELECT … WHERE device_id = 'dev-42'
+        RP-->>DS: строка или пусто
+    end
+    alt PUT / DELETE: устройства нет или удалено
+        DS-->>C: 404 Problem Details (DEVICE_NOT_FOUND)
+    else POST: устройство уже есть
+        DS-->>C: 409 Problem Details (DEVICE_ALREADY_EXISTS)
+    end
+    Note over DS: Проверка по модели чтения предварительная: реплика может отставать.<br/>Окончательно решает владелец данных — device-collector-service
+    DS->>K: DeviceInfo: deviceId, operation = UPDATE, eventType = UPDATED,<br/>eventId = UUID, eventTimeMs = now, device = поля администратора<br/>ключ dev-42, acks=all, заголовок traceparent
+    alt Kafka подтвердила запись в пределах DEVICE_COMMAND_SEND_TIMEOUT
+        K-->>DS: ack (partition, offset)
+        DS-->>C: 202 Accepted, Location: /api/v1/devices/dev-42<br/>тело: deviceId, operation, commandId = eventId
+    else нет подтверждения (Kafka недоступна, тайм-аут)
+        DS-->>C: 503 Problem Details (COMMAND_NOT_ACCEPTED), повтор PUT безопасен
+    end
+    Note over DS,K: Кэш device-service не трогает: реплика ещё старая,<br/>следующее чтение положило бы в кэш старые данные
+
+    K->>DC: DeviceInfo (по одному, тот же traceId)
+    DC->>P: BEGIN · SELECT … FOR UPDATE · INSERT журнал ON CONFLICT DO NOTHING
+    DC->>P: UPDATE devices: поля администратора, managed_at,<br/>version = version + 1 RETURNING version
+    P-->>DC: version = 7
+    DC->>P: COMMIT
+    DC->>RD: Lua: floor = max(floor, 7), удалить body/version, если version < 7
+    DC->>K: ack смещения
+    P--)R: репликация WAL (асинхронно, задержка)
+    Note over C,R: Потребитель перечитывает GET позже. Пока реплика не догнала version 7,<br/>device-service отдаёт данные реплики, но в кэш их не кладёт (см. ds-read-sequence)

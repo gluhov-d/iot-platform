@@ -1,0 +1,37 @@
+%% device-service: чтение устройства по паттерну Cache-Aside
+sequenceDiagram
+    autonumber
+    participant C as Сервис-потребитель
+    participant DS as device-service
+    participant RD as Redis (Sentinel)
+    participant P as Proxy devices_read
+    participant R as Реплика шарда
+
+    C->>DS: GET /api/v1/devices/dev-42 + Bearer JWT (роль devices.read)
+    DS->>DS: проверка токена (как при записи) — 401 / 403 Problem Details
+    DS->>RD: HMGET device:v1:dev-42 body version floor
+    alt попадание: body есть
+        RD-->>DS: body (готовый JSON DeviceResponse), version
+        DS-->>C: 200 OK DeviceResponse
+        Note over DS: device_cache_requests_total{result=hit}
+    else промах: body нет (истёк TTL, сброшен после записи, не было)
+        RD-->>DS: пусто, floor = 7 или нет
+        DS->>P: SELECT поля устройства, version, deleted_at FROM devices WHERE device_id = ?
+        P->>R: маршрут |hashCode(device_id)| % 2 → реплика нужного шарда
+        R-->>DS: строка (version = 6, реплика отстаёт) или пусто
+        alt строки нет, устройство удалено или у него нет карточки
+            DS-->>C: 404 Problem Details (DEVICE_NOT_FOUND)
+        else version ≥ floor (реплика догнала последнюю запись)
+            DS->>RD: Lua: записать body и version, если version ≥ floor и не меньше уже лежащей,<br/>EXPIRE DEVICE_CACHE_TTL
+            DS-->>C: 200 OK DeviceResponse
+        else version < floor (реплика ещё не догнала)
+            DS-->>C: 200 OK данные реплики, в кэш не кладутся
+            Note over DS: device_cache_requests_total{result=stale_replica}
+        end
+    else Redis недоступен (тайм-аут REDIS_TIMEOUT)
+        DS->>P: SELECT напрямую через реплики
+        DS-->>C: 200 OK, ошибка кэша — только метрика и WARN в лог
+    end
+    opt Proxy или реплика недоступны при промахе
+        DS-->>C: 503 Problem Details (READ_MODEL_UNAVAILABLE)
+    end
