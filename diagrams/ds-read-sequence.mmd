@@ -1,0 +1,43 @@
+%% device-service: чтение устройства по паттерну Cache-Aside.
+%% Промах кэша и недоступный Redis идут одним путём; исходы взаимоисключающие: 200, 404 или 503
+sequenceDiagram
+    autonumber
+    participant C as Сервис-потребитель
+    participant DS as device-service
+    participant RD as Redis master (адрес от Sentinel)
+    participant P as Proxy devices_read
+    participant R as Реплика шарда
+
+    C->>DS: GET /api/v1/devices/dev-42 + Bearer JWT (роль devices.read)
+    DS->>DS: проверка токена (как при записи)
+    break токен не принят
+        DS-->>C: 401 / 403 Problem Details — обработка запроса закончена
+    end
+    DS->>RD: HGET device:v1:dev-42 body
+    alt попадание: поле body есть
+        RD-->>DS: body (готовый JSON DeviceResponse)
+        DS-->>C: 200 OK DeviceResponse
+        Note over DS: метрика кэша: result=hit
+    else промах (поля body нет, истёк TTL) или Redis недоступен (тайм-аут)
+        RD-->>DS: поля нет · либо ошибка кэша (метрика result=error, чтение продолжается)
+        DS->>P: SELECT поля устройства, version FROM devices<br/>WHERE device_id = ? AND deleted_at IS NULL AND tenant_id IS NOT NULL
+        P->>R: маршрут |hashCode(device_id)| % 2 → реплика нужного шарда
+        alt Proxy или реплика недоступны
+            DS-->>C: 503 Problem Details (READ_MODEL_UNAVAILABLE)
+        else строки нет: устройства нет, оно удалено или у него нет карточки
+            R-->>DS: пусто
+            DS-->>C: 404 Problem Details (DEVICE_NOT_FOUND)
+            Note over DS: в кэш ничего не пишется · при недоступном Redis ответ тот же — 404
+        else строка найдена
+            R-->>DS: строка (version = 6, реплика может отставать)
+            DS-->>C: 200 OK DeviceResponse (данные реплики)
+            opt Redis доступен
+                DS->>RD: Lua put-if-fresh: записать body и version, только если version ≥ floor<br/>(ключ device:v1:floor:dev-42) и не ниже уже закэшированной version,<br/>затем PEXPIRE device:v1:dev-42 DEVICE_CACHE_TTL и DEL ключа floor
+                alt запись принята (1)
+                    Note over DS: метрика кэша: result=miss, порог floor снят
+                else отказ (0): version < floor или < закэшированной
+                    Note over DS: ключ кэша не меняется, TTL не продлевается<br/>метрика кэша: result=stale_replica
+                end
+            end
+        end
+    end

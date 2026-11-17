@@ -6,7 +6,7 @@ sequenceDiagram
     autonumber
     participant J as OutboxPublisherJob
     participant P as OutboxPublishingService
-    participant R as Redis
+    participant R as Redis master (адрес от Sentinel)
     participant CH as ClickHouse device_outbox
     participant A as ClickHouse device_publication_audit
     participant K as Kafka (devices)

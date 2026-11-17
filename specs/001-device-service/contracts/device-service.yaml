@@ -1,0 +1,363 @@
+openapi: 3.0.3
+info:
+  title: device-service API
+  description: |
+    Управление метаданными устройств. Запись асинхронная: сервис публикует команду в Kafka (топик `devices`)
+    и отвечает `202 Accepted` после подтверждения брокера; применяет её device-collector-service.
+    Чтение — из модели чтения (Redis, реплики шардов), согласовано в конечном счёте.
+    Доступ — только сервисные токены Keycloak (client credentials), аудитория `device-service`.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8105
+    description: Локальный стенд (первый экземпляр)
+security:
+  - serviceToken: []
+tags:
+  - name: devices
+paths:
+  /api/v1/devices:
+    post:
+      tags: [devices]
+      operationId: createDevice
+      summary: Завести устройство вручную
+      description: Публикует команду CREATE. deviceId задаёт клиент — идентификатор физического устройства.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceCreateRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Устройство уже есть (DEVICE_ALREADY_EXISTS)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [devices]
+      operationId: getDeviceById
+      summary: Получить устройство
+      description: Роль devices.read. Cache-Aside — Redis, при промахе реплики шардов.
+      responses:
+        '200':
+          description: Текущие данные устройства из модели чтения
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      tags: [devices]
+      operationId: updateDevice
+      summary: Заменить поля администратора
+      description: Публикует команду UPDATE. Поля, которые сообщает само устройство (прошивка, ОС, сенсоры), не меняются.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceUpdateRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [devices]
+      operationId: deleteDevice
+      summary: Удалить устройство
+      description: Публикует команду DELETE. Удаление мягкое; события роутера после него устройство не возвращают.
+      responses:
+        '202':
+          $ref: '#/components/responses/Accepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    serviceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token Keycloak (realm iot-platform), полученный по client credentials. Роли клиента
+        device-service — devices.read (GET), devices.write (POST, PUT, DELETE).
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/DeviceId'
+  responses:
+    Accepted:
+      description: Команда принята Kafka и будет применена асинхронно
+      headers:
+        Location:
+          description: Адрес ресурса устройства для последующего чтения
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DeviceCommandAccepted'
+    BadRequest:
+      description: Невалидный запрос (VALIDATION_FAILED)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Нет токена или он недействителен (UNAUTHORIZED)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Токен не сервисный (SERVICE_TOKEN_REQUIRED) или нет роли (FORBIDDEN)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Устройства нет или оно удалено (DEVICE_NOT_FOUND)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unavailable:
+      description: Kafka не подтвердила команду (COMMAND_NOT_ACCEPTED) или модель чтения недоступна (READ_MODEL_UNAVAILABLE)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    DeviceId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[^/\s]+$'
+      example: dev-42
+    ManagedStatus:
+      type: string
+      description: Статус, который может задать администратор
+      enum: [NEW, ACTIVE, INACTIVE, MAINTENANCE, BLOCKED]
+    DeviceStatus:
+      type: string
+      description: Статус в модели чтения; значения могут добавляться — клиент обязан принимать незнакомые
+      enum: [UNKNOWN, NEW, ACTIVE, INACTIVE, MAINTENANCE, BLOCKED]
+    DeviceUpdateRequest:
+      type: object
+      description: Поля, которыми управляет администратор. PUT заменяет их целиком.
+      required: [tenantId, deviceType, status]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        tenantId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^.*\S.*$'
+        ownerId:
+          type: string
+          maxLength: 64
+        deviceType:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^.*\S.*$'
+        serialNumber:
+          type: string
+          maxLength: 128
+        manufacturer:
+          type: string
+          maxLength: 128
+        model:
+          type: string
+          maxLength: 128
+        status:
+          $ref: '#/components/schemas/ManagedStatus'
+        settings:
+          type: object
+          maxProperties: 100
+          additionalProperties:
+            type: string
+            maxLength: 1024
+        attributes:
+          type: object
+          maxProperties: 100
+          additionalProperties:
+            type: string
+            maxLength: 1024
+    DeviceCreateRequest:
+      allOf:
+        - type: object
+          required: [deviceId]
+          properties:
+            deviceId:
+              $ref: '#/components/schemas/DeviceId'
+        - $ref: '#/components/schemas/DeviceUpdateRequest'
+    DeviceCommandAccepted:
+      type: object
+      required: [deviceId, operation, commandId, acceptedAt]
+      properties:
+        deviceId:
+          $ref: '#/components/schemas/DeviceId'
+        operation:
+          type: string
+          enum: [CREATE, UPDATE, DELETE]
+        commandId:
+          type: string
+          format: uuid
+          description: eventId сообщения DeviceInfo; по нему команду находят в журнале и логах
+        acceptedAt:
+          type: string
+          format: date-time
+    Sensor:
+      type: object
+      required: [sensorId, sensorType]
+      properties:
+        sensorId:
+          type: string
+        sensorType:
+          type: string
+        unit:
+          type: string
+        value:
+          type: string
+        measuredAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+    DeviceResponse:
+      type: object
+      required: [deviceId, tenantId, deviceType, status, settings, attributes, sensors, version]
+      properties:
+        deviceId:
+          $ref: '#/components/schemas/DeviceId'
+        name:
+          type: string
+        tenantId:
+          type: string
+        ownerId:
+          type: string
+        deviceType:
+          type: string
+        serialNumber:
+          type: string
+        manufacturer:
+          type: string
+        model:
+          type: string
+        status:
+          $ref: '#/components/schemas/DeviceStatus'
+        settings:
+          type: object
+          additionalProperties:
+            type: string
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+        firmwareVersion:
+          type: string
+          description: Сообщает устройство, только для чтения
+        osName:
+          type: string
+          description: Сообщает устройство, только для чтения
+        osVersion:
+          type: string
+          description: Сообщает устройство, только для чтения
+        sensors:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sensor'
+        registeredAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+          description: Номер изменения записи у владельца данных; растёт с каждым применённым изменением
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+    Problem:
+      type: object
+      description: Problem Details (RFC 9457), application/problem+json
+      required: [type, title, status, code, traceId]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: https://iot-platform.example/problems/device-not-found
+        title:
+          type: string
+          example: Device not found
+        status:
+          type: integer
+          example: 404
+        detail:
+          type: string
+          example: Device dev-42 not found
+        instance:
+          type: string
+          example: /api/v1/devices/dev-42
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, UNAUTHORIZED, SERVICE_TOKEN_REQUIRED, FORBIDDEN, DEVICE_NOT_FOUND,
+                 DEVICE_ALREADY_EXISTS, COMMAND_NOT_ACCEPTED, READ_MODEL_UNAVAILABLE, INTERNAL_ERROR]
+        traceId:
+          type: string
+          example: 4bf92f3577b34da6a3ce929d0e0e4736
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldError'
