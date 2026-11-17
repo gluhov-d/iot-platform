@@ -75,14 +75,14 @@ services/db-migrator/…/V3__device_management.sql
 |---|---|---|
 | Запись — команда в `devices`, `202` после подтверждения | один писатель, нет двойной записи | 0001 |
 | `operation`: `null` — поле не заполнено, `UNKNOWN` — в DLT | прежние сообщения читаются как есть; новая операция не станет созданием | 0002 |
-| Кэш сбрасывает владелец после `COMMIT`, версия записи | реплика отстаёт: простое удаление ключа не спасает от старых данных | 0003 |
+| Кэш сбрасывает владелец после `COMMIT`, версия записи; порог — отдельный ключ со своим сроком | реплика отстаёт: простое удаление ключа не спасает от старых данных, а порог в том же ключе истекал вместе с ответом | 0003 |
 | `devices_read` на репликах | маршруты device-collector-service не меняются; device-service не может попасть в основной узел | 0004 |
 | Мягкое удаление, приоритет ручных правок | устройство не воскресает; часы роутера не решают конфликты | 0005 |
 | `deviceId` задаёт клиент | совпадает с событиями роутера; повтор POST не создаёт дубль | 0006 |
 | Только сервисные токены; realm в репозитории; Keycloak в базовом стенде | нулевое доверие; воспроизводимый стенд | 0007 |
 | Redis через Sentinel для всех сервисов | общий Redis переживает отказ основного узла | 0008 |
 | OpenAPI в `device-service-client`, два прогона генератора | API First; один прогон не даёт проверок полей (R2) | 0009 |
-| `min.compaction.lag.ms` темы `devices` ≥ интервала копирования | повторное чтение темы не теряет команды администратора | 0010 |
+| Тема `devices` — `cleanup.policy=delete`, хранение ≥ интервала копирования | сжатие стирало команду, за которой пришёл снимок роутера: повторное чтение возвращало удалённое устройство | 0011 (заменяет 0010) |
 
 ## Ошибки
 
@@ -104,7 +104,8 @@ services/db-migrator/…/V3__device_management.sql
 | Переменная | Пример | Кому |
 |---|---|---|
 | `DEVICE_SERVICE_IMAGE_TAG`, `DEVICE_SERVICE_PORTS` | `0.1.0`, `8105-8106` | device-service |
-| `DEVICE_CACHE_TTL` | `10m` | device-service, device-collector-service (срок `floor`) |
+| `DEVICE_CACHE_TTL` | `10m` | device-service (ключ `device:v1:{deviceId}`) |
+| `DEVICE_CACHE_FLOOR_TTL` | `24h` | device-service, device-collector-service (ключ `device:v1:floor:{deviceId}`; больше худшего ожидаемого отставания реплики) |
 | `DEVICE_COMMAND_SEND_TIMEOUT` | `5s` | device-service |
 | `DEVICES_READ_DB_URL`, `DEVICES_READ_DB_USER`, `DEVICES_READ_DB_PASSWORD` | `jdbc:postgresql://shardingsphere-proxy:3307/devices_read?connectTimeout=2&socketTimeout=3` | device-service, Proxy |
 | `SHARD_READER_PASSWORD` | — | `shard-replication-init`, Proxy |
@@ -112,7 +113,7 @@ services/db-migrator/…/V3__device_management.sql
 | `DEVICE_SERVICE_CONSUMER_SECRET`, `DEVICE_SERVICE_READER_SECRET` | — | Keycloak (realm), quickstart |
 | `REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`, `REDIS_MAXMEMORY` | `platform-redis`, `redis-sentinel-1:26379,…`, `256mb` | все сервисы, Redis |
 | `IOT_NET_SUBNET`, `REDIS_MASTER_IP`, `REDIS_REPLICA_IP`, `REDIS_SENTINEL_IPS` | свободная подсеть `/24` и адреса в ней | сеть Compose, Redis, Sentinel |
-| `KAFKA_DEVICES_MIN_COMPACTION_LAG_MS` | `604800000` | `kafka-init`, `shard-restore.sh` |
+| `KAFKA_DEVICES_RETENTION_MS` | `2592000000` | `kafka-init`, `shard-restore.sh` |
 
 Уже есть и используются: `REDIS_PASSWORD`, `REDIS_TIMEOUT`, `KAFKA_DEVICES_TOPIC`, `SCHEMA_REGISTRY_PORT`,
 `KEYCLOAK_VERSION`, `KEYCLOAK_PORT`.
@@ -135,6 +136,7 @@ services/db-migrator/…/V3__device_management.sql
 | Отступление | Зачем | Почему проще не подходит |
 |---|---|---|
 | Версия записи, `floor` и Lua вместо `@Cacheable`/`@CacheEvict` | атомарная проверка версии при записи в кэш | аннотации не умеют условную запись; гонка со старой репликой остаётся |
+| Два ключа на устройство (ответ и порог) со своими сроками | порог должен жить дольше ответа: иначе отставание реплики дольше `DEVICE_CACHE_TTL` возвращает старые данные | один хеш — один TTL; срок по полю (`HEXPIRE`) требует Redis 7.4+ и проверки на Lettuce |
 | Вторая логическая база Proxy | чтение только из реплик | read/write splitting в той же базе меняет маршруты транзакций писателя |
 | Keycloak переезжает из профиля `platform` в базовый стенд | без него сервис не принимает запросы | профиль пришлось бы включать всегда |
 | Четвёртый символ `UNKNOWN` в `operation` | значение новее схемы читателя не становится созданием | default `CREATE` из примера молча создавал бы устройства |

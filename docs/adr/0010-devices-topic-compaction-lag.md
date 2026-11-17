@@ -1,6 +1,11 @@
 # ADR-0010: Сжатие темы devices и команды администратора
 
-**Статус**: предложено, 2026-11-13 · **Спецификация**: [specs/001-device-service](../../specs/001-device-service/spec.md)
+**Статус**: заменено [ADR-0011](0011-devices-topic-retention.md) (2026-11-17, ревью дизайна) ·
+**Спецификация**: [specs/001-device-service](../../specs/001-device-service/spec.md)
+
+> Решение отменено: `min.compaction.lag.ms` только откладывает потерю команды, за которой пришло событие роутера —
+> сжатие уничтожает порядок сообщений ключа. Действующее решение — [ADR-0011](0011-devices-topic-retention.md):
+> тема `devices` переходит на `cleanup.policy=delete` с хранением `KAFKA_DEVICES_RETENTION_MS`.
 
 ## Контекст
 

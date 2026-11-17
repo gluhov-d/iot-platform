@@ -1,20 +1,39 @@
 %% Почему в кэш не попадают старые данные: гонка «чтение старой версии — запись — сброс — SET старой версии»
+%% и отставание реплики дольше DEVICE_CACHE_TTL. floor лежит в отдельном ключе со своим сроком жизни.
 sequenceDiagram
     autonumber
     participant A as device-service (чтение A)
-    participant RD as Redis device:v1:dev-42
+    participant RD as Redis master (адрес от Sentinel)
     participant R as Реплика шарда
     participant DC as device-collector-service
     participant S as Основной узел шарда
 
-    A->>RD: HMGET body version floor
-    RD-->>A: промах, floor = 6
+    Note over RD: device:v1:dev-42 (hash: body, version) — TTL DEVICE_CACHE_TTL (минуты)<br/>device:v1:floor:dev-42 (floor) — отдельный ключ, TTL DEVICE_CACHE_FLOOR_TTL (часы)
+
+    A->>RD: HGET device:v1:dev-42 body
+    RD-->>A: промах
     A->>R: SELECT … WHERE device_id = 'dev-42'
     R-->>A: version = 6 (старые данные)
     DC->>S: UPDATE … version = 7, COMMIT
-    DC->>RD: Lua: floor = 7, удалить body, если version < 7
-    A->>RD: Lua: записать version = 6, если 6 ≥ floor
-    RD-->>A: отказ: 6 < floor 7, кэш пуст
+    DC->>RD: Lua raise-floor: floor = max(floor, 7) в device:v1:floor:dev-42,<br/>PEXPIRE floor DEVICE_CACHE_FLOOR_TTL, body с version < 7 удалить
+    A->>RD: Lua put-if-fresh: записать version = 6, если 6 ≥ floor
+    RD-->>A: отказ: 6 < floor 7 — кэш пуст, TTL ключа кэша не продлевается
+    Note over A: 200 отдаётся данными реплики, метрика result=stale_replica
+
+    rect rgb(245, 238, 220)
+        Note over A,S: Реплика отстаёт дольше DEVICE_CACHE_TTL: ключ кэша истёк, floor — нет (свой срок)
+        A->>RD: HGET body (ключа кэша нет) · GET device:v1:floor:dev-42
+        RD-->>A: промах, floor = 7
+        A->>R: SELECT …
+        R-->>A: version = 6 (реплика всё ещё отстаёт)
+        A->>RD: Lua put-if-fresh: 6 < floor 7
+        RD-->>A: отказ — старая версия не кэшируется и после истечения TTL кэша
+    end
+
     S--)R: репликация WAL: version = 7
-    Note over A,R: Следующий промах читает с реплики version 7 ≥ floor 7 и кладёт её в кэш.<br/>Без floor старая version 6 жила бы в кэше до конца TTL
-    Note over RD: floor живёт в том же хеше, его TTL = DEVICE_CACHE_TTL. Redis недоступен при сбросе —<br/>device-collector-service пишет WARN и метрику, ack не задерживает, устаревание ограничено TTL
+    A->>R: SELECT … (следующий промах)
+    R-->>A: version = 7
+    A->>RD: Lua put-if-fresh: 7 ≥ floor 7 → HSET body, version,<br/>PEXPIRE device:v1:dev-42 DEVICE_CACHE_TTL, DEL device:v1:floor:dev-42
+    RD-->>A: записано (1): реплика догнала, порог больше не нужен
+    Note over A,RD: Фактический срок устаревания: пока реплика не догнала применённую версию, чтения идут<br/>в реплику и в кэш не попадают — floor держится до этого момента, но не дольше DEVICE_CACHE_FLOOR_TTL.<br/>Если отставание переживёт и этот срок, floor исчезнет и старая версия может лечь в кэш ещё на один<br/>DEVICE_CACHE_TTL: ограничение названо в ADR-0003 и README (срок выбирается больше худшего отставания)
+    Note over RD: Redis недоступен при сбросе — device-collector-service пишет WARN и метрику,<br/>ack не задерживает, устаревание тогда ограничено DEVICE_CACHE_TTL

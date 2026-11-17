@@ -22,7 +22,8 @@
 - [ ] Входная тема `events`, выходная `devices` (`.env.example`: `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`).
 - [ ] Ключ обеих тем - `deviceId`: `DeviceEvent` отправляется с ключом `deviceId` (`check-local.sh`, `ItEventsCollectorTest`),
         `DeviceInfo` - `KafkaDeviceInfoProducer` (`KafkaDeviceInfoProducerTest.givenDevice_whenPublish_thenSendKeyedByDeviceId`).
-- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=compact`, `events-dlt` - `cleanup.policy=delete`: `make topics`.
+- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=delete` и `retention.ms` = `KAFKA_DEVICES_RETENTION_MS`
+        (ADR-0011: сжатие стирало порядок «команда -> снимок»), `events-dlt` - `cleanup.policy=delete`: `make topics`.
 - [ ] Темы создаются автоматически: контейнер `kafka-init` -> `infrastructure/init/kafka/init-topics.sh`,
         `make health` - у `kafka-init` exited, код 0.
 
@@ -333,5 +334,8 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
 - Приём событий: Redis через Sentinel (`REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`) вместо прямого адреса («Redis»).
 - Реестр устройств: команды `CREATE`/`UPDATE`/`DELETE`, исход `IGNORED`, колонки `version`, `managed_at`, `deleted_by`
   (миграция V3), сброс кэша после `COMMIT`, Redis как новая зависимость («device-collector-service», «База данных»).
-- Тема `devices`: `min.compaction.lag.ms`; предупреждение `shard-restore.sh` о старой копии («База данных», бэкап).
+- Тема `devices`: `cleanup.policy=delete` и `retention.ms` вместо сжатия (ADR-0011); предупреждение `shard-restore.sh`
+  о копии старше срока хранения («База данных», бэкап).
+- Кэш устройства: порог версии в отдельном ключе `device:v1:floor:{deviceId}` со сроком `DEVICE_CACHE_FLOOR_TTL`
+  (ADR-0003), его снимает успешное чтение («device-service», «Redis»).
 - Запуск: Keycloak с realm из репозитория и Redis с Sentinel — в базовом стенде, а не в профиле `platform` («Запуск»).
