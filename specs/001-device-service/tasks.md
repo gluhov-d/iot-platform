@@ -68,11 +68,13 @@ R8, R9), в задачах записаны как требования.
 - [X] T014 [P] events-collector-service: `avrosVersion = "1.3.0"`; тест «1.2.0 читается схемой 1.3.0 с `operation = null`
   и наоборот» — `ECS/build.gradle.kts`,
   `ECS/src/test/java/com/github/gluhov/iotplatform/eventscollector/service/contract/ContractCompatibilityTest.java` (FR-014)
-- [X] T015 [P] Тема `devices`: `min.compaction.lag.ms=${KAFKA_DEVICES_MIN_COMPACTION_LAG_MS}` при создании и
-  `kafka-configs --alter` для существующей; переменная в задаче `kafka-init` и `.env.example` (604800000) —
-  `INF/init/kafka/init-topics.sh`, `INF/docker-compose.yaml`, `.env.example` (FR-022)
-- [X] T016 [P] Восстановление: если копия старше `KAFKA_DEVICES_MIN_COMPACTION_LAG_MS` (время из manifest) — предупреждение
-  о возможной потере ручных изменений до остановки сервисов — `INF/config/postgres/shard-restore.sh` (FR-022)
+- [X] T015 [P] Тема `devices` без сжатия (ADR-0011): `cleanup.policy=delete`,
+  `retention.ms=${KAFKA_DEVICES_RETENTION_MS}` при создании и `kafka-configs --alter` для существующей темы
+  (там же снимается `min.compaction.lag.ms`); переменная в задаче `kafka-init` и `.env.example` (2592000000) —
+  `INF/init/kafka/init-topics.sh`, `INF/docker-compose.yaml`, `.env.example` (FR-022).
+  Проверка: `make topics` показывает `cleanup.policy=delete` и `retention.ms`; повторный запуск `kafka-init` — код 0
+- [X] T016 [P] Восстановление: если копия старше `KAFKA_DEVICES_RETENTION_MS` (время из manifest) — предупреждение
+  о возможной потере изменений до остановки сервисов — `INF/config/postgres/shard-restore.sh` (FR-022)
 
 ### База данных и чтение из реплик
 
@@ -138,7 +140,8 @@ R8, R9), в задачах записаны как требования.
 - [X] T029 Запросы: чтение `version`, `managed_at`, `deleted_by` под блокировкой; запись полей администратора и данных
   устройства раздельно; `version + 1`; `RETURNING current_database(), version` — `DCS/domain/port/out/DeviceRepository.java`,
   `DCS/adapter/out/postgres/JdbcDeviceRepository.java`, `DCST/support/InMemoryDeviceRepository.java` (FR-015)
-- [X] T030 Сброс кэша: порт, адаптер Redis со скриптом `raise-floor.lua` (data-model.md), подключение через Sentinel в
+- [X] T030 Сброс кэша: порт, адаптер Redis со скриптом `raise-floor.lua` (data-model.md: два ключа — кэш и порог
+  `device:v1:floor:{deviceId}`, срок порога `DEVICE_CACHE_FLOOR_TTL`, срок кэша не продлевается), подключение через Sentinel в
   профиле `docker`, счётчик `devices_cache_invalidations_total{result}`; тесты «успех» и «Redis недоступен — исключения нет» —
   `DCS/domain/port/out/DeviceCacheInvalidator.java`, `DCS/adapter/out/redis/RedisDeviceCacheInvalidator.java`,
   `DCSR/redis/raise-floor.lua`, `DCSR/application.yaml`, `DCSR/application-docker.yaml`,
@@ -193,9 +196,10 @@ R8, R9), в задачах записаны как требования.
   `DS/support/MicrometerDeviceServiceMetrics.java` (FR-003, FR-023)
 - [X] T042 [P] [US1] Чтение из `devices_read` (правило «карточка есть» — data-model.md), `connectTimeout`/`socketTimeout` из
   окружения — `DS/adapter/out/postgres/JdbcDeviceReadRepository.java` (FR-003, FR-019)
-- [X] T043 [P] [US1] Кэш: ключ `device:v1:{deviceId}`, скрипт `put-if-fresh.lua` (data-model.md), TTL `DEVICE_CACHE_TTL`,
-  тайм-аут `REDIS_TIMEOUT`, Sentinel в профиле `docker` — `DS/adapter/out/redis/RedisDeviceCache.java`,
-  `DSR/redis/put-if-fresh.lua` (FR-003, FR-018, FR-020)
+- [X] T043 [P] [US1] Кэш: ключ `device:v1:{deviceId}` (TTL `DEVICE_CACHE_TTL`) и ключ порога
+  `device:v1:floor:{deviceId}`, скрипт `put-if-fresh.lua` (data-model.md: читает порог из второго ключа, при успешной
+  записи удаляет его), тайм-аут `REDIS_TIMEOUT`, Sentinel в профиле `docker` —
+  `DS/adapter/out/redis/RedisDeviceCache.java`, `DSR/redis/put-if-fresh.lua` (FR-003, FR-018, FR-020)
 - [X] T044 [P] [US1] Маппер `Device` → `DeviceResponse` (MapStruct, незаполненное поле — ошибка сборки); тест —
   `DS/adapter/in/web/DeviceMapper.java`, `DST/adapter/in/web/DeviceMapperTest.java` (FR-007)
 - [X] T045 [US1] `getDeviceById`: 200 / 404 `DEVICE_NOT_FOUND` / 503 `READ_MODEL_UNAVAILABLE` —
