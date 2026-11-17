@@ -13,3 +13,7 @@ include("services:device-collector-service")
 findProject(":services:device-collector-service")?.name = "device-collector-service"
 // Реестр устройств: приём DeviceInfo из Kafka и запись через ShardingSphere-Proxy
 include("services:device-collector-service")
+// Клиент device-service: DevicesApi и DTO из OpenAPI-контракта, публикуется в Nexus
+include("services:device-service-client")
+// Точка входа CRUD и чтения устройств: команды - в Kafka, чтение - из модели чтения
+include("services:device-service")
