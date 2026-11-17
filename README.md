@@ -1,15 +1,18 @@
-# IoT Platform — events-collector-service и device-collector-service
+# IoT Platform — events-collector-service, device-collector-service и device-service
 
 Учебная микросервисная платформа сбора телеметрии IoT-устройств. Два сервиса:
 
 * **events-collector-service** (ECS) — приём событий из Kafka, хранение в ClickHouse и публикация данных
   устройств в тему `devices` через outbox;
 * **device-collector-service** (DCS) — реестр устройств: читает `devices` и пишет в шардированный PostgreSQL
-  через ShardingSphere-Proxy (два шарда, у каждого шарда реплика только для чтения).
+  через ShardingSphere-Proxy (два шарда, у каждого шарда реплика только для чтения);
+* **device-service** (DS) — REST-API управления устройствами: `GET/POST/PUT/DELETE /api/v1/devices`; запись — командой
+  в `devices` (202 после подтверждения Kafka), чтение — из Redis и реплик шардов; доступ — сервисные токены Keycloak.
 
 Где что искать: **порядок запуска** — раздел 10; **как проверить, на какой шард попал `deviceId`** — раздел 21;
-реестр устройств — раздел 19; шарды, Proxy, миграции, реплики и резервные копии — раздел 20; наблюдаемость и
-снимки экрана — раздел 16; диаграммы — раздел 17; критерии приёмки — `docs/definition-of-done.md`.
+реестр устройств — раздел 19; API устройств (device-service) — раздел 22; шарды, Proxy, миграции, реплики и резервные
+копии — раздел 20; наблюдаемость и снимки экрана — раздел 16; диаграммы — раздел 17; критерии приёмки —
+`docs/definition-of-done.md`.
 
 ---
 
@@ -22,7 +25,7 @@
 3. сохраняет каждое событие в ClickHouse (`iot_platform.device_events`), вместе со снимком устройства;
 4. создаёт outbox-запись (`iot_platform.device_outbox`) — намерение опубликовать устройство;
 5. подтверждает offset **только после** записи в обе таблицы;
-6. фоновой задачей публикует `DeviceInfo` в compacted-тему `devices` — только если устройство новое или
+6. фоновой задачей публикует `DeviceInfo` в тему `devices` — только если устройство новое или
    изменились его данные (отпечаток SHA-256 в Redis); один активный публикатор через Redis-аренду;
 7. отдаёт метрики Prometheus, JSON-логи и трассировки OTLP.
 
@@ -144,7 +147,8 @@ iot-platform/
 ├── diagrams/                          # все диаграммы - Mermaid (раздел 17)
 │   ├── context.mmd, containers.mmd    # контекст и контейнеры платформы
 │   ├── component-events-collector.mmd, sequence-ingest.mmd, sequence-outbox-publish.mmd   # ECS
-│   └── component-device-collector.mmd, dcs-{success,duplicate,error}-sequence.mmd         # DCS
+│   ├── component-device-collector.mmd, dcs-{success,duplicate,error}-sequence.mmd         # DCS
+│   └── component-device-service.mmd, ds-{read,write,cache-consistency}-sequence.mmd       # DS (раздел 22)
 ├── docs/
 │   ├── definition-of-done.md          # критерии приёмки со ссылками на файлы и тесты
 │   └── screenshots/                   # снимки экрана Grafana и трейсов Tempo (раздел 16)
@@ -175,6 +179,8 @@ iot-platform/
 │   ├── scripts/check-local.sh         # быстрая проверка стенда
 │   └── src/{main,test}/...
 ├── services/device-collector-service/ # реестр устройств (раздел 19): Dockerfile, build.gradle.kts, scripts/quick-check.sh, src/{main,test}/...
+├── services/device-service/           # API устройств (раздел 22): Dockerfile, build.gradle.kts, scripts/quick-check.sh, src/{main,test}/...
+├── services/device-service-client/     # клиент API: OpenAPI-контракт src/main/openapi/device-service.yaml; DTO и интерфейсы генерируются при сборке, в Git не попадают; scripts/publish.sh
 ├── services/db-migrator/              # Flyway: миграции db/migration/devices (V1, V2...) применяются к каждому шарду (раздел 20)
 ├── settings.gradle.kts, gradlew       # корень сборки: include("services:events-collector-service", "services:device-collector-service", "services:db-migrator", "avros")
 ├── gradle.properties                  # nexusUrl - адрес Nexus для обоих Gradle-проектов
@@ -190,7 +196,7 @@ iot-platform/
 |---|---|
 | `infrastructure/compose.yaml` (раздел 14) | `infrastructure/docker-compose.yaml` (как в разделе 22) |
 | `infrastructure/kafka/init-topics.sh` | `infrastructure/init/kafka/init-topics.sh` |
-| `infrastructure/clickhouse/init/01-create-database.sql`, `02-device-events.sql`, `03-device-outbox.sql` | `infrastructure/init/clickhouse/01-schema.sh` — тот же DDL из раздела 8 одним скриптом; имя базы — из `CLICKHOUSE_DB` (по умолчанию `iot_platform`); в `device_outbox` по согласованию с преподавателем добавлены `trace_id` и `span_id` для сквозного трейса |
+| `infrastructure/clickhouse/init/01-create-database.sql`, `02-device-events.sql`, `03-device-outbox.sql` | `infrastructure/init/clickhouse/01-schema.sh` — тот же DDL из раздела 8 одним скриптом; имя базы — из `CLICKHOUSE_DATABASE` (по умолчанию `iot_platform`); в `device_outbox` по согласованию с преподавателем добавлены `trace_id` и `span_id` для сквозного трейса |
 | `infrastructure/{prometheus,grafana,loki,tempo,alloy}/...` | `infrastructure/config/{prometheus,grafana,loki,tempo,alloy}/...` |
 | `infrastructure/postgres/...` | шарды, Proxy и скрипты резервного копирования — `infrastructure/init/shards/`, `infrastructure/config/{shardingsphere,postgres}/` |
 | `services/events-collector-service/settings.gradle.kts`, свой `gradlew` | многомодульная сборка: `settings.gradle.kts` и `gradlew` в корне |
@@ -221,13 +227,18 @@ iot-platform/
 | Тема | Назначение | Ключ | cleanup.policy | Разделы | RF |
 |---|---|---|---|---|---|
 | `events` | сырой поток событий устройств | `deviceId` | `delete` | 3 | 1 |
-| `devices` | производный поток обнаруженных устройств | `deviceId` | `compact` | 3 | 1 |
+| `devices` | `DeviceInfo`: данные устройства от events-collector-service (`operation` не задан) и команды CREATE / UPDATE / DELETE от device-service | `deviceId` | `delete` (`retention.ms` = `KAFKA_DEVICES_RETENTION_MS`, 30 суток) | 3 | 1 |
 | `events-dlt` | отложенные сообщения `events`: невалидные и не записанные в ClickHouse за `EVENTS_MAX_ATTEMPTS` попыток (раздел — тот же, что у исходного) | `deviceId` | `delete` | 3 | 1 |
 | `devices-dlt` | отложенные сообщения `devices`: невалидные и не записанные в PostgreSQL за `DEVICES_MAX_ATTEMPTS` попыток (device-collector-service) | `deviceId` | `delete` | 3 | 1 |
 
 * Ключ `deviceId` обязателен: события одного устройства попадают в один раздел и читаются по порядку.
-  Для compacted-темы сообщение без ключа брокер отклонит.
-* Compaction оставляет последнее значение по ключу, но не заменяет идемпотентность потребителей.
+* Тема `devices` не сжимается (ADR-0011). Сжатие оставляло на ключ последнее сообщение и стирало порядок: команда
+  `DELETE`, за которой пришёл снимок роутера, исчезала, и отставший или перечитывающий обработчик возвращал удалённое
+  устройство. С политикой `delete` сообщения ключа лежат целиком и по порядку, пока не выйдут за срок хранения.
+* `cleanup.policy=delete` и `retention.ms` темы `devices` задаёт `kafka-init` при каждом запуске
+  (`kafka-configs --alter`, настройка `min.compaction.lag.ms` снимается), поэтому и на уже созданной теме политика
+  исправляется. Копия шардов старше срока хранения — предупреждение `shard-restore.sh`.
+* Хранение не заменяет идемпотентность потребителей: повторная доставка и повторное чтение темы дают тот же результат.
 * Темы создаёт одноразовый контейнер `kafka-init` скриптом `infrastructure/init/kafka/init-topics.sh`
   после `kafka: service_healthy`; оба сервиса стартуют только после `kafka-init: service_completed_successfully`.
   Имена тем — переменные `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`, `KAFKA_EVENTS_DLT_TOPIC`, `KAFKA_DEVICES_DLT_TOPIC`.
@@ -238,17 +249,18 @@ iot-platform/
 | Файл | Запись | Поля |
 |---|---|---|
 | `avros/avro/device-event.avsc` | `DeviceEvent` | `eventId`, `deviceId`, `timestampMs` (Unix ms), `eventType`; необязательные, `default: null`: `device` (`DeviceSnapshot`), `sourceSystem`, `payload` |
-| `avros/avro/device-info.avsc` | `DeviceInfo` | `deviceId`, `emittedAtMs` (время публикации); `eventType` (`DeviceUpsertEventType`, `default: SNAPSHOT`); необязательные: `eventId`, `eventTimeMs`, `device` (`DeviceSnapshot`) |
+| `avros/avro/device-info.avsc` | `DeviceInfo` | `deviceId`, `emittedAtMs` (время публикации); `eventType` (`DeviceUpsertEventType`, `default: SNAPSHOT`); необязательные: `eventId`, `eventTimeMs`, `device` (`DeviceSnapshot`), `operation` (`OperationType`, с 1.3.0; `null` по умолчанию) |
 | `avros/avro/device-snapshot.avsc` | `DeviceSnapshot` | данные устройства: `deviceId`, `tenantId`, `deviceType`, `status` (`DeviceStatus`), `settings`, `sensors`, `attributes`; необязательные: `ownerId`, `serialNumber`, `manufacturer`, `model`, `firmwareVersion`, `name`, `osName`, `osVersion`, `registeredAtMs`, `lastSeenAtMs` |
 
 Версии: `1.0.0` — схемы приёма событий; `1.1.0` — снимок устройства (`DeviceSnapshot`, блок `device` в `DeviceEvent`
-и `DeviceInfo`); `1.2.0` — имя, операционная система и её версия (`name`, `osName`, `osVersion`). Новые поля
+и `DeviceInfo`); `1.2.0` — имя, операционная система и её версия (`name`, `osName`, `osVersion`); `1.3.0` — `operation` в `DeviceInfo`
+(`CREATE` / `UPDATE` / `DELETE` от device-service; `null` у событий роутера). Новые поля
 необязательные и со значением по умолчанию, существующие не удалялись и не переименовывались: сообщение предыдущей
 версии читается новой схемой и наоборот (в сервисах это проверяет `ContractCompatibilityTest`).
 
 Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `SpecificRecord` сервис получает зависимостью
 `com.github.gluhov.iotplatform:avros:<avrosVersion>` из Nexus (`avrosVersion` — в
-`services/*/build.gradle.kts`, сейчас `1.2.0` в обоих сервисах — явная версия, без `+` и диапазонов); сервис классы
+`services/*/build.gradle.kts`, сейчас `1.3.0` во всех трёх сервисах — явная версия, без `+` и диапазонов); сервис классы
 не генерирует.
 `stringType = String`: иначе поля были бы `CharSequence`, при чтении приходил бы `org.apache.avro.util.Utf8`
 и `equals` со строкой ломался бы.
@@ -261,7 +273,7 @@ Namespace — `com.github.gluhov.iotplatform.events.avro`. Классы `Specifi
 дальше они лежат в кеше Gradle.
 
 Схемы собирает отдельный Gradle-проект `:avros` — библиотека
-`com.github.gluhov.iotplatform:avros` (версия в `avros/build.gradle.kts`, сейчас `1.2.0`):
+`com.github.gluhov.iotplatform:avros` (версия в `avros/build.gradle.kts`, сейчас `1.3.0`):
 
 * классы генерируются одним `SchemaParser` на все файлы — схема может ссылаться на тип из другого файла
   по имени, а повторное объявление одного полного имени (например, двух `DeviceInfo`) роняет сборку;
@@ -450,6 +462,11 @@ docker compose -f infrastructure/docker-compose.yaml exec clickhouse bash /docke
 | `devices:published` | Set | `deviceId`, для которых `DeviceInfo` уже отправлен в Kafka |
 | `devices:snapshot-at` | Hash | `deviceId` → время исходного события последнего опубликованного снимка (мс Unix) |
 | `devices:fingerprint` | Hash | `deviceId` → отпечаток опубликованных данных устройства (SHA-256, 64 символа hex) |
+| `device:v1:{deviceId}` | Hash | кэш карточки устройства для device-service: `body`, `version`; TTL — `DEVICE_CACHE_TTL` (раздел 22) |
+| `device:v1:floor:{deviceId}` | String | нижняя граница версии для записи в кэш: пишет device-collector-service после `COMMIT`, удаляет device-service, записав версию не ниже порога; TTL — `DEVICE_CACHE_FLOOR_TTL` (больше `DEVICE_CACHE_TTL`, ADR-0003) |
+
+Redis работает через Sentinel (ADR-0008): адрес основного узла клиенты получают у Sentinel (`REDIS_SENTINEL_MASTER`,
+`REDIS_SENTINEL_NODES`). Ключи `device:v1:*` пишут device-service и device-collector-service; ключи аренды и отметки публикации — только events-collector-service.
 
 * Захват: `SET outbox:lease <ownerToken> NX PX <OUTBOX_LEASE_TTL_MS>`. Не получили — итерация пропускается.
 * Продление — Lua-скрипт: `PEXPIRE outbox:lease <OUTBOX_LEASE_TTL_MS>`, только если значение совпадает с токеном.
@@ -517,7 +534,7 @@ cp .env.example .env          # при необходимости поменяй
 
 # базовый стенд: nexus, nexus-init, avros-publish, schema-register, kafka, kafka-init, schema-registry, clickhouse, redis,
 # events-collector-service; шарды PostgreSQL и их реплики, shard-replication-init, db-migrator, shardingsphere-proxy,
-# device-collector-service
+# device-collector-service; keycloak, redis + redis-sentinel-1..3, redis-replica, device-service ×2 (раздел 22)
 docker compose -f infrastructure/docker-compose.yaml up -d
 
 # со стеком наблюдаемости: + prometheus, grafana, loki, tempo, alloy, kafka-exporter, postgres-exporter шардов и реплик
@@ -537,9 +554,10 @@ make down                     # остановить (тома сохраняю�
 make clean                    # остановить и удалить тома
 ```
 
-Профиль `platform` — окружение платформы (Postgres, Keycloak, Camunda, MinIO), ни одним из двух сервисов не
-используется. Если поднят только `observability`, в Prometheus таргеты `minio`, `keycloak` и `postgres` будут `DOWN`
-(`no such host`) — так и должно быть: их сервисы входят в `platform`.
+Профиль `platform` — окружение платформы (Postgres, Camunda, MinIO, postgres-exporter), ни одним из сервисов не
+используется. Keycloak входит в базовый стенд: без него device-service не принимает запросы. Если поднят только
+`observability`, в Prometheus таргеты `minio` и `postgres` будут `DOWN` (`no such host`) — так и должно быть: их
+сервисы входят в `platform`.
 
 **Порядок старта.** Каждый шаг ждёт *успешного завершения* предыдущего (`service_completed_successfully` для
 одноразовых задач, `service_healthy` для постоянных сервисов), а не просто запуска контейнера:
@@ -553,6 +571,8 @@ make clean                    # остановить и удалить тома
 | 5 | `shardingsphere-proxy` | `db-migrator` завершён | логическая база `devices` поверх двух шардов |
 | 6 | `device-collector-service` | `kafka-init`, `schema-register` завершены; `schema-registry`, `shardingsphere-proxy` — `service_healthy` | реестр устройств |
 | 6 | `events-collector-service` | `kafka-init`, `clickhouse-init`, `schema-register` завершены; `schema-registry`, `redis` — `service_healthy` | приём событий |
+| 6 | `device-service` ×2 | `schema-register`, `kafka-init` завершены; `keycloak`, `redis`, `redis-sentinel-1..3`, `shardingsphere-proxy` — `service_healthy` | API устройств (раздел 22) |
+| — | `redis` → `redis-replica` → `redis-sentinel-1..3`; `keycloak` | не зависят от шардов | Redis с Sentinel (ADR-0008) и Keycloak с realm `iot-platform` (импорт при старте) |
 
 Параллельно: `shard-replication-init` (роли `replicator` и `exporter`, слоты репликации; ждёт оба шарда) →
 реплики `postgres-shard-N-replica`. Образов с тегом `latest` нет, секретов в репозитории нет — пароли и версии
@@ -644,10 +664,11 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ```bash
 ./gradlew :services:events-collector-service:test     # или make test; Docker не нужен
 ./gradlew :services:device-collector-service:test     # или make dcs-test
+./gradlew :services:device-service:test                # или make ds-test
 ./gradlew :services:db-migrator:test
 ```
 
-events-collector-service — 121 тест, device-collector-service — 93 (раздел 19.8), db-migrator — 2 (по последнему прогону).
+events-collector-service — 132 теста, device-collector-service — 126 (раздел 19.8), device-service — 84 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
 Сообщения журнала проверяются через `support/LogCapture` (Logback `ListAppender` со снимком MDC на момент записи).
 Ключевые сценарии events-collector-service:
 
@@ -682,12 +703,13 @@ events-collector-service — 121 тест, device-collector-service — 93 (ра
 
 ```bash
 ./gradlew :services:events-collector-service:integrationTest   # или make integration-test; нужен запущенный Docker
-./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 65 % (make coverage)
+./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 70 % (make coverage)
 ./gradlew :services:device-collector-service:integrationTest   # или make dcs-it (раздел 19.8)
 ./gradlew :services:device-collector-service:check             # порог покрытия 70 % (make dcs-coverage)
+./gradlew :services:device-service:integrationTest              # или make ds-it (Testcontainers, 39 тестов)
 ```
 
-Классы `It*Test` events-collector-service (23 теста). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
+Классы `It*Test` events-collector-service (33 теста). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
 (`config/*TestContainerConfig`, базовый класс `it/AbstractItTest`), заранее запущенный compose не нужен.
 Используются те же `infrastructure/init/clickhouse/01-schema.sh` и `infrastructure/init/kafka/init-topics.sh`,
 что и на стенде.
@@ -709,7 +731,7 @@ events-collector-service — 121 тест, device-collector-service — 93 (ра
   продление своей аренды, отказ продлить чужую или истёкшую; `LeaseGuard` удерживает аренду дольше TTL и замечает,
   что её взял другой экземпляр.
 
-Покрытие строк (JaCoCo, unit + integration): порог 65 % у events-collector-service и 70 % у device-collector-service
+Покрытие строк (JaCoCo, unit + integration): порог 70 % у events-collector-service, device-collector-service и device-service
 (`check` падает ниже порога); отчёт —
 `services/<сервис>/build/reports/jacoco/test/html/index.html`.
 Avro-классы приходят из `avros` и в отчёт не входят; код Lombok исключён из отчёта.
@@ -720,8 +742,8 @@ Avro-классы приходят из `avros` и в отчёт не входя
 |---|---|
 | Health | http://localhost:&lt;порт&gt;/actuator/health |
 | Метрики | http://localhost:&lt;порт&gt;/actuator/prometheus |
-| Grafana | http://localhost:3000 → папка «IoT Platform»: «events-collector-service», «device-collector-service», «Proxy и шарды реестра устройств», «Kafka», «PostgreSQL» (платформенный) |
-| Prometheus | http://localhost:9090 → Status → Targets: jobs `events-collector-service`, `device-collector-service`, `shardingsphere-proxy`, `postgres-shards` (шарды и их реплики), `kafka` |
+| Grafana | http://localhost:3000 → папка «IoT Platform»: «events-collector-service», «device-collector-service», «device-service», «Proxy и шарды реестра устройств», «Kafka», «PostgreSQL» (платформенный) |
+| Prometheus | http://localhost:9090 → Status → Targets: jobs `events-collector-service`, `device-collector-service`, `device-service`, `shardingsphere-proxy`, `postgres-shards` (шарды и их реплики), `kafka` |
 | Loki | Grafana → Explore → Loki: `{service="events-collector-service"} \| json`, `{service="device-collector-service", shard="shard_0"} \| json` |
 | Tempo | Grafana → Explore → Tempo: `{name="events process"}` (приём), `{name="publish devices"}` (публикация), `{name="devices process"}` (device-collector-service) |
 | Kafka UI | http://localhost:8090 (профиль `tools`): темы, сообщения Avro как JSON, лаг consumer group, схемы |
@@ -752,6 +774,11 @@ Avro-классы приходят из `avros` и в отчёт не входя
 время обработки `devices_processing_seconds_*`; запись в шард — `devices_db_write_seconds_*` и транзакции с меткой
 `shard`; ошибки — `devices_processing_errors_total`, `devices_shard_route_fail_total`; а также стандартные JVM,
 HikariCP (`sharding-proxy`) и лаг consumer group из kafka-exporter.
+
+**Метрики device-service** (job `device-service`, конфигурация — `infrastructure/config/prometheus/prometheus.yml`, дашборд «IoT Platform — device-service» — `infrastructure/config/grafana/dashboards/device-service.json`):
+Prometheus забирает management-порт 8081 внутри сети Compose (`DEVICE_SERVICE_MANAGEMENT_PORT`); порт на хост не публикуется,
+а основной порт не отдаёт `/actuator` (раздел 22.1). Метрики: `device_commands_*` (команды: принято, отклонено, время публикации в Kafka)
+и `device_cache_*` (исходы чтения, доля попаданий), HTTP-метрики Spring; в метках нет `deviceId`.
 
 **Метрики ShardingSphere-Proxy** — агент метрик входит в образ Proxy 5.5.3 и включается переменной
 `PROXY_AGENT_ENABLED=true` (параметр запуска `-g`, конфигурация — `infrastructure/config/shardingsphere-agent/agent.yaml`);
@@ -826,6 +853,14 @@ metadata (не метки, чтобы не раздувать индекс). С�
 | `grafana-kafka.png` | дашборд «Kafka»: темы и лаг consumer group |
 | `tempo-trace-events-to-postgres.png` | сквозной трейс одного события: `events process` … `devices send` (events-collector-service) → `devices process` … `insert devices` (device-collector-service) |
 
+Снимки экрана device-service (модуль 4):
+
+| Файл | Что |
+|---|---|
+| `grafana-device-service.png` | дашборд device-service: запросы по статусам, отказы 401/403/5xx, задержки p95/p99, команды по операциям, публикация в Kafka, исходы кэша и доля попаданий |
+| `grafana-device-collector-m4.png` | дашборд device-collector-service после модуля 4: добавлены исход `ignored` и сброс кэша устройства |
+| `tempo-trace-device-service.png` | сквозной трейс одного PUT: `http put /api/v1/devices/{deviceId}` и проверка токена (device-service) → `devices send` → `devices process`, `select device for update`, `insert processed_device_events`, `update devices: command`, `evalsha` сброса кэша (device-collector-service) |
+
 Снимать при идущей нагрузке (например, несколько раз `make check-local`), иначе панели без трафика пусты.
 
 ## 17. Диаграммы
@@ -841,7 +876,10 @@ metadata (не метки, чтобы не раздувать индекс). С�
   * `diagrams/dcs-success-sequence.mmd` — новое событие устройства;
   * `diagrams/dcs-duplicate-sequence.mmd` — повторная доставка и устаревшее событие;
   * `diagrams/dcs-error-sequence.mmd` — невалидное сообщение, недоступный шард, DLT;
+  * `diagrams/dcs-operations-sequence.mmd` — команды CREATE / UPDATE / DELETE и события роутера (ADR-0005);
   * PNG последовательностей — `diagrams/dcs-*.png` (рендер mermaid-cli);
+* device-service (раздел 22): `diagrams/component-device-service.mmd`, `diagrams/ds-read-sequence.mmd`,
+  `diagrams/ds-write-sequence.mmd`, `diagrams/ds-cache-consistency-sequence.mmd`; PNG рядом с каждым `.mmd`.
 
 GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин Mermaid; также можно вставить на https://mermaid.live.
 
@@ -853,7 +891,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | `nexus-init` завершился с кодом 1 | `make logs S=nexus-init`. «работает только после принятия EULA» — решение о `NEXUS_ACCEPT_EULA=true` в `.env` за вами; «NEXUS_ADMIN_PASSWORD из .env не подходит» — пароль `admin` уже сменён при первом запуске, верните прежнее значение в `.env` или удалите том `nexus-data` (артефакты Nexus будут потеряны) |
 | сборка: `Could not resolve com.github.gluhov.iotplatform:avros` | Nexus не поднят или в нём нет версии: `make nexus-up && make avros-up` (для старой версии — `make avros-bootstrap`); другой порт Nexus — `-PnexusUrl=http://localhost:<NEXUS_PORT>`. В `docker build` — `Connection refused` к `host.docker.internal`: Nexus не поднят на хосте или сборка запущена без `extra_hosts` (собирайте через compose или `--add-host host.docker.internal:host-gateway`) |
 | `make avros-release` / `avros-check` с ошибкой | «Nexus не готов к записи (HTTP 000)» или «Nexus недоступен» — `make nexus-up`, `make health`; «незакоммиченные изменения» — релиз собирается только из коммита, закоммитьте `avros/` (или используйте `-SNAPSHOT`); «тег … уже есть» — версия выпущена, поднимите `version`; «в теге … version = …» — тег поставлен не на тот коммит, перенесите его (`git tag -d`, затем `git tag -a`); «Версия … уже опубликована» — поднимите `version` в `avros/build.gradle.kts`; «должна быть больше последней выпущенной» — версия ниже релиза; «Схемы несовместимы» — в перечне запись, направление (`BACKWARD`/`FORWARD`) и поле: добавьте `default` или поднимите старшую версию; «Схемы несовместимы с зарегистрированными в Schema Registry» — то же для subject и версии в Schema Registry (проверка перед загрузкой в Nexus: ничего не опубликовано), посмотреть зарегистрированное — `make schemas`; «Schema Registry недоступна» / «Не задан -PschemaRegistryUrl» — `make registry-up`, прямой `./gradlew :avros:publish` без `-PschemaRegistryUrl`/`-PschemaSubjects` не работает; `401 Unauthorized` при PUT — пароль публикатора в Nexus не совпадает с `.env`, перезапустите `nexus-init` (`make nexus-up`) |
-| Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы — исправить `kafka-configs.sh --alter` или `make kafka-reset` |
+| Kafka-темы не создались | `docker compose -f infrastructure/docker-compose.yaml logs kafka-init` (код выхода — `make health`); скрипт `infrastructure/init/kafka/init-topics.sh` должен быть исполняемым; `make topics` — есть ли `events`/`devices` и `cleanup.policy`. `--if-not-exists` не меняет настройки существующей темы. Для `devices` политику `delete` и `retention.ms` `kafka-init` выставляет при каждом запуске; остальные настройки — `kafka-configs.sh --alter` или `make kafka-reset` (удалит данные Kafka) |
 | ClickHouse недоступен | `make health` — healthcheck ждёт таблицу `device_outbox` в базе `CLICKHOUSE_DB`; порт HTTP `8123` (native на хосте — `9010`); `CLICKHOUSE_DATABASE=iot_platform`; `01-schema.sh` выполняется только на пустом томе — после его правки `make clean && make up` |
 | outbox не публикуется | `make redis-cli` → `GET outbox:lease`, `PTTL outbox:lease` (кто держит аренду); метрика `outbox_pending_count` растёт; `outbox_publish_fail_total` и логи со `status=FAILED` (`last_error` в `device_outbox`); записи с `attempts >= OUTBOX_MAX_ATTEMPTS` больше не выбираются |
 | аренда не освобождается или пачка останавливается | аренду продлевает фоновый поток каждые `OUTBOX_LEASE_TTL_MS / 3` и проверки перед каждой записью; «Outbox lease lost» в логе — продлить не удалось (Redis недоступен, процесс замер дольше TTL, ключ удалён вручную): пачка остановлена, записи выберет следующая итерация; «Outbox lease expired before the iteration finished» без «lease lost» — TTL слишком мал для периода продления; значение ключа — токен владельца, Lua-скрипты продлевают и удаляют ключ только при совпадении токена; после падения экземпляра аренда исчезнет сама через TTL |
@@ -892,10 +930,23 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 5. адресов шардов не знает: один datasource — логическая база `devices` в Proxy (`DEVICES_DB_URL`); какой шард выполнил
    запрос, видно из `RETURNING current_database()`.
 
+Тема `devices` несёт и события роутера (поле `operation` не задано), и команды device-service (`CREATE`, `UPDATE`,
+`DELETE`; ADR-0002, ADR-0005). Команда администратора применяется по `managed_at` и `deleted_at`; событие роутера
+не воскрешает устройство, удалённое администратором, и не перезаписывает поля, заданные администратором.
+После `COMMIT` сервис сбрасывает кэш device-service в Redis: `floor = max(floor, version)` в отдельном ключе
+`device:v1:floor:{deviceId}`, старые данные из кэша удаляются (Lua, `raise-floor.lua`). Порог живёт дольше кэша
+(`DEVICE_CACHE_FLOOR_TTL`): в одном ключе с ответом он истекал вместе с ним, и отставание реплики дольше
+`DEVICE_CACHE_TTL` снова возвращало старые данные (ADR-0003). Известное ограничение: если отставание переживёт и
+`DEVICE_CACHE_FLOOR_TTL`, старая версия может лечь в кэш ещё на один `DEVICE_CACHE_TTL` — срок выбирается больше
+худшего ожидаемого отставания. Ошибка Redis не задерживает offset: пишется WARN и
+`devices_cache_invalidations_total{result=error}`.
+Схема потоков — `diagrams/dcs-operations-sequence.mmd`.
+
 **Идемпотентность.** Исход события определяется состоянием строки: повторная доставка того же `eventId` (журнал вернул
 0 строк) — `DUPLICATE`, ничего не меняется и `seen_count` не растёт; событие со снимком старше последнего применённого
 (`last_state_at`) — `STALE`: только `seen_count + 1`, более старое сообщение не перезаписывает более новое; иначе —
-`APPLIED`. Снимок регистрации, пришедший после более поздней телеметрии, применяется. События одного устройства
+`APPLIED`; `IGNORED` — команда по удалённому устройству, событие роутера для устройства, удалённого администратором, или событие
+роутера `DELETE` без снимка для управляемого устройства (учитывается в `seen_count`, состояние не меняется). Снимок регистрации, пришедший после более поздней телеметрии, применяется. События одного устройства
 обрабатываются строго по очереди (`FOR UPDATE`, ключ `deviceId` в теме).
 
 ### 19.2 Ошибки и DLT
@@ -930,6 +981,8 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | `DEVICES_DB_POOL_SIZE` | размер пула соединений с Proxy | `5` |
 | `DEVICES_DB_CONNECTION_TIMEOUT_MS` | сколько ждать свободное соединение из пула, мс | `2000` |
 | `DEVICES_DLT_MAX_BLOCK_MS`, `DEVICES_DLT_REQUEST_TIMEOUT_MS`, `DEVICES_DLT_DELIVERY_TIMEOUT_MS` | продюсер `devices-dlt`: блокировка при отправке, ответ брокера, общий срок доставки, мс | `5000`, `5000`, `15000` |
+| `REDIS_TIMEOUT`, `REDIS_PASSWORD`, `REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES` | Redis через Sentinel: тайм-аут команд, пароль узлов, имя основного узла и узлы Sentinel (профиль `docker`) | `2s`; задаёт compose / `.env` |
+| `DEVICE_CACHE_FLOOR_TTL` | срок ключа порога `device:v1:floor:{deviceId}`; тот же срок задаёт device-service | `24h` |
 | `APP_INSTANCE_ID` | `instanceId` в метриках и логах | hostname |
 | `MANAGEMENT_OTLP_ENDPOINT` | OTLP-экспорт трейсов | `http://alloy:4320/v1/traces` в compose |
 
@@ -954,8 +1007,9 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 Схема одинакова на каждом шарде (миграции db-migrator, раздел 20); шардируются по `device_id`:
 
 * `devices` — текущее состояние устройства: последний применённый снимок (имя, ОС и её версия, прошивка, статус,
-  настройки, атрибуты, сенсоры), `seen_count`, `first_seen_at`, `last_event_at`, `last_state_at`, мягкое удаление `deleted_at`;
-* `processed_device_events` — журнал обработанных событий `(device_id, event_key)` с исходом (`APPLIED`/`STALE`) и
+  настройки, атрибуты, сенсоры), `seen_count`, `first_seen_at`, `last_event_at`, `last_state_at`, мягкое удаление `deleted_at`, `version` (растёт при каждом изменении; по нему сбрасывается кэш), `managed_at` (время
+  последней команды администратора), `deleted_by` (`ADMIN` у удаления администратором) — миграция `V3__device_management.sql`;
+* `processed_device_events` — журнал обработанных событий `(device_id, event_key)` с исходом (`APPLIED`, `STALE`, `IGNORED`) и
   положением в Kafka (тема, раздел, offset): защита от повторной доставки. Журнал и устройство лежат на одном шарде
   (связанные таблицы Proxy), транзакция не распределённая.
 
@@ -972,7 +1026,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 `DeviceRepository`, `TransactionRunner`, `ShardResolver`, `DeviceMetrics`), `domain.service` (`DeviceRegistryService`,
 `DeviceInfoValidator`, `DeviceInfoMapper`, `DeviceQueryService`), `adapter.in.kafka` (`DeviceInfoListener`),
 `adapter.in.web` (`DeviceController`), `adapter.out.postgres` (`JdbcDeviceRepository`, `JdbcTransactionRunner`,
-`ProxyShardResolver`), `config` (`KafkaConfig` — ошибки и DLT, `KafkaErrorClassifier`, `ProcessingProperties`,
+`ProxyShardResolver`), `adapter.out.redis` (`RedisDeviceCacheInvalidator`, Lua `raise-floor.lua`; порт `DeviceCacheInvalidator`), `config` (`KafkaConfig` — ошибки и DLT, `KafkaErrorClassifier`, `ProcessingProperties`,
 `ObservationConfig`), `support` (`MetricsFacade`). Домен не зависит от Kafka и JDBC (`ArchitectureTest`).
 
 ### 19.7 Миграций в сервисе нет
@@ -981,12 +1035,12 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 
 ### 19.8 Тесты
 
-* Unit (93): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
+* Unit (126): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
   `DeviceInfoMapperTest`, `DeviceInfoListenerTest` (ack только после записи, отправка в DLT), `KafkaConfigTest` (невалидное —
   сразу в `devices-dlt`; сбой хранилища — повторы и DLT; ошибка записи в DLT — не подтверждено; паузы 1 с и 2 с),
   `KafkaErrorClassifierTest`, `JdbcTransactionRunnerTest`, `ProxyShardResolverTest`, `SqlErrorsTest`,
   `ContractCompatibilityTest`, `DeviceControllerTest`, `MetricsFacadeTest`, `ArchitectureTest`.
-* Интеграционные (10, Testcontainers — Kafka, Schema Registry, **два контейнера PostgreSQL и ShardingSphere-Proxy**,
+* Интеграционные (17, Testcontainers — Kafka, Schema Registry, **два контейнера PostgreSQL и ShardingSphere-Proxy**,
   схема — через db-migrator): `ItDeviceCollectorTest` — устройство сохранено на ожидаемом шарде;
   `givenDeviceInfo_whenConsumed_thenStoredOnItsShard` проверяет **напрямую в шардах**, что запись есть на шарде,
   который вернул Proxy, и её нет на другом; много устройств распределяются по обоим шардам; повторное сообщение не
@@ -1037,7 +1091,9 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 ### 20.3 Реплики шардов
 
 * У каждого шарда есть **реплика только для чтения с потоковой репликацией**: `postgres-shard-0-replica` и
-  `postgres-shard-1-replica`. Чтение на реплики не направляется: в конфигурации Proxy реплик нет.
+  `postgres-shard-1-replica`. Чтение направляется на реплики только у device-service: логическая база `devices_read`
+  в Proxy (`infrastructure/config/shardingsphere/database-devices_read.yaml`) указывает лишь на реплики, а запись идёт через
+  базу `devices` на primary (`database-devices.yaml`), поэтому device-service не обращается к основным узлам шардов (ADR-0004).
 * Роль `replicator` (`LOGIN REPLICATION`, пароль `SHARD_REPLICATION_PASSWORD`) и физический слот `replica_N` на каждом шарде
   создаёт идемпотентная задача `shard-replication-init`; `config/postgres/pg_hba.conf` пускает `replicator` только в
   репликацию, обычный вход этой ролью отклонён. Реплика на первом старте снимает `pg_basebackup` с шарда
@@ -1106,4 +1162,161 @@ done
 
 Через Proxy можно посмотреть и сам реестр: `make proxy-sql SQL="SELECT device_id, seen_count, last_event_type FROM devices LIMIT 5"`.
 
-Окружение платформы (C4, Postgres/Keycloak/Camunda/MinIO) описано в истории Git и в профиле `platform`.
+## 22. device-service (управление устройствами)
+
+REST-API устройств для сервисов-потребителей (например, API Orchestrator). `GET` читает карточку: Redis-кэш, при промахе — реплики шардов через логическую базу `devices_read` в Proxy (ADR-0004). `POST`, `PUT` и `DELETE` не пишут в базу: они публикуют команду `DeviceInfo` (`operation` = `CREATE` / `UPDATE` / `DELETE`) в тему `devices` и отвечают `202` после подтверждения Kafka. Команду применяет device-collector-service (раздел 19), поэтому изменение видно в `GET` не сразу. Принимаются только сервисные токены Keycloak (ADR-0007). Контракт — `services/device-service-client/src/main/openapi/device-service.yaml`; клиент публикуется `make ds-client-release` (необратимо, выполняет человек).
+
+### 22.1 Запуск
+
+device-service входит в базовый стенд вместе с Keycloak (realm `iot-platform` импортируется из `infrastructure/config/keycloak/iot-platform-realm.json`), Redis с Sentinel и двумя экземплярами сервиса:
+
+```bash
+make up                       # с трассами и метриками device-service: make up PROFILES=observability
+make ds-quick-check           # токен, CRUD через REST, данные в реплике за 5 с, 401 без токена
+docker compose --env-file .env -f infrastructure/docker-compose.yaml ps device-service
+```
+
+Порты на хосте берутся из диапазона `DEVICE_SERVICE_PORTS` (по умолчанию `8105-8106`). Порт узнавать командой, не числом; `--index` — номер экземпляра:
+
+```bash
+docker compose --env-file .env -f infrastructure/docker-compose.yaml port --index 1 device-service 8080
+```
+
+`make urls` порт device-service пока не выводит. Management-порт (`DEVICE_SERVICE_MANAGEMENT_PORT`, по умолчанию 8081) отдаёт `/actuator/health` и `/actuator/prometheus` без токена; на хост он не публикуется, доступен из сети Compose (healthcheck и Prometheus). На основном порту actuator не открыт.
+
+### 22.2 Сервисный токен
+
+Токен получают по client credentials. Клиенты realm `iot-platform`:
+
+| Клиент | Секрет (переменная `.env`) | Роли |
+|---|---|---|
+| `device-service-consumer` | `DEVICE_SERVICE_CONSUMER_SECRET` | `devices.read`, `devices.write` |
+| `device-service-reader` | `DEVICE_SERVICE_READER_SECRET` | `devices.read` |
+
+Значения секретов — в вашем `.env` (в `.env.example` стоят заглушки `change_me_*`); в командах и документах их не пишут.
+
+```bash
+set -a; . ./.env; set +a
+KC=http://localhost:${KEYCLOAK_PORT}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token
+TOKEN=$(curl -s -X POST "$KC" -d grant_type=client_credentials -d client_id=device-service-consumer \
+  -d client_secret="${DEVICE_SERVICE_CONSUMER_SECRET}" | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+PORT=$(docker compose --env-file .env -f infrastructure/docker-compose.yaml port --index 1 device-service 8080 | sed 's/.*://')
+API=http://localhost:${PORT}/api/v1/devices
+```
+
+Токен берётся с хоста по `localhost:${KEYCLOAK_PORT}`: `iss` должен совпадать с `KEYCLOAK_ISSUER_URI`. Аудитория — `device-service` (`DEVICE_SERVICE_AUDIENCE`).
+
+### 22.3 Примеры запросов
+
+```bash
+# без токена -> 401
+curl -s -o /dev/null -w '%{http_code}\n' "$API/dev-42"
+
+# POST -> 202, заголовок Location: /api/v1/devices/dev-42; тело: deviceId, operation, commandId, acceptedAt
+curl -s -i -X POST "$API" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"deviceId":"dev-42","tenantId":"t-1","deviceType":"router","status":"ACTIVE","name":"Роутер склада"}'
+
+# GET -> 200 (повторять до 5 с: команда применяется асинхронно; до этого возможен 404)
+curl -s "$API/dev-42" -H "Authorization: Bearer $TOKEN"
+
+# тот же POST ещё раз -> 409 DEVICE_ALREADY_EXISTS
+
+# PUT заменяет поля администратора целиком; tenantId, deviceType, status обязательны -> 202
+curl -s -i -X PUT "$API/dev-42" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"tenantId":"t-1","deviceType":"router","status":"MAINTENANCE","name":"Роутер цеха"}'
+
+# PUT без обязательных полей -> 400 VALIDATION_FAILED, поля перечислены в errors
+
+# DELETE -> 202; после применения GET -> 404 DEVICE_NOT_FOUND
+curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
+```
+
+| Код | Когда | `code` (Problem Details) |
+|---|---|---|
+| 202 | команда принята Kafka (POST, PUT, DELETE); `Location` указывает на ресурс | — |
+| 200 | GET, устройство есть | — |
+| 400 | тело не прошло проверку | `VALIDATION_FAILED` |
+| 401 | нет токена, он недействителен или выдан для другой аудитории | `UNAUTHORIZED` |
+| 403 | пользовательский токен, не сервисный | `SERVICE_TOKEN_REQUIRED` |
+| 403 | сервисный токен без нужной роли (например, `device-service-reader` на POST) | `FORBIDDEN` |
+| 404 | устройства нет или оно удалено | `DEVICE_NOT_FOUND` |
+| 409 | POST для уже существующего устройства | `DEVICE_ALREADY_EXISTS` |
+| 503 | Kafka не подтвердила команду за `DEVICE_COMMAND_SEND_TIMEOUT` (повтор безопасен) | `COMMAND_NOT_ACCEPTED` |
+| 503 | Proxy или реплика шарда недоступны при промахе кэша | `READ_MODEL_UNAVAILABLE` |
+
+### 22.4 Переменные окружения
+
+Добавлены в `.env.example` относительно ветки `module-4-design`. Compose не подставляет значения по умолчанию, кроме двух: `COMPOSE_PROJECT_NAME` (по умолчанию `iot-platform`) и `DEVICE_COLLECTOR_CONSUMER_GROUP` (по умолчанию `device-collector`). Остальные перенесите в свой `.env`, иначе стенд не стартует. Значения-заглушки — в `.env.example`.
+
+| Переменные | Назначение | Где описано |
+|---|---|---|
+| `DEVICE_SERVICE_IMAGE_TAG`, `DEVICE_SERVICE_PORTS` | тег образа; диапазон портов хоста (два экземпляра) | `.env.example`; plan.md, «Переменные окружения» |
+| `DEVICE_SERVICE_MANAGEMENT_PORT` | management-порт (health, prometheus), не публикуется | `.env.example`; литерал в `infrastructure/config/prometheus/prometheus.yml` |
+| `DEVICE_COMMAND_SEND_TIMEOUT` | ожидание подтверждения Kafka при записи | `.env.example`; раздел 22.3 |
+| `DEVICE_CACHE_TTL` | срок кэша карточки устройства в device-service | `.env.example`; раздел 19.3 |
+| `DEVICES_READ_DB_URL`, `DEVICES_READ_DB_USER`, `DEVICES_READ_DB_PASSWORD` | логическая база `devices_read` в Proxy | `.env.example`; ADR-0004 |
+| `DEVICES_READ_DB_POOL_CONNECTION_TIMEOUT_MS`, `DEVICES_READ_DB_INIT_FAIL_TIMEOUT_MS` | тайм-аут получения соединения из пула (мс) и тайм-аут проверки при старте пула (`-1` — не ждать и не падать при старте) | `.env.example` |
+| `SHARD_READER_PASSWORD` | пароль роли `device_reader` на шардах и реплике | `.env.example`; ADR-0004 |
+| `KEYCLOAK_REALM`, `KEYCLOAK_ISSUER_URI`, `KEYCLOAK_JWK_SET_URI` | realm, `iss` токенов и адрес ключей подписи | `.env.example`; ADR-0007 |
+| `DEVICE_SERVICE_AUDIENCE`, `JWT_CLOCK_SKEW` | аудитория токена; допустимое расхождение часов | `.env.example`; ADR-0007 |
+| `KEYCLOAK_JWK_CONNECT_TIMEOUT`, `KEYCLOAK_JWK_READ_TIMEOUT` | тайм-ауты запроса ключей подписи | `.env.example` |
+| `DEVICE_SERVICE_CONSUMER_SECRET`, `DEVICE_SERVICE_READER_SECRET` | секреты клиентов realm | `.env.example` (заглушки); раздел 22.2 |
+| `REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES` | имя основного узла и узлы Sentinel для всех клиентов Redis | `.env.example`; ADR-0008 |
+| `REDIS_MASTER_IP`, `REDIS_REPLICA_IP`, `REDIS_SENTINEL_1_IP`, `REDIS_SENTINEL_2_IP`, `REDIS_SENTINEL_3_IP`, `REDIS_SENTINEL_IPS` | статические адреса узлов Redis и Sentinel в `iot-net` | `.env.example`; ADR-0008; раздел 22.6 |
+| `REDIS_MAXMEMORY` | предел памяти узла Redis (вытеснение только ключей с TTL) | `.env.example`; ADR-0008 |
+| `IOT_NET_SUBNET` | подсеть сети `iot-net` (свободная `/24`) | `.env.example`; раздел 22.6 |
+| `IOT_NET_IP_RANGE` | диапазон динамических адресов контейнеров (верхняя половина подсети: `/25`); статические адреса Redis и Sentinel остаются в нижней | `.env.example` |
+| `KAFKA_DEVICES_RETENTION_MS` | `retention.ms` темы `devices` без сжатия (`2592000000`) | `.env.example`; ADR-0011; раздел 5 |
+| `DEVICE_CACHE_FLOOR_TTL` | срок ключа порога версии в кэше (`24h`, больше `DEVICE_CACHE_TTL`) | `.env.example`; ADR-0003; разделы 11, 19 |
+
+Изменены значения: `KEYCLOAK_VERSION` — `26.0.8`; `SHARD_EXPORTER_PASSWORD` — заглушка с пробелом (ломала DSN экспортёра) заменена на `change_me_exporter`.
+
+Инвариант: `KAFKA_PRODUCER_MAX_BLOCK_MS` ≤ `DEVICE_COMMAND_SEND_TIMEOUT`. Иначе продюсер может ждать метаданные Kafka дольше срока ожидания подтверждения, и `503 COMMAND_NOT_ACCEPTED` придёт позже `DEVICE_COMMAND_SEND_TIMEOUT`. В `.env.example` сейчас `KAFKA_PRODUCER_MAX_BLOCK_MS=5000` и `DEVICE_COMMAND_SEND_TIMEOUT=5s` — инвариант соблюдён.
+
+### 22.5 Цели make
+
+| Цель | Что делает |
+|---|---|
+| `make ds-test` | unit-тесты device-service (Docker не нужен) |
+| `make ds-it` | интеграционные тесты (Testcontainers, нужен Docker) |
+| `make ds-coverage` | все тесты, порог покрытия, HTML-отчёт |
+| `make ds-quick-check` | проверка поднятого стенда (`services/device-service/scripts/quick-check.sh`) |
+| `E2E_NEXUS_ACCEPT_EULA=true ./gradlew :services:device-service:e2eTest` | сквозной тест `ItEndToEndTest`: Testcontainers поднимает полный стенд (проект `iot-e2e`) из общего Compose-файла, затем POST → PUT → DELETE с чтением на другой реплике, изменение видно за ≤ 5 с. В `check` не входит. Перед запуском: `make down` (фиксированные имена и порты), образы собраны (`make up`), нужен JDK 25 и Docker Compose v2; `E2E_NEXUS_ACCEPT_EULA=true` — принятие лицензии одноразового Nexus теста |
+| `make ds-client-check` | сборка и тесты клиента `device-service-client`, без публикации |
+| `make ds-client-release` | публикация клиента в Nexus; необратимо |
+| `make redis-cli` | `redis-cli` к текущему основному узлу (адрес у Sentinel) |
+| `make dcs-quick-check` | проверка device-collector-service (раздел 19.8) |
+
+### 22.6 Эксплуатация Redis и Proxy
+
+* **Redis (ADR-0008).** Основной узел выбирает Sentinel (кворум 2); клиенты узнают его адрес у Sentinel и переподключаются без перезапуска сервисов. Репликация асинхронная: при переключении последние записи могут потеряться — для кэша это промах, для аренды outbox — повторная аренда. После переключения узлы Redis **не пересоздавать**: роль узла при старте он спрашивает у Sentinel (`infrastructure/config/redis/redis-entrypoint.sh`).
+* **Proxy (ADR-0004).** При запуске Proxy подключается ко всем источникам обеих логических баз, поэтому не стартует, если реплика шарда недоступна. Правило эксплуатации: при неисправной реплике **не перезапускать Proxy**; сначала вернуть реплику (`make replication-status`). Пока Proxy работает, остановка реплики не задевает запись; чтение по её шарду даёт `503 READ_MODEL_UNAVAILABLE`.
+* **Сеть `iot-net` (обновление с предыдущей версии).** Подсеть и статические адреса Redis и Sentinel задаёт `IOT_NET_SUBNET`; существующую сеть Compose не пересоздаёт. При первом обновлении:
+
+  ```bash
+  make down                    # останавливает контейнеры всех профилей; тома сохраняются
+  docker network rm iot-net
+  make up
+  ```
+
+  Тома не удаляются. `make clean` и `docker compose down -v` для этого не нужны. Подсеть `IOT_NET_SUBNET` не должна пересекаться с сетями хоста.
+
+### 22.7 Типовые проблемы
+
+| Симптом | Что проверить |
+|---|---|
+| 401 с токеном от `device-service-consumer` | `iss` не совпадает с `KEYCLOAK_ISSUER_URI`: токен брать с хоста по `localhost:${KEYCLOAK_PORT}` (раздел 22.2); срок токена истёк — получить новый |
+| 403 `SERVICE_TOKEN_REQUIRED` | токен пользовательский; нужен client credentials |
+| 403 `FORBIDDEN` на POST / PUT / DELETE | клиент `device-service-reader` — для записи нужен `device-service-consumer` |
+| 503 `COMMAND_NOT_ACCEPTED` | Kafka или Schema Registry не отвечают: `make logs S=device-service`, `make health`; повтор безопасен |
+| 503 `READ_MODEL_UNAVAILABLE` | Proxy или реплика шарда: `make replication-status`, `make logs S=shardingsphere-proxy` |
+| команда не видна в `GET` долго | `make logs S=device-collector-service`; `make dcs-quick-check` |
+| контейнер не `healthy` | `make logs S=device-service`; healthcheck — liveness на management-порту |
+
+Метрики: `device_commands_*` и `device_cache_*` (без `deviceId` в метках) — job `device-service` в Prometheus и дашборд «IoT Platform — device-service» (`infrastructure/config/grafana/dashboards/device-service.json`).
+
+Окружение платформы (C4, Postgres/Camunda/MinIO) описано в истории Git и в профиле `platform`.
+
+### 22.8 Известные ограничения
+
+* **Коды ошибок для 405, 406, 415 и неизвестного пути.** Эти ответы отдаются с кодом `VALIDATION_FAILED`, хотя в контракте для них кода нет. Решение сознательное: контракт OpenAPI не меняется, клиенты получают Problem Details с известным кодом. Если понадобится отдельный код, сначала меняется контракт (и клиент `device-service-client`).

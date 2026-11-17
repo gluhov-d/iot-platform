@@ -5,7 +5,7 @@ sequenceDiagram
     participant L as DeviceInfoListener
     participant S as DeviceRegistryService
     participant P as Proxy devices → шард
-    participant RD as Redis (Sentinel)
+    participant RD as Redis master (адрес от Sentinel)
 
     K->>L: DeviceInfo (по одному, ручной ack)
     L->>S: process(key, DeviceInfo)
@@ -20,15 +20,17 @@ sequenceDiagram
     else operation = CREATE
         S->>P: INSERT или UPDATE полей администратора, managed_at = eventAt,<br/>удаление снимается, version + 1 — APPLIED
     else operation = UPDATE, устройства нет
-        S->>P: INSERT полей администратора (после компакции CREATE мог исчезнуть), version = 1 — APPLIED
+        S->>P: INSERT полей администратора (CREATE мог выйти за срок хранения темы),<br/>managed_at = eventAt, version = 1 — APPLIED
     else operation = UPDATE, устройство удалено
         S->>P: только seen_count — IGNORED
     else operation = UPDATE, устройство есть
         S->>P: UPDATE полей администратора, managed_at = eventAt, version + 1 — APPLIED
     else operation = DELETE
-        S->>P: строка есть — status = DELETED, deleted_at, deleted_by = ADMIN, version + 1<br/>строки нет — INSERT надгробия (DELETED, ADMIN) — APPLIED
+        S->>P: строка есть — status = DELETED, deleted_at, deleted_by = ADMIN,<br/>managed_at = eventAt, version + 1<br/>строки нет — INSERT надгробия (DELETED, ADMIN, managed_at = eventAt) — APPLIED
     else событие роутера (operation = null), deleted_by = ADMIN
         S->>P: только seen_count, last_event_* — IGNORED, устройство не воскресает
+    else событие роутера DELETE без снимка, managed_at не пуст
+        S->>P: только seen_count, last_event_* — IGNORED, удаляет только администратор
     else событие роутера старее last_state_at
         S->>P: UPDATE seen_count — STALE (как раньше)
     else событие роутера, managed_at не пуст
@@ -38,12 +40,12 @@ sequenceDiagram
     end
     P-->>S: RETURNING current_database(), version
     S->>P: COMMIT
-    opt исход APPLIED
-        S->>RD: Lua: floor = max(floor, version), удалить body, если его version < floor
+    opt исход APPLIED или DUPLICATE (после сбоя между COMMIT и сбросом кэша повторная доставка поднимет floor)
+        S->>RD: Lua raise-floor: floor = max(floor, version) в device:v1:floor:{deviceId}<br/>(свой срок DEVICE_CACHE_FLOOR_TTL), удалить body, если его version < floor
         alt Redis недоступен
             S->>S: WARN + devices_cache_invalidations_total{result=error}, обработка не падает
         end
     end
     S-->>L: APPLIED / STALE / IGNORED / DUPLICATE, shard
     L->>K: ack смещения
-    Note over S,P: Время команды сравнивается с managed_at, время события роутера — с last_state_at:<br/>часы устройства не делают команду администратора устаревшей
+    Note over S,P: Каждая применённая команда (CREATE, UPDATE, в том числе создающий запись, и DELETE)<br/>ставит managed_at = eventAt. Время команды сравнивается с managed_at, время события роутера — с last_state_at:<br/>часы устройства не делают команду администратора устаревшей, а запоздавшая команда<br/>(например, CREATE 10:15 после DELETE 10:20) получает STALE и удалённое устройство не возвращает

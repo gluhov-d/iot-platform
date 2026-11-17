@@ -18,15 +18,15 @@ flowchart LR
         end
         subgraph kafka["Kafka · Message Broker"]
             topic_events[/"<b>events</b><br/><i>Kafka topic, delete</i><br/>Сырые события устройств (Avro<br/>DeviceEvent), ключ deviceId"/]
-            topic_device[/"<b>devices</b><br/><i>Kafka topic, compact, min.compaction.lag 7 суток</i><br/>DeviceInfo, ключ deviceId: события роутера<br/>(operation = null) и команды device-service<br/>(operation CREATE / UPDATE / DELETE).<br/>Команда несёт все поля администратора"/]
+            topic_device[/"<b>devices</b><br/><i>Kafka topic, delete, хранение 30 суток</i><br/>DeviceInfo, ключ deviceId: события роутера<br/>(operation = null) и команды device-service<br/>(operation CREATE / UPDATE / DELETE).<br/>Команда несёт все поля администратора.<br/>Хранение вместо сжатия: порядок «команда →<br/>снимок» не теряется (ADR-0011)"/]
             topic_events_dlt[/"<b>events-dlt</b><br/><i>Kafka topic, delete</i><br/>Не Avro / невалидные события и не<br/>записанные в ClickHouse за N попыток"/]
             topic_devices_dlt[/"<b>devices-dlt</b><br/><i>Kafka topic, delete</i><br/>Невалидные DeviceInfo и команды, не<br/>записанные в PostgreSQL после повторов"/]
             topic_dlt[/"<b>iot.dlt</b><br/><i>Kafka topic</i><br/>Отклонённые шлюзом сообщения устройств<br/>(шлюз пока не реализован)"/]
         end
-        schema_registry["<b>Schema Registry</b><br/><i>Confluent</i><br/>Avro-схемы тем, FULL_TRANSITIVE.<br/>Схемы регистрирует только avros-register:<br/>у продюсеров auto.register.schemas=false"]
-        avros["<b>avros</b><br/><i>Проект монорепозитория; одноразовые задачи Compose</i><br/>Все Avro-схемы платформы, 1.3.0: DeviceInfo.operation.<br/>avros-publish: проверка FULL с Nexus и Schema<br/>Registry, публикация. avros-register: регистрация"]
+        schema_registry["<b>Schema Registry</b><br/><i>Confluent</i><br/>Avro-схемы тем, FULL_TRANSITIVE.<br/>Схемы регистрирует только schema-register:<br/>у продюсеров auto.register.schemas=false"]
+        avros["<b>avros</b><br/><i>Проект монорепозитория; одноразовые задачи Compose</i><br/>Все Avro-схемы платформы, 1.3.0: DeviceInfo.operation.<br/>avros-publish: проверка FULL с Nexus и Schema<br/>Registry, публикация. schema-register: регистрация"]
         nexus["<b>Nexus</b><br/><i>Sonatype Nexus 3, Maven</i><br/>avros и device-service-client: выпущенная<br/>версия не перезаписывается, потребители<br/>подключают явную версию"]
-        startup["<b>Порядок старта (Docker Compose)</b><br/>Nexus → avros-publish → avros-register →<br/>db-migrator → Proxy; Redis + Sentinel, Keycloak<br/>(импорт realm) → сервисы. Каждый шаг ждёт<br/>успешного завершения предыдущего"]
+        startup["<b>Порядок старта (Docker Compose)</b><br/>Nexus → avros-publish → schema-register →<br/>db-migrator → Proxy; Redis + Sentinel, Keycloak<br/>(импорт realm) → сервисы. Каждый шаг ждёт<br/>успешного завершения предыдущего"]
         keycloak["<b>Keycloak</b><br/><i>Keycloak 26, realm iot-platform</i><br/>Realm из репозитория импортируется при старте:<br/>клиент device-service (роли devices.read / write),<br/>клиенты-потребители с сервисной учётной записью"]
         subgraph registry["Реестр устройств"]
             proxy["<b>ShardingSphere-Proxy</b><br/><i>Apache ShardingSphere 5.5.3, PostgreSQL protocol</i><br/>Маршрут #124;hashCode(device_id)#124; % 2. Логические базы:<br/>devices — основные узлы (запись, только DCS),<br/>devices_read — только реплики (чтение device-service)"]
@@ -40,7 +40,7 @@ flowchart LR
         pg[("<b>PostgreSQL</b><br/><i>Реляционная БД</i><br/>device_commands; БД Camunda")]
         subgraph redis_ha["Redis · общий для платформы"]
             sentinel["<b>redis-sentinel</b> ×3<br/><i>Redis Sentinel, кворум 2</i><br/>Следит за master platform-redis,<br/>при отказе назначает новый; клиенты<br/>узнают адрес master у Sentinel"]
-            redis[("<b>redis</b> (master) + <b>redis-replica</b><br/><i>Redis 8</i><br/>outbox:lease, devices:published, devices:fingerprint;<br/>кэш device:v1:{deviceId} — данные, version,<br/>floor (минимальная версия для записи), TTL из env")]
+            redis[("<b>redis</b> (master) + <b>redis-replica</b><br/><i>Redis 8</i><br/>outbox:lease, devices:published, devices:fingerprint;<br/>кэш device:v1:{deviceId} — данные и version (TTL кэша);<br/>device:v1:floor:{deviceId} — минимальная версия для<br/>записи, свой срок DEVICE_CACHE_FLOOR_TTL")]
         end
         clickhouse[("<b>ClickHouse</b><br/><i>Колоночная БД</i><br/>iot_platform: device_events, device_outbox<br/>(ReplacingMergeTree),<br/>device_publication_audit (MergeTree)")]
         minio[("<b>MinIO</b><br/><i>Object Storage</i><br/>Бакеты iot-dlt, iot-attachments")]
@@ -85,10 +85,10 @@ flowchart LR
     orchestrator -- "A2. POST / PUT / DELETE /api/v1/devices + JWT<br/>· REST (device-service-client)" --> device_service
     device_service -- "A3. Ключи JWKS (кэш, обновление по kid) · HTTP" --> keycloak
     device_service -- "A4. DeviceInfo: operation, eventId, поля администратора;<br/>ключ deviceId, acks=all; 202 только после ack · Kafka, Avro" --> topic_device
-    device_collector -- "A5. После COMMIT: floor = version, старые<br/>данные удалить (Lua) · Redis через Sentinel" --> redis
+    device_collector -- "A5. После COMMIT: floor = version в device:v1:floor:{id},<br/>старые данные удалить (Lua) · Redis master, адрес от Sentinel" --> redis
     %% Q: чтение устройства (Cache-Aside)
     orchestrator -- "Q1. GET /api/v1/devices/{deviceId} + JWT<br/>· REST (device-service-client)" --> device_service
-    device_service -- "Q2. device:v1:{deviceId}; при промахе - запись,<br/>только если version ≥ floor (Lua), TTL · Redis" --> redis
+    device_service -- "Q2. device:v1:{deviceId}; при промахе - запись, только если<br/>version ≥ floor (Lua), затем порог снимается · Redis master" --> redis
     device_service -- "Q3. Промах: SELECT по device_id,<br/>база devices_read · JDBC" --> proxy
     proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica0
     proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica1

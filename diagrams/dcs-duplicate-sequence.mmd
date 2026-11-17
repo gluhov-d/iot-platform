@@ -19,6 +19,7 @@ sequenceDiagram
     alt повтор: event_key уже в журнале
         DB-->>S: 0 строк
         S->>P: COMMIT без изменений - devices не меняется, seen_count прежний
+        S->>S: сброс кэша: floor = max(floor, version) в device:v1:floor:{deviceId}<br/>(после сбоя между COMMIT и сбросом при первой доставке)
         Note over S: devices_messages_duplicate_total++, лог status=DUPLICATE, shard
     else устаревшее событие: новый event_key, STALE
         DB-->>S: 1 строка

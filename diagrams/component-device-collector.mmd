@@ -3,7 +3,7 @@ flowchart LR
     ecs(["events-collector-service<br/>outbox → DeviceInfo"])
 
     subgraph kafka["Kafka 4.2 (KRaft) и Schema Registry"]
-        devices[["devices<br/>ключ deviceId · 3 раздела<br/>cleanup.policy=compact"]]
+        devices[["devices<br/>ключ deviceId · 3 раздела<br/>cleanup.policy=delete<br/>retention.ms = KAFKA_DEVICES_RETENTION_MS"]]
         dlt[["devices-dlt<br/>3 раздела · cleanup.policy=delete"]]
         sr[("Schema Registry<br/>devices-value · FULL")]
     end
@@ -19,12 +19,14 @@ flowchart LR
         repo["JdbcDeviceRepository · JdbcTransactionRunner<br/>adapter.out.postgres · JdbcClient"]
         shards["ProxyShardResolver<br/>adapter.out.postgres<br/>PREVIEW — только на пути ошибки, кеш 5 мин"]
         metrics["MetricsFacade (порт DeviceMetrics)<br/>devices_* · метка shard"]
+        invalidator["RedisDeviceCacheInvalidator<br/>adapter.out.redis (порт DeviceCacheInvalidator)<br/>после COMMIT: floor = max(floor, version), старые данные удаляются (Lua raise-floor)<br/>ошибка Redis — WARN, offset не задерживает"]
 
         listener --> registry
         registry --> validator
         registry --> repo
         registry -.-> shards
         registry -.-> metrics
+        registry -- "после COMMIT" --> invalidator
         api --> query
         query --> repo
         listener -. "исключение" .-> errors
@@ -36,6 +38,11 @@ flowchart LR
         s1[("postgres-shard-1 · shard_1<br/>devices · processed_device_events")]
         r0[("postgres-shard-0-replica<br/>hot standby, только чтение")]
         r1[("postgres-shard-1-replica<br/>hot standby, только чтение")]
+    end
+
+    subgraph redisha["Redis (общий для платформы)"]
+        rsentinel["Redis Sentinel ×3 → адрес master<br/>кворум 2 (ADR-0008); операций с данными не выполняет"]
+        rmaster[("platform-redis master<br/>кэш device:v1:{deviceId}: body, version<br/>порог device:v1:floor:{deviceId}")]
     end
     migrator["db-migrator<br/>Flyway · одноразовый<br/>до старта Proxy и сервиса"]
 
@@ -58,6 +65,9 @@ flowchart LR
     migrator -- "V*.sql (IF NOT EXISTS) напрямую,<br/>по очереди; затем сверка версий" --> s1
     s0 -. "потоковая репликация WAL" .-> r0
     s1 -. "потоковая репликация WAL" .-> r1
+    invalidator -. "адрес master · Sentinel :26379" .-> rsentinel
+    invalidator -- "Lua raise-floor: порог версии, удаление устаревшего ответа" --> rmaster
+    rsentinel -. "наблюдение, failover" .-> rmaster
 
     prom -- "/actuator/prometheus" --> svc
     prom -- "метрики Proxy (агент)" --> proxy

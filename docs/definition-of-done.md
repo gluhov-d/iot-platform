@@ -22,7 +22,9 @@
 - [ ] Входная тема `events`, выходная `devices` (`.env.example`: `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`).
 - [ ] Ключ обеих тем - `deviceId`: `DeviceEvent` отправляется с ключом `deviceId` (`check-local.sh`, `ItEventsCollectorTest`),
         `DeviceInfo` - `KafkaDeviceInfoProducer` (`KafkaDeviceInfoProducerTest.givenDevice_whenPublish_thenSendKeyedByDeviceId`).
-- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=compact`, `events-dlt` - `cleanup.policy=delete`: `make topics`.
+- [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=delete` и `retention.ms` = `KAFKA_DEVICES_RETENTION_MS`
+        (ADR-0011: сжатие стирало порядок «команда -> снимок»; `kafka-init` выставляет их при каждом запуске),
+        `events-dlt` - `cleanup.policy=delete`: `make topics`.
 - [ ] Темы создаются автоматически: контейнер `kafka-init` -> `infrastructure/init/kafka/init-topics.sh`,
         `make health` - у `kafka-init` exited, код 0.
 
@@ -59,6 +61,8 @@
 
 ## Redis
 
+- [ ] Redis работает через Sentinel (ADR-0008): адрес основного узла клиенты получают у Sentinel (`REDIS_SENTINEL_MASTER`,
+  `REDIS_SENTINEL_NODES`, профиль `docker` в `application-docker.yaml`); `make redis-cli` подключается к текущему master.
 - [ ] Аренда `outbox:lease` со случайным токеном, `SET NX PX` (`RedisLeaseService`,
    `ItRedisLeaseServiceTest.givenHeldLease_whenAcquireAgain_thenFails`).
 - [ ] Освобождение только при совпадении токена - Lua-скрипт (`RedisLeaseServiceTest.givenOwnerToken_whenRelease_thenKeyDeleted`,
@@ -118,7 +122,7 @@
 
 - [ ] Модульные тесты: `svc:test` (`make test`) - зеленые.
 - [ ] Интеграционные тесты на Testcontainers: `svc:integrationTest` (`make integration-test`) - зеленые без запущенного стенда.
-- [ ] Покрытие строк >= 65%: `svc:check` (`make coverage`, правило `jacocoTestCoverageVerification`), Avro-классы исключены.
+- [ ] Покрытие строк >= 70%: `svc:check` (`make coverage`, правило `jacocoTestCoverageVerification`), Avro-классы исключены.
 
 ## Репозиторий и документация
 
@@ -171,7 +175,7 @@ device-collector-service, проект avros и изменения в приём
 - [ ] После публикации в Nexus конвейер регистрирует схемы в Schema Registry; у субъектов `events-value`,
   `events-dlt-value`, `devices-value`, `devices-dlt-value` режим `FULL_TRANSITIVE`
   (`curl localhost:8081/config/<субъект>`); повторный запуск `make schemas-register` ничего не меняет.
-- [ ] Оба сервиса подключают avros из Nexus с явной версией (`avrosVersion = "1.2.0"`): в `build.gradle.kts` нет
+- [ ] Все три сервиса (events-collector-service, device-collector-service, device-service) подключают avros из Nexus с явной версией (`avrosVersion = "1.3.0"`): в `build.gradle.kts` нет
   `+`, `latest`, диапазонов.
 - [ ] Продюсеры не регистрируют схемы сами: `auto.register.schemas=false`. Отправка с незарегистрированной
   схемой завершается ошибкой, а не новой версией в Schema Registry.
@@ -251,7 +255,10 @@ device-collector-service, проект avros и изменения в приём
   - на реплике `pg_is_in_recovery()` = `true`, `SHOW transaction_read_only` = `on`, запись отклоняется;
   - строка, записанная через Proxy, появляется на реплике своего шарда (число строк `devices` на шарде и его реплике
     совпадает).
-- [ ] Чтение на реплики не направляется: в конфигурации Proxy реплик нет.
+- [ ] Чтение карточки устройства (device-service) идёт с реплик: логическая база `devices_read` в Proxy
+  (`infrastructure/config/shardingsphere/database-devices_read.yaml`) указывает только на реплики шардов; запись — только
+  на primary через базу `devices` (`database-devices.yaml`). Проверка: `make ds-quick-check` (данные видны в реплике за 5 с,
+  SC-001 в `specs/001-device-service/spec.md`), `make replication-status`.
 - [ ] Для каждого шарда есть резервная копия: `make shard-backup` (`infrastructure/config/postgres/shard-backup.sh`)
   создаёт отдельную копию на шард (`shard_0.dump`, `shard_1.dump`) в `backups/<время>/` с `manifest.txt` (число строк,
   версия схемы, SHA-256, позиции группы `device-collector` по каждому разделу); копия снимается с реплики, сервисы не останавливаются.
@@ -266,25 +273,28 @@ device-collector-service, проект avros и изменения в приём
 ## Запуск
 
 - [ ] Порядок старта в Docker Compose: Nexus, Kafka и Schema Registry → сверка схем и публикация avros → регистрация схем → `db-migrator` →
-  сервисы. Каждый шаг ждёт успешного завершения предыдущего (`service_completed_successfully` или
+  `shardingsphere-proxy` → сервисы. Redis (`redis` → `redis-replica` → `redis-sentinel-1..3`) и Keycloak (realm `iot-platform`
+  импортируется из репозитория) от шардов не зависят и входят в базовый стенд; `device-service` ждёт `keycloak`, `redis`,
+  `redis-sentinel-1..3`, `shardingsphere-proxy` в состоянии `service_healthy`. Каждый шаг ждёт успешного завершения предыдущего (`service_completed_successfully` или
   `service_healthy`), а не запуска контейнера. Проверки:
   - `make up` на чистом стенде (после `make clean`) завершается успешно; одноразовые задачи — `Exited (0)`;
   - если регистрация схем завершилась ошибкой, `db-migrator` и сервисы не стартуют;
   - цепочка в `docker-compose.yaml`: `nexus` -> `nexus-init`, `schema-registry` -> `avros-publish` -> `schema-register` -> `db-migrator` ->
     `shardingsphere-proxy` -> `device-collector-service` (`docker compose config` показывает `depends_on`);
-    `events-collector-service` ждёт `schema-register`, `kafka-init`, `clickhouse-init`.
+    `events-collector-service` ждёт `schema-register`, `kafka-init`, `clickhouse-init`; `device-service` ×2 ждёт `schema-register`,
+    `kafka-init` (завершены) и `keycloak`, `redis`, `redis-sentinel-1..3`, `shardingsphere-proxy` (`service_healthy`).
 - [ ] У всех образов явный тег, не `latest`.
 - [ ] Секретов в репозитории нет; `.env.example` содержит все переменные с безопасными значениями-заглушками.
 
 ## Наблюдаемость
 
-- [ ] Метрики со всех компонентов: оба сервиса (`/actuator/prometheus`, jobs `events-collector-service`,
-  `device-collector-service`), ShardingSphere-Proxy (агент метрик из образа 5.5.3, `PROXY_AGENT_ENABLED=true`, job
+- [ ] Метрики со всех компонентов: оба сервиса и device-service (`/actuator/prometheus`, jobs `events-collector-service`,
+  `device-collector-service`, `device-service` — management-порт 8081 внутри сети Compose, на хост не публикуется), ShardingSphere-Proxy (агент метрик из образа 5.5.3, `PROXY_AGENT_ENABLED=true`, job
   `shardingsphere-proxy`), шарды PostgreSQL и их реплики (`postgres-exporter` v0.20.1 на каждый, job `postgres-shards`;
   отставание реплики - `pg_replication_lag_seconds`, `pg_stat_replication_pg_wal_lsn_diff`), Kafka (job `kafka`).
   Все цели профиля `observability` в Prometheus (`/targets`) — `UP`; `minio`, `keycloak`, `postgres` относятся к профилю
   `platform`.
-- [ ] Дашборды в Grafana: «events-collector-service», «device-collector-service», «Proxy и шарды реестра устройств»
+- [ ] Дашборды в Grafana: «events-collector-service», «device-collector-service», «device-service» (`device-service.json`), «Proxy и шарды реестра устройств»
   (`device-shards`), «Kafka» — панели получают данные (все запросы дашбордов возвращают ряды при нагрузке).
 - [ ] Логи всех компонентов в Loki: по каждому контейнеру стенда находятся строки (`{container="iot-…"}`); в логах
   device-collector-service есть метка `shard`.
@@ -294,10 +304,12 @@ device-collector-service, проект avros и изменения в приём
 
 ## Тесты реестра устройств и avros
 
-- [ ] Unit-тесты логики обоих сервисов (`make test`, `make dcs-test`; events-collector-service — 121 тест,
-  device-collector-service — 93, db-migrator — 2); порог покрытия JaCoCo выполняется (65 % и 70 %, `make coverage`,
-  `make dcs-coverage`), сгенерированные Avro-классы из отчёта исключены.
-- [ ] Интеграционные тесты обоих сервисов на Testcontainers (`make integration-test` — 23, `make dcs-it` — 10).
+- [ ] Unit-тесты логики сервисов (`make test`, `make dcs-test`, `make ds-test`; числа — из отчётов сборки
+  `build/test-results/test`: events-collector-service — 132, device-collector-service — 126, device-service — 84;
+  db-migrator — числа нет, отчёта сборки в репозитории нет); порог покрытия JaCoCo выполняется (70 %, `make coverage`,
+  `make dcs-coverage`; у device-service — `make ds-coverage`), сгенерированные Avro-классы из отчёта исключены.
+- [ ] Интеграционные тесты сервисов на Testcontainers (числа — из `build/test-results/integrationTest`: events-collector-service — 33,
+  `make integration-test`; device-collector-service — 17, `make dcs-it`; device-service — 39, `make ds-it`).
 - [ ] Быстрая проверка `services/device-collector-service/scripts/quick-check.sh` -> "All checks passed" - напрямую,
   через `make dcs-quick-check` и `./gradlew :services:device-collector-service:quickCheck`: ждёт сохранения устройства,
   подтверждает его на ожидаемом шарде (напрямую в PostgreSQL) и отсутствие на другом.
@@ -323,15 +335,22 @@ device-collector-service, проект avros и изменения в приём
 
 # Управление устройствами (device-service)
 
-Критерии приёмки этой части — в [specs/001-device-service/spec.md](../specs/001-device-service/spec.md): раздел
-«Requirements» (у каждого требования — проверка) и «Критерии приёмки (Definition of Done)». Дизайн готовится через
+Критерии приёмки этой части — в [specs/001-device-service/spec.md](../specs/001-device-service/spec.md): разделы
+«Requirements» (у каждого требования — проверка), «Success Criteria» (SC-001…SC-004) и «Критерии приёмки (Definition of Done)». Дизайн готовится через
 Spec Kit, и критерии входят в spec.md; здесь они не повторяются, чтобы не было двух версий.
 
 Что эта часть меняет в уже сделанном (пункты секций выше правятся на месте вместе с кодом, задача T070):
 
-- avros 1.3.0: в `DeviceInfo` поле `operation`; оба сервиса подключают `avrosVersion = "1.3.0"` («Проект avros»).
+- avros 1.3.0: в `DeviceInfo` поле `operation`; все три сервиса подключают `avrosVersion = "1.3.0"` («Проект avros»).
 - Приём событий: Redis через Sentinel (`REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`) вместо прямого адреса («Redis»).
 - Реестр устройств: команды `CREATE`/`UPDATE`/`DELETE`, исход `IGNORED`, колонки `version`, `managed_at`, `deleted_by`
   (миграция V3), сброс кэша после `COMMIT`, Redis как новая зависимость («device-collector-service», «База данных»).
-- Тема `devices`: `min.compaction.lag.ms`; предупреждение `shard-restore.sh` о старой копии («База данных», бэкап).
+- Тема `devices`: `cleanup.policy=delete` и `retention.ms` вместо сжатия (ADR-0011); предупреждение `shard-restore.sh`
+  о копии старше срока хранения («База данных», бэкап).
+- Кэш устройства: порог версии в отдельном ключе `device:v1:floor:{deviceId}` со сроком `DEVICE_CACHE_FLOOR_TTL`
+  (ADR-0003), его снимает успешное чтение («device-service», «Redis»).
 - Запуск: Keycloak с realm из репозитория и Redis с Sentinel — в базовом стенде, а не в профиле `platform` («Запуск»).
+- Наблюдаемость: job `device-service` (management-порт 8081 внутри сети Compose; на основном порту actuator не открыт),
+  дашборд «IoT Platform — device-service» (`infrastructure/config/grafana/dashboards/device-service.json`), метрики
+  `device_commands_*`, `device_cache_*` без `deviceId` в метках («Наблюдаемость», README раздел 16).
+- Чтение: `GET` — из Redis и реплик через `devices_read` (ADR-0004; «Данные в PostgreSQL» и «База данных» — раздел 20.3).

@@ -1,5 +1,7 @@
 %% device-collector-service: новое событие устройства (первое появление или новее сохранённого).
-%% Команды device-service (operation не null) — dcs-operations-sequence.mmd
+%% Показан случай устройства БЕЗ ручных изменений (managed_at IS NULL) и не удалённого администратором:
+%% только тогда снимок роутера заменяет состояние целиком. Остальные ветки (deleted_by = ADMIN, managed_at
+%% не пуст, снимок старее last_state_at) и команды device-service (operation не null) — dcs-operations-sequence.mmd
 sequenceDiagram
     autonumber
     participant K as Kafka (devices)
@@ -9,7 +11,7 @@ sequenceDiagram
     participant V as DeviceInfoValidator
     participant P as ShardingSphere-Proxy
     participant DB as PostgreSQL shard_N
-    participant RD as Redis (Sentinel)
+    participant RD as Redis master (адрес от Sentinel)
 
     K->>L: poll (max.poll.records=1, enable.auto.commit=false), заголовок traceparent
     L->>SR: схема по id (KafkaAvroDeserializer, кешируется)
@@ -20,9 +22,12 @@ sequenceDiagram
     V-->>S: ok
     S->>S: eventKey = eventId (иначе emitted:emittedAtMs)<br/>eventAt = eventTimeMs (иначе emittedAtMs) → Instant
     S->>P: BEGIN
-    S->>P: SELECT current_database(), status, last_event_at, … FROM devices<br/>WHERE device_id = ? FOR UPDATE
+    S->>P: SELECT current_database(), status, last_event_at, last_state_at,<br/>managed_at, deleted_by, version … FROM devices<br/>WHERE device_id = ? FOR UPDATE
     P->>DB: маршрут |hashCode(device_id)| % 2
-    DB-->>S: нет строки или last_event_at <= eventAt
+    DB-->>S: нет строки, либо managed_at IS NULL, deleted_by ≠ ADMIN<br/>и last_state_at <= eventAt (для события без снимка — last_event_at <= eventAt)
+    opt managed_at не пуст, deleted_by = ADMIN или снимок старее last_state_at
+        S->>S: действуют правила dcs-operations-sequence.mmd —<br/>IGNORED (удалено администратором, DELETE роутера у управляемого),<br/>только данные устройства (управляемое) или STALE: дальше по этой схеме не идём
+    end
     S->>P: INSERT INTO processed_device_events (…, outcome = APPLIED)<br/>ON CONFLICT (device_id, event_key) DO NOTHING
     P->>DB: тот же шард (связанные таблицы)
     DB-->>S: 1 строка - событие новое
@@ -34,7 +39,7 @@ sequenceDiagram
     Note over S,DB: eventType = DELETED или снимок со status = DELETED → status = DELETED, deleted_at (мягкое удаление)<br/>device = null (контракт 1.0.0, событие без снимка) → только seen_count, last_event_*, last_seen_at
     DB-->>S: shard_N, version
     S->>P: COMMIT
-    S->>RD: сброс кэша device:v1:{deviceId}: floor = max(floor, version), старые данные удалить (Lua)
+    S->>RD: сброс кэша device:v1:{deviceId}: Lua raise-floor — floor = max(floor, version)<br/>в отдельном ключе device:v1:floor:{deviceId}, старые данные удалить
     S-->>L: APPLIED, shard_N
     Note over S: devices_messages_received_total++ (только первая доставка, kafka_deliveryAttempt = 1),<br/>devices_messages_processed_total{outcome=applied}++<br/>devices_db_write_seconds{shard, result=success}, лог status=APPLIED, shard
     L->>K: ack.acknowledge() - commit offset после COMMIT и сброса кэша (ошибка Redis ack не задерживает)

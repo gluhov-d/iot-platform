@@ -36,9 +36,15 @@
 
 ## Тема `devices`
 
-`cleanup.policy=compact` (как раньше) + `min.compaction.lag.ms=${KAFKA_DEVICES_MIN_COMPACTION_LAG_MS}` (604800000 —
-7 суток). Задаётся в `infrastructure/init/kafka/init-topics.sh` при создании и `kafka-configs --alter` для
-существующей темы.
+`cleanup.policy=delete` + `retention.ms=${KAFKA_DEVICES_RETENTION_MS}` (2592000000 — 30 суток, не меньше интервала
+копий шардов; [ADR-0011](../../docs/adr/0011-devices-topic-retention.md)). Сжатие выключено: при `compact` команда
+администратора, за которой пришло событие роутера, исчезала бы с ключа, и повторное или отставшее чтение темы
+оставило бы устройство активным.
+
+Задаётся в `infrastructure/init/kafka/init-topics.sh` при создании и `kafka-configs --alter` для существующей темы;
+переход с `compact` — тот же `--alter` (`cleanup.policy=delete`, `retention.ms`) плюс `--delete-config
+min.compaction.lag.ms`. Сообщение без ключа тема теперь примет, но ключ `deviceId` остаётся требованием контракта:
+по нему идёт маршрутизация в раздел и порядок обработки устройства.
 
 ## PostgreSQL: `V3__device_management.sql` (db-migrator, все шарды)
 
@@ -74,6 +80,8 @@ END $$;
 - Надгробие (строка 5, устройства нет): `INSERT` с `status = 'DELETED'`, `seen_count = 1`, `first_seen_at`,
   `last_event_at`, `last_state_at`, `managed_at`, `deleted_at` = `eventAt`, `last_event_type = 'DELETED'`, `version = 1`.
 - `IGNORED` и `STALE`: меняются только `seen_count`, `first_seen_at`, `updated_at` (как `countStale` сейчас).
+- Строка 12: событие роутера `DELETE` без снимка для управляемого устройства (`managed_at` не пуст) — `IGNORED`: удаление
+  такого устройства выполняет только администратор командой `DELETE` (решение человека при `converge`).
 - В журнал `processed_device_events` команда пишется с `event_key = eventId`, `event_type` = `eventType`.
 
 Чтение device-service (база `devices_read`): одна строка по `device_id`; карточка есть, если
@@ -94,18 +102,23 @@ db-migrator. Права — только `USAGE` на схему и `SELECT` н�
 - `global.yaml`: второй пользователь `${DEVICES_READ_DB_USER}` с доступом только к `devices_read`; пользователю
   device-collector-service доступна только `devices`.
 
-## Redis `device:v1:{deviceId}` (hash, TTL `DEVICE_CACHE_TTL` на ключ)
+## Redis: кэш устройства (два ключа)
 
-| Поле | Кто пишет | Значение |
-|---|---|---|
-| `body` | device-service при промахе | JSON `DeviceResponse` |
-| `version` | device-service вместе с `body` | `devices.version` прочитанной строки |
-| `floor` | device-collector-service после `COMMIT` | наибольшая применённая версия |
+| Ключ | Содержимое | Срок жизни | Кто пишет |
+|---|---|---|---|
+| `device:v1:{deviceId}` (hash) | `body` — JSON `DeviceResponse`; `version` — `devices.version` прочитанной строки | `DEVICE_CACHE_TTL` (минуты) | device-service при промахе |
+| `device:v1:floor:{deviceId}` (string) | `floor` — наибольшая применённая версия, ниже которой кэшировать нельзя | `DEVICE_CACHE_FLOOR_TTL` (часы, больше `DEVICE_CACHE_TTL`) | device-collector-service после `COMMIT`; удаляет device-service, записав версию ≥ `floor` |
 
-- `put-if-fresh.lua` (device-service; ARGV: body, version, ttl): отказ (0), если `version < floor` или `version` меньше
-  уже лежащей; иначе `HSET body version`, `PEXPIRE`, 1.
-- `raise-floor.lua` (device-collector-service; ARGV: version, ttl): `floor = max(floor, version)`; если лежащая
-  `version < floor` — `HDEL body version`; `PEXPIRE`.
+Порог вынесен из хеша, потому что в одном ключе он истекал вместе с ответом: при отставании реплики дольше
+`DEVICE_CACHE_TTL` старая версия снова попадала в кэш (ADR-0003). `{deviceId}` в обоих ключах — один hash tag,
+поэтому ключи лежат в одном слоте и доступны одному Lua-скрипту (сейчас Sentinel, не кластер).
+
+- `put-if-fresh.lua` (device-service; KEYS: ключ кэша, ключ порога; ARGV: body, version, ttl): отказ (0), если
+  `version < floor` или `version` меньше уже лежащей (TTL ключа кэша не продлевается); иначе `HSET body version`,
+  `PEXPIRE` ключа кэша, `DEL` ключа порога (реплика догнала — порог больше не нужен), 1.
+- `raise-floor.lua` (device-collector-service; KEYS: ключ кэша, ключ порога; ARGV: version, floorTtl):
+  `floor = max(floor, version)`, `PEXPIRE` ключа порога на `DEVICE_CACHE_FLOOR_TTL`; если лежащая в кэше
+  `version < floor` — `HDEL body version`. Срок ключа кэша не меняется.
 - Префикс `v1` — версия формата значения: новый формат ответа пишет под новым префиксом.
 - Отсутствие устройства и ошибки не кэшируются.
 - Ключи прежних сервисов (`outbox:lease`, `devices:published`, `devices:fingerprint`) не меняются.
