@@ -11,6 +11,8 @@ COPY gradle gradle
 COPY avros/build.gradle.kts avros/
 COPY services/events-collector-service/build.gradle.kts services/events-collector-service/
 COPY services/device-collector-service/build.gradle.kts services/device-collector-service/
+COPY services/device-service-client/build.gradle.kts services/device-service-client/
+COPY services/device-service/build.gradle.kts services/device-service/
 COPY services/db-migrator services/db-migrator
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon :services:db-migrator:installDist -x test
