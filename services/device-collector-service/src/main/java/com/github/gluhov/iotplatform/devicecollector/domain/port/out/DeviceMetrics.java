@@ -37,4 +37,7 @@ public interface DeviceMetrics {
 
     /** devices_shard_route_fail_total{shard, reason}: ошибка маршрутизации или доступа к шарду. */
     void shardRouteFailed(String shard, StorageFailureReason reason);
+
+    /** devices_cache_invalidations_total{result}: сброс кэша устройства после APPLIED - success или error. */
+    void cacheInvalidated(boolean success);
 }

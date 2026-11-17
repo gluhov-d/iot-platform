@@ -1,7 +1,13 @@
 # Интеграционные тесты: адреса контейнеров приходят из @DynamicPropertySource (AbstractItTest).
 # Повторы при ошибке хранилища - с короткой паузой, чтобы сценарий с остановленным шардом шёл секунды
+spring:
+  data:
+    redis:
+      timeout: 2s
 app:
   instance-id: it
+  cache:
+    floor-ttl: 24h
   processing:
     retry-interval: 200ms
 

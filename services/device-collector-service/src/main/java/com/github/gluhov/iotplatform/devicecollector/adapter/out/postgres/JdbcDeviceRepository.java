@@ -6,6 +6,7 @@ import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceView;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessedEvent;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.SensorState;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StoredDevice;
+import com.github.gluhov.iotplatform.devicecollector.domain.model.WrittenDevice;
 import com.github.gluhov.iotplatform.devicecollector.domain.port.out.DeviceRepository;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -43,44 +44,83 @@ public class JdbcDeviceRepository implements DeviceRepository {
                    last_event_at = GREATEST(last_event_at, :eventAt), updated_at = now()
             """;
     private static final String LOCK = """
-            SELECT current_database() AS shard, status, last_event_at, last_state_at, last_seen_at, deleted_at
+            SELECT current_database() AS shard, version, status, last_event_at, last_state_at, last_seen_at, deleted_at,
+                   deleted_by, managed_at
             FROM devices WHERE device_id = :deviceId FOR UPDATE""";
     private static final String MARK_PROCESSED = """
             INSERT INTO processed_device_events (device_id, event_key, event_type, event_at, emitted_at, outcome,
                                                  kafka_topic, kafka_partition, kafka_offset)
             VALUES (:deviceId, :eventKey, :eventType, :eventAt, :emittedAt, :outcome, :topic, :partition, :offset)
             ON CONFLICT (device_id, event_key) DO NOTHING""";
+    // Версия записи растёт на 1 при каждом APPLIED (version = version + 1); RETURNING отдаёт её вместе с шардом
+    private static final String RETURNING = "RETURNING current_database(), version";
     private static final String INSERT = """
             INSERT INTO devices (device_id, tenant_id, owner_id, device_type, serial_number, manufacturer, model,
                                  firmware_version, name, os_name, os_version, status, registered_at, last_seen_at,
                                  settings, attributes, sensors, seen_count, first_seen_at, last_event_at,
-                                 last_event_id, last_event_type, last_state_at, deleted_at)
+                                 last_event_id, last_event_type, last_state_at, deleted_at, deleted_by, managed_at,
+                                 version)
             VALUES (:deviceId, :tenantId, :ownerId, :deviceType, :serialNumber, :manufacturer, :model,
                     :firmwareVersion, :name, :osName, :osVersion, :status, :registeredAt, :lastSeenAt,
                     :settings, :attributes, :sensors, 1, :eventAt, :eventAt, :eventId, :eventType, :stateAt,
-                    :deletedAt)
-            RETURNING current_database()""";
+                    :deletedAt, :deletedBy, :managedAt, 1)
+            """ + RETURNING;
+    // Событие роутера со снимком: модель устройства целиком
     private static final String UPDATE_WITH_STATE = """
             UPDATE devices SET tenant_id = :tenantId, owner_id = :ownerId, device_type = :deviceType,
                    serial_number = :serialNumber, manufacturer = :manufacturer, model = :model,
                    firmware_version = :firmwareVersion, name = :name, os_name = :osName, os_version = :osVersion,
                    status = :status, registered_at = :registeredAt,
                    last_seen_at = :lastSeenAt, settings = :settings, attributes = :attributes, sensors = :sensors,
-                   last_state_at = :stateAt, deleted_at = :deletedAt,
+                   last_state_at = :stateAt, deleted_at = :deletedAt, deleted_by = :deletedBy,
+                   version = version + 1,
             """ + COUNT_EVENT + """
             WHERE device_id = :deviceId
-            RETURNING current_database()""";
+            """ + RETURNING;
     private static final String UPDATE_WITHOUT_STATE = """
             UPDATE devices SET status = :status, last_seen_at = :lastSeenAt,
-                   last_state_at = COALESCE(:stateAt, last_state_at), deleted_at = :deletedAt,
+                   last_state_at = COALESCE(:stateAt, last_state_at), deleted_at = :deletedAt, deleted_by = :deletedBy,
+                   version = version + 1,
             """ + COUNT_EVENT + """
             WHERE device_id = :deviceId
-            RETURNING current_database()""";
+            """ + RETURNING;
+    // Управляемое устройство, событие роутера: данные устройства; поля администратора и удаление не трогаем
+    private static final String UPDATE_DEVICE_DATA = """
+            UPDATE devices SET firmware_version = :firmwareVersion, os_name = :osName, os_version = :osVersion,
+                   sensors = :sensors, registered_at = :registeredAt, last_seen_at = :lastSeenAt,
+                   last_state_at = :stateAt, version = version + 1,
+            """ + COUNT_EVENT + """
+            WHERE device_id = :deviceId
+            """ + RETURNING;
+    // Управляемое устройство, событие роутера без снимка: только служебные поля и счётчики
+    private static final String UPDATE_DEVICE_EVENT = """
+            UPDATE devices SET last_seen_at = :lastSeenAt, last_state_at = COALESCE(:stateAt, last_state_at),
+                   version = version + 1,
+            """ + COUNT_EVENT + """
+            WHERE device_id = :deviceId
+            """ + RETURNING;
+    // Команда со снимком: поля администратора, статус, удаление и managed_at; данные устройства не трогаем
+    private static final String UPDATE_ADMIN = """
+            UPDATE devices SET tenant_id = :tenantId, owner_id = :ownerId, device_type = :deviceType,
+                   serial_number = :serialNumber, manufacturer = :manufacturer, model = :model, name = :name,
+                   settings = :settings, attributes = :attributes,
+                   status = :status, deleted_at = :deletedAt, deleted_by = :deletedBy, managed_at = :managedAt,
+                   version = version + 1,
+            """ + COUNT_EVENT + """
+            WHERE device_id = :deviceId
+            """ + RETURNING;
+    // Команда без снимка (DELETE): статус, удаление и managed_at
+    private static final String UPDATE_ADMIN_DELETE = """
+            UPDATE devices SET status = :status, deleted_at = :deletedAt, deleted_by = :deletedBy,
+                   managed_at = :managedAt, version = version + 1,
+            """ + COUNT_EVENT + """
+            WHERE device_id = :deviceId
+            """ + RETURNING;
     private static final String COUNT_STALE = """
             UPDATE devices SET seen_count = seen_count + 1, first_seen_at = LEAST(first_seen_at, :eventAt),
                    updated_at = now()
             WHERE device_id = :deviceId
-            RETURNING current_database()""";
+            """ + RETURNING;
     private static final String FIND = """
             SELECT current_database() AS shard, device_id, tenant_id, owner_id, device_type, serial_number,
                    manufacturer, model, firmware_version, name, os_name, os_version, status, registered_at,
@@ -103,9 +143,9 @@ public class JdbcDeviceRepository implements DeviceRepository {
     public Optional<StoredDevice> lockById(String deviceId) {
         return run("Select device for update", () -> jdbc.sql(LOCK)
                 .param("deviceId", deviceId, Types.VARCHAR)
-                .query((rs, row) -> new StoredDevice(rs.getString("shard"), rs.getString("status"),
+                .query((rs, row) -> new StoredDevice(rs.getString("shard"), rs.getLong("version"), rs.getString("status"),
                         instant(rs, "last_event_at"), instant(rs, "last_state_at"), instant(rs, "last_seen_at"),
-                        instant(rs, "deleted_at")))
+                        instant(rs, "deleted_at"), rs.getString("deleted_by"), instant(rs, "managed_at")))
                 .optional());
     }
 
@@ -125,27 +165,44 @@ public class JdbcDeviceRepository implements DeviceRepository {
     }
 
     @Override
-    public String insert(DeviceRecord record) {
-        return run("Insert devices", () -> withState(jdbc.sql(INSERT), record).query(String.class).single());
+    public WrittenDevice insert(DeviceRecord record) {
+        return run("Insert devices", () -> written(withState(jdbc.sql(INSERT), record)));
     }
 
     @Override
-    public String updateWithState(DeviceRecord record) {
-        return run("Update devices", () -> withState(jdbc.sql(UPDATE_WITH_STATE), record).query(String.class).single());
+    public WrittenDevice updateWithState(DeviceRecord record) {
+        return run("Update devices", () -> written(withState(jdbc.sql(UPDATE_WITH_STATE), record)));
     }
 
     @Override
-    public String updateWithoutState(DeviceRecord record) {
-        return run("Update devices", () -> withEvent(jdbc.sql(UPDATE_WITHOUT_STATE), record).query(String.class).single());
+    public WrittenDevice updateWithoutState(DeviceRecord record) {
+        return run("Update devices", () -> written(withEvent(jdbc.sql(UPDATE_WITHOUT_STATE), record)));
     }
 
     @Override
-    public String countStale(String deviceId, Instant eventAt) {
-        return run("Update devices", () -> jdbc.sql(COUNT_STALE)
+    public WrittenDevice updateDeviceData(DeviceRecord record) {
+        return run("Update devices", () -> record.state() == null
+                ? written(withEvent(jdbc.sql(UPDATE_DEVICE_EVENT), record))
+                : written(withState(jdbc.sql(UPDATE_DEVICE_DATA), record)));
+    }
+
+    @Override
+    public WrittenDevice updateAdmin(DeviceRecord record) {
+        return run("Update devices", () -> record.state() == null
+                ? written(withEvent(jdbc.sql(UPDATE_ADMIN_DELETE), record))
+                : written(withState(jdbc.sql(UPDATE_ADMIN), record)));
+    }
+
+    @Override
+    public WrittenDevice countStale(String deviceId, Instant eventAt) {
+        return run("Update devices", () -> written(jdbc.sql(COUNT_STALE)
                 .param("deviceId", deviceId, Types.VARCHAR)
-                .param("eventAt", timestamp(eventAt), Types.TIMESTAMP_WITH_TIMEZONE)
-                .query(String.class)
-                .single());
+                .param("eventAt", timestamp(eventAt), Types.TIMESTAMP_WITH_TIMEZONE)));
+    }
+
+    // RETURNING current_database(), version: шард, который выполнил запрос, и версия записи после него
+    private static WrittenDevice written(JdbcClient.StatementSpec spec) {
+        return spec.query((rs, row) -> new WrittenDevice(rs.getString(1), rs.getLong(2))).single();
     }
 
     @Override
@@ -185,6 +242,8 @@ public class JdbcDeviceRepository implements DeviceRepository {
                 .param("eventId", record.eventId(), Types.VARCHAR)
                 .param("eventType", record.eventType().name(), Types.VARCHAR)
                 .param("deletedAt", timestamp(record.deletedAt()), Types.TIMESTAMP_WITH_TIMEZONE)
+                .param("deletedBy", record.deletedBy(), Types.VARCHAR)
+                .param("managedAt", timestamp(record.managedAt()), Types.TIMESTAMP_WITH_TIMEZONE)
                 .param("stateAt", timestamp(record.stateAt()), Types.TIMESTAMP_WITH_TIMEZONE);
     }
 

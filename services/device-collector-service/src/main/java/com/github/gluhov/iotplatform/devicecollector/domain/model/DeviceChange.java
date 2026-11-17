@@ -7,13 +7,16 @@ import java.time.Instant;
  *
  * @param eventKey ключ идемпотентности: eventId, а у сообщений версии 1.0.0 (без eventId) - "emitted:emittedAtMs"
  * @param eventId  исходный eventId или null
+ * @param type     тип изменения (eventType); у команды - тип, соответствующий команде
+ * @param command  команда администратора (operation) или null - событие роутера
  * @param eventAt  время исходного события (eventTimeMs, иначе emittedAtMs): по нему отсекаются устаревшие события
- * @param state    снимок устройства или null (сообщение 1.0.0, событие без снимка)
+ * @param state    снимок устройства или null (сообщение 1.0.0, событие без снимка, DELETE)
  */
 public record DeviceChange(String deviceId,
                            String eventKey,
                            String eventId,
                            ChangeType type,
+                           CommandType command,
                            Instant eventAt,
                            Instant emittedAt,
                            DeviceState state,
@@ -24,6 +27,11 @@ public record DeviceChange(String deviceId,
 
     public boolean hasState() {
         return state != null;
+    }
+
+    /** Команда администратора, а не событие роутера. */
+    public boolean isCommand() {
+        return command != null;
     }
 
     /** Событие задаёт состояние устройства: снимок или удаление. Сообщение 1.0.0 и событие без снимка - нет. */

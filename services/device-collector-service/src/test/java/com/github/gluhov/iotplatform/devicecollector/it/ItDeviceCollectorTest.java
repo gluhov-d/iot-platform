@@ -277,8 +277,8 @@ class ItDeviceCollectorTest extends AbstractItTest {
     @Order(11)
     @DisplayName("7. Proxy down: health DOWN (503) - the service has no way to the registry")
     void givenProxyDown_whenHealth_thenDown() {
-        // Последний тест: Proxy не запускается снова (после рестарта у контейнера был бы другой порт на хосте)
-        stopShard(PROXY);
+        // Последний тест класса: Proxy заморожен, а не остановлен - ItDeviceOperationsTest снимает паузу (ensureProxyReady)
+        pauseShard(PROXY);
 
         await().atMost(WAIT).untilAsserted(() -> {
             HttpResponse<String> health = get("/actuator/health");

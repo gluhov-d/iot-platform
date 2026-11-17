@@ -1,6 +1,7 @@
 package com.github.gluhov.iotplatform.devicecollector.service.domain.service;
 
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ChangeType;
+import com.github.gluhov.iotplatform.devicecollector.domain.model.CommandType;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceChange;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceState;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.SensorState;
@@ -8,6 +9,7 @@ import com.github.gluhov.iotplatform.devicecollector.domain.service.DeviceInfoMa
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.OperationType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -17,6 +19,7 @@ import java.util.Map;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.POSITION;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.T0;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.T0_MS;
+import static com.github.gluhov.iotplatform.devicecollector.data.TestData.command;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.info;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.legacy;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.snapshot;
@@ -24,6 +27,31 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class DeviceInfoMapperTest {
     private final DeviceInfoMapper mapper = new DeviceInfoMapper();
+
+    @Test
+    @DisplayName("Command operation becomes the change command; the event type of the command is kept")
+    void givenCommand_whenMap_thenCommandMapped() {
+        DeviceChange create = mapper.toChange(command("dev-1", "cmd-1", OperationType.CREATE, T0).build(), POSITION);
+        DeviceChange delete = mapper.toChange(command("dev-1", "cmd-2", OperationType.DELETE, T0).build(), POSITION);
+
+        assertThat(create.command()).isEqualTo(CommandType.CREATE);
+        assertThat(create.isCommand()).isTrue();
+        assertThat(create.type()).isEqualTo(ChangeType.CREATED);
+        assertThat(create.hasState()).as("снимок команды несёт поля администратора").isTrue();
+        assertThat(delete.command()).isEqualTo(CommandType.DELETE);
+        assertThat(delete.type()).isEqualTo(ChangeType.DELETED);
+        assertThat(delete.deletes()).isTrue();
+        assertThat(delete.hasState()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Message without operation (1.1.0 or 1.2.0, router event) has no command")
+    void givenMessageWithoutOperation_whenMap_thenNotCommand() {
+        DeviceChange change = mapper.toChange(info("dev-1", "evt-1", DeviceUpsertEventType.UPDATED, T0).build(), POSITION);
+
+        assertThat(change.command()).isNull();
+        assertThat(change.isCommand()).isFalse();
+    }
 
     @Test
     @DisplayName("emittedAtMs (Unix milliseconds) becomes Instant without losing precision")

@@ -80,7 +80,7 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
         try {
             var result = kafka.execInContainer("bash", "-c", "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL
                     + " KAFKA_EVENTS_TOPIC=" + TOPIC + " KAFKA_EVENTS_DLT_TOPIC=" + DLT
-                    + " KAFKA_TOPIC_PARTITIONS=1 /opt/init/init-topics.sh");
+                    + " KAFKA_TOPIC_PARTITIONS=1 KAFKA_DEVICES_RETENTION_MS=2592000000 /opt/init/init-topics.sh");
             if (result.getExitCode() != 0) {
                 throw new IllegalStateException(result.getStdout() + result.getStderr());
             }

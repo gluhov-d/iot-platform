@@ -5,6 +5,7 @@ import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.OperationType;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumReader;
@@ -28,7 +29,7 @@ import static com.github.gluhov.iotplatform.eventscollector.data.TestData.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Сообщения контрактов 1.0.0, 1.1.0 и 1.2.0 читаются в обе стороны: сервисы переходят на новую версию независимо.
+ * Сообщения контрактов 1.0.0, 1.1.0, 1.2.0 и 1.3.0 читаются в обе стороны: сервисы переходят на новую версию независимо.
  * Схемы 1.0.0 - как в теге contracts/v1.0.0.
  */
 class ContractCompatibilityTest {
@@ -132,6 +133,52 @@ class ContractCompatibilityTest {
         assertThat(read.getSchema().getField("name")).isNull();
         assertThat(read.getSchema().getField("osName")).isNull();
         assertThat(read.getSchema().getField("osVersion")).isNull();
+    }
+
+    /** DeviceInfo 1.2.0 - текущая схема без поля operation, добавленного в 1.3.0 (последним полем). */
+    private static final Schema DEVICE_INFO_1_2 = withoutFields(DeviceInfo.getClassSchema(), Set.of("operation"));
+
+    @Test
+    @DisplayName("DeviceInfo 1.2.0 read by 1.3.0 then operation is null")
+    void givenDeviceInfo12_whenReadWith130_thenOperationNull() throws IOException {
+        DeviceInfo current = DeviceInfo.newBuilder()
+                .setDeviceId(DEVICE_ID)
+                .setEmittedAtMs(456L)
+                .setEventType(DeviceUpsertEventType.UPDATED)
+                .setEventId(EVENT_ID)
+                .setEventTimeMs(400L)
+                .setDevice(snapshot(DEVICE_ID, DeviceStatus.ACTIVE))
+                .build();
+        GenericRecord old = new GenericData.Record(DEVICE_INFO_1_2);
+        DEVICE_INFO_1_2.getFields().forEach(f -> old.put(f.name(), current.get(f.name())));
+
+        DeviceInfo read = new SpecificDatumReader<DeviceInfo>(DEVICE_INFO_1_2, DeviceInfo.getClassSchema())
+                .read(null, decoder(writeGeneric(old)));
+
+        assertThat(read.getDeviceId()).isEqualTo(DEVICE_ID);
+        assertThat(read.getEventId()).isEqualTo(EVENT_ID);
+        assertThat(read.getEventType()).isEqualTo(DeviceUpsertEventType.UPDATED);
+        assertThat(read.getOperation()).isNull();
+    }
+
+    @Test
+    @DisplayName("DeviceInfo 1.3.0 with operation read by 1.2.0 then operation ignored, other fields kept")
+    void givenDeviceInfo13WithOperation_whenReadWith120_thenOperationIgnored() throws IOException {
+        DeviceInfo current = DeviceInfo.newBuilder()
+                .setDeviceId(DEVICE_ID)
+                .setEmittedAtMs(456L)
+                .setEventType(DeviceUpsertEventType.UPDATED)
+                .setEventId(EVENT_ID)
+                .setEventTimeMs(400L)
+                .setOperation(OperationType.UPDATE)
+                .build();
+
+        GenericRecord read = new GenericDatumReader<GenericRecord>(DeviceInfo.getClassSchema(), DEVICE_INFO_1_2)
+                .read(null, decoder(writeSpecific(current, DeviceInfo.getClassSchema())));
+
+        assertThat(read.get("deviceId").toString()).isEqualTo(DEVICE_ID);
+        assertThat(read.get("eventId").toString()).isEqualTo(EVENT_ID);
+        assertThat(read.getSchema().getField("operation")).isNull();
     }
 
     private static Schema withoutFields(Schema schema, Set<String> names) {

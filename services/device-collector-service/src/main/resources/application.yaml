@@ -4,6 +4,12 @@ spring:
   application:
     name: device-collector-service
 
+  data:
+    redis:
+      # Redis общий для платформы: сброс кэша устройства. Адрес - в профиле docker (Sentinel) или application-local
+      timeout: ${REDIS_TIMEOUT}
+      password: ${REDIS_PASSWORD:}
+
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     properties:
@@ -63,6 +69,10 @@ spring:
 app:
   # Пусто или не задано -> hostname контейнера
   instance-id: ${APP_INSTANCE_ID:${HOSTNAME:local}}
+  cache:
+    # Срок жизни порога версии (ключ device:v1:floor:{deviceId}): тот же, что у device-service.
+    # Сам кэш (device:v1:{deviceId}) этот сервис не продлевает - только убирает из него устаревший ответ
+    floor-ttl: ${DEVICE_CACHE_FLOOR_TTL}
   kafka:
     devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
     dlt-topic: ${KAFKA_DEVICES_DLT_TOPIC:devices-dlt}

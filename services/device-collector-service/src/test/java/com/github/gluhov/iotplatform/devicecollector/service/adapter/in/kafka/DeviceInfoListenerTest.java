@@ -46,7 +46,7 @@ class DeviceInfoListenerTest {
     @DisplayName("Stored: offset acknowledged after processing, JSON log has shard, status and message position")
     void givenStored_whenConsume_thenAcknowledgedAndLogged() {
         when(useCase.process(eq("dev-1"), eq(message), eq(POSITION)))
-                .thenReturn(new ProcessingResult(ProcessingOutcome.APPLIED, "shard_1"));
+                .thenReturn(new ProcessingResult(ProcessingOutcome.APPLIED, "shard_1", 1L));
 
         try (LogCapture logs = LogCapture.of(DeviceInfoListener.class)) {
             listener.onDeviceInfo(record, ack);
@@ -70,7 +70,7 @@ class DeviceInfoListenerTest {
     void givenDeliveryAttemptHeader_whenConsume_thenAttemptInPosition() {
         record.headers().add(KafkaHeaders.DELIVERY_ATTEMPT, ByteBuffer.allocate(Integer.BYTES).putInt(3).array());
         when(useCase.process(eq("dev-1"), eq(message), eq(new MessagePosition("devices", 1, 42L, 3))))
-                .thenReturn(new ProcessingResult(ProcessingOutcome.APPLIED, "shard_1"));
+                .thenReturn(new ProcessingResult(ProcessingOutcome.APPLIED, "shard_1", 1L));
 
         listener.onDeviceInfo(record, ack);
 
