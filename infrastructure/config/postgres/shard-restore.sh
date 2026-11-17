@@ -15,7 +15,7 @@
 #   5. позиции группы device-collector в теме devices по каждому разделу возвращаются к моменту копии (из manifest;
 #      у раздела, где коммитов к тому моменту не было, - к началу раздела) и сверяются с Kafka: сообщения,
 #      обработанные после копии, сервис обработает снова - журнал processed_device_events отсекает повторы,
-#      реестр догоняет тему devices (пока сообщения в ней есть; тема compacted хранит последнее сообщение каждого устройства);
+#      реестр догоняет тему devices (пока сообщения в ней есть: тема хранит их KAFKA_DEVICES_RETENTION_MS, ADR-0011);
 #   6. Proxy запускается заново (метаданные таблиц он читает при старте): устройства из manifest читаются через него;
 #   7. запускается device-collector-service.
 # Состояние реестра после восстановления - на момент копии плюс то, что сервис дочитает из Kafka.
@@ -65,6 +65,34 @@ for i in "${SHARDS[@]}"; do
   if [[ ${#sample[@]} -gt 0 ]]; then ids+=("${sample[@]}"); fi
 done
 echo "==> SHA-256 of dumps matches manifest"
+
+# Возраст копии против срока хранения темы devices (FR-022, ADR-0011): сообщения старше
+# KAFKA_DEVICES_RETENTION_MS тема удаляет, и изменения, сделанные после копии и уже удалённые из темы,
+# восстановление не вернёт (смещение группы вне диапазона темы). Здесь только предупреждение - до остановки сервисов
+# Время копии (UTC, формат created_at из manifest) в секундах эпохи; пусто, если не разобрать.
+# BSD date (macOS) и GNU/busybox date (alpine) разные: BSD пробуем первым (в GNU у него нет -j)
+stamp_epoch() {
+  local s="$1"
+  date -u -j -f '%Y%m%dT%H%M%SZ' "${s}" +%s 2>/dev/null \
+    || date -u -d "${s:0:4}-${s:4:2}-${s:6:2} ${s:9:2}:${s:11:2}:${s:13:2}" +%s 2>/dev/null \
+    || true
+}
+retention_ms="$(env_value KAFKA_DEVICES_RETENTION_MS)"
+[[ "${retention_ms}" =~ ^[0-9]+$ ]] \
+  || { echo "[FAIL] KAFKA_DEVICES_RETENTION_MS is not set in .env (see .env.example)" >&2; exit 1; }
+created="$(value created_at)"
+created_epoch=""
+[[ "${created}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] && created_epoch="$(stamp_epoch "${created}")"
+if [[ -z "${created_epoch}" ]]; then
+  echo "[WARN] manifest has no readable created_at (${created:-empty}): age of the copy vs devices retention is unknown" >&2
+  echo "       the topic keeps messages for $((retention_ms / 1000)) s: changes made after the copy may be already deleted" >&2
+else
+  age=$(( $(date -u +%s) - created_epoch ))
+  if (( age * 1000 > retention_ms )); then
+    echo "[WARN] copy ${created} is older than KAFKA_DEVICES_RETENTION_MS ($((retention_ms / 1000)) s, copy age ${age} s)" >&2
+    echo "       the devices topic may have deleted messages (admin commands and router events) made after the copy: restore will not bring them back" >&2
+  fi
+fi
 
 # Позиции группы из manifest должны покрывать все разделы темы: пустой список (копия старой версии скрипта)
 # или другое число разделов - отказ до остановки чего-либо, а не молчаливое оставление текущих offset

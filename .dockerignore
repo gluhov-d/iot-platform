@@ -16,3 +16,9 @@ services/db-migrator/.gradle
 !services/device-collector-service/**
 services/device-collector-service/build
 services/device-collector-service/.gradle
+!services/device-service-client/**
+services/device-service-client/build
+services/device-service-client/.gradle
+!services/device-service/**
+services/device-service/build
+services/device-service/.gradle

@@ -39,6 +39,17 @@ scrape_configs:
         port: 8080
         refresh_interval: 15s
 
+  # device-service: management-порт (DEVICE_SERVICE_MANAGEMENT_PORT в .env.example; prometheus.yml не подставляет
+  # переменные, поэтому номер - литерал, его же задаёт compose). Без токена, на хост не публикуется; все реплики - через DNS
+  - job_name: device-service
+    metrics_path: /actuator/prometheus
+    scrape_interval: 5s
+    dns_sd_configs:
+      - names: [ "device-service" ]
+        type: A
+        port: 8081
+        refresh_interval: 15s
+
   # ShardingSphere-Proxy: агент метрик (config/shardingsphere-agent), порт 9090 контейнера
   - job_name: shardingsphere-proxy
     static_configs:

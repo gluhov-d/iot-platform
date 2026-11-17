@@ -40,12 +40,13 @@ loki.source.docker "containers" {
   forward_to = [loki.process.json_logs.receiver]
 }
 
-// JSON-логи events-collector-service и device-collector-service: уровень и шард - метки
+// JSON-логи events-collector-service, device-collector-service и device-service: уровень и шард - метки
 // (низкая кардинальность: shard_0, shard_1, unknown), traceId/eventId/deviceId - structured metadata:
 // по ним можно фильтровать, но они не раздувают индекс Loki, как раздули бы метки.
+// У device-service нет шарда (логи без поля shard - метка пустая), метка service - из меток контейнера Compose.
 loki.process "json_logs" {
   stage.match {
-    selector = "{service=~\"events-collector-service|device-collector-service\"}"
+    selector = "{service=~\"events-collector-service|device-collector-service|device-service\"}"
 
     stage.json {
       expressions = {

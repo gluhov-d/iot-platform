@@ -9,6 +9,15 @@ x-logging: &default-logging
 x-restart: &default-restart
   restart: unless-stopped
 
+# Окружение узлов Redis (redis, redis-replica): общее для entrypoint, см. config/redis/redis-entrypoint.sh
+x-redis-node-env: &redis-node-env
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+  REDISCLI_AUTH: ${REDIS_PASSWORD}
+  REDIS_MASTER_IP: ${REDIS_MASTER_IP}
+  REDIS_SENTINEL_IPS: ${REDIS_SENTINEL_IPS}
+  REDIS_SENTINEL_MASTER: ${REDIS_SENTINEL_MASTER}
+  REDIS_MAXMEMORY: ${REDIS_MAXMEMORY}
+
 # Общая часть экспортёров метрик шардов (postgres-exporter-shard-*): образ, healthcheck, профиль
 x-shard-exporter: &shard-exporter
   # Версия своя, не POSTGRES_EXPORTER_VERSION: v0.15.0 платформенного postgres-exporter не знает pg_stat_bgwriter PostgreSQL 17+
@@ -63,27 +72,111 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Redis — аренда публикатора outbox и набор опубликованных устройств
+  # Redis через Sentinel (ADR-0008): общий для аренды публикатора, отпечатков, кэша устройств и сброса кэша.
+  # redis - исходно основной узел, redis-replica - реплика, redis-sentinel-1..3 - кворум 2 (имя platform-redis).
+  # Статические адреса в iot-net: Sentinel следит за основным узлом по адресу (research.md R9).
+  # Роль узла при старте спрашивает redis-entrypoint.sh у Sentinel, а не из командной строки (research.md R14).
+  # Порядок старта: redis -> redis-replica -> redis-sentinel-1..3 (до Sentinel узел берёт запасную роль)
   # ---------------------------------------------------------------------------
   redis:
     image: redis:${REDIS_VERSION}
     container_name: iot-redis
     <<: *default-restart
     logging: *default-logging
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    entrypoint: ["/bin/sh", "/opt/init/redis-entrypoint.sh"]
     environment:
-      REDISCLI_AUTH: ${REDIS_PASSWORD}
+      <<: *redis-node-env
+      REDIS_SELF_IP: ${REDIS_MASTER_IP}
+      # Запасная роль: первый старт стенда, пока Sentinel не поднят
+      REDIS_DEFAULT_ROLE: master
     ports:
       - "${REDIS_PORT}:6379"
     volumes:
       - redis-data:/data
+      - ./config/redis/redis-entrypoint.sh:/opt/init/redis-entrypoint.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 10s
-    networks: [iot-net]
+    networks:
+      iot-net:
+        ipv4_address: ${REDIS_MASTER_IP}
+
+  redis-replica:
+    image: redis:${REDIS_VERSION}
+    container_name: iot-redis-replica
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      redis:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/opt/init/redis-entrypoint.sh"]
+    environment:
+      <<: *redis-node-env
+      REDIS_SELF_IP: ${REDIS_REPLICA_IP}
+      REDIS_DEFAULT_ROLE: replica
+    volumes:
+      - redis-replica-data:/data
+      - ./config/redis/redis-entrypoint.sh:/opt/init/redis-entrypoint.sh:ro
+    healthcheck:
+      # healthy - узел отвечает. Роль не проверяем: после переключения этот узел может стать основным (Sentinel)
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      iot-net:
+        ipv4_address: ${REDIS_REPLICA_IP}
+
+  # Sentinel: конфигурация в томе (sentinel-entrypoint.sh), по одному тому на Sentinel
+  redis-sentinel-1: &redis-sentinel
+    image: redis:${REDIS_VERSION}
+    container_name: iot-redis-sentinel-1
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      redis-replica:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/opt/init/sentinel-entrypoint.sh"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_MASTER_IP: ${REDIS_MASTER_IP}
+      REDIS_SENTINEL_MASTER: ${REDIS_SENTINEL_MASTER}
+    volumes:
+      - redis-sentinel-1-data:/data
+      - ./config/redis/sentinel-entrypoint.sh:/opt/init/sentinel-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      iot-net:
+        ipv4_address: ${REDIS_SENTINEL_1_IP}
+
+  redis-sentinel-2:
+    <<: *redis-sentinel
+    container_name: iot-redis-sentinel-2
+    volumes:
+      - redis-sentinel-2-data:/data
+      - ./config/redis/sentinel-entrypoint.sh:/opt/init/sentinel-entrypoint.sh:ro
+    networks:
+      iot-net:
+        ipv4_address: ${REDIS_SENTINEL_2_IP}
+
+  redis-sentinel-3:
+    <<: *redis-sentinel
+    container_name: iot-redis-sentinel-3
+    volumes:
+      - redis-sentinel-3-data:/data
+      - ./config/redis/sentinel-entrypoint.sh:/opt/init/sentinel-entrypoint.sh:ro
+    networks:
+      iot-net:
+        ipv4_address: ${REDIS_SENTINEL_3_IP}
 
   # ---------------------------------------------------------------------------
   # ClickHouse — хранение событий и outbox
@@ -212,6 +305,7 @@ services:
       KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
       KAFKA_TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
+      KAFKA_DEVICES_RETENTION_MS: ${KAFKA_DEVICES_RETENTION_MS}
     volumes:
       - ./init/kafka/init-topics.sh:/opt/init/init-topics.sh:ro
     entrypoint: ["/bin/bash", "/opt/init/init-topics.sh"]
@@ -274,6 +368,12 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_healthy
+      redis-sentinel-3:
+        condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: docker
       # APP_INSTANCE_ID намеренно не передается: у каждой реплики instanceId = hostname
@@ -288,9 +388,12 @@ services:
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
       CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      # Профиль docker подключается через Sentinel (application-docker.yaml); REDIS_HOST/REDIS_PORT - базовый файл
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_SENTINEL_MASTER: ${REDIS_SENTINEL_MASTER}
+      REDIS_SENTINEL_NODES: ${REDIS_SENTINEL_NODES}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE}
       OUTBOX_MAX_ATTEMPTS: ${OUTBOX_MAX_ATTEMPTS}
       OUTBOX_LEASE_TTL_MS: ${OUTBOX_LEASE_TTL_MS}
@@ -400,6 +503,7 @@ services:
       SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
       SHARD_REPLICATION_PASSWORD: ${SHARD_REPLICATION_PASSWORD}
       SHARD_EXPORTER_PASSWORD: ${SHARD_EXPORTER_PASSWORD}
+      SHARD_READER_PASSWORD: ${SHARD_READER_PASSWORD}
     entrypoint: [ "/bin/sh", "/opt/init/shard-replication-init.sh" ]
     volumes:
       - ./init/shards/shard-replication-init.sh:/opt/init/shard-replication-init.sh:ro
@@ -488,6 +592,9 @@ services:
         condition: service_healthy
       postgres-shard-1:
         condition: service_healthy
+      # Роль device_reader создаётся до миграций: V3 выдаёт ей SELECT на devices
+      shard-replication-init:
+        condition: service_completed_successfully
       schema-register:
         condition: service_completed_successfully
     environment:
@@ -501,7 +608,8 @@ services:
   # ---------------------------------------------------------------------------
   # ShardingSphere-Proxy — логическая база devices (PostgreSQL-протокол) поверх шардов.
   # Конфигурация - шаблоны infrastructure/config/shardingsphere, пароли подставляет render-config.sh.
-  # Стартует после миграций: метаданные таблиц Proxy загружает при запуске
+  # Стартует после миграций: метаданные таблиц Proxy загружает при запуске. Подключается ко всем источникам обеих
+  # логических баз (devices и devices_read), поэтому без обеих реплик не стартует (ADR-0004): ждём их готовности
   # ---------------------------------------------------------------------------
   shardingsphere-proxy:
     image: apache/shardingsphere-proxy:${SHARDINGSPHERE_PROXY_VERSION}
@@ -511,6 +619,10 @@ services:
     depends_on:
       db-migrator:
         condition: service_completed_successfully
+      postgres-shard-0-replica:
+        condition: service_healthy
+      postgres-shard-1-replica:
+        condition: service_healthy
     environment:
       PORT: 3307
       # Агент метрик (Prometheus, порт 9090 контейнера, наружу не публикуется): плагин входит в образ, конфигурация - config/shardingsphere-agent
@@ -525,6 +637,10 @@ services:
       SHARD_CONNECTION_TIMEOUT_MS: ${SHARD_CONNECTION_TIMEOUT_MS}
       SHARDING_PROXY_USER: ${SHARDING_PROXY_USER}
       SHARDING_PROXY_PASSWORD: ${SHARDING_PROXY_PASSWORD}
+      # База devices_read: роль device_reader на репликах и учётная запись, которой доступна только она (ADR-0004)
+      SHARD_READER_PASSWORD: ${SHARD_READER_PASSWORD}
+      DEVICES_READ_DB_USER: ${DEVICES_READ_DB_USER}
+      DEVICES_READ_DB_PASSWORD: ${DEVICES_READ_DB_PASSWORD}
     entrypoint: ["/bin/bash", "/opt/init/render-config.sh"]
     ports:
       - "${SHARDING_PROXY_PORT}:3307"
@@ -565,6 +681,14 @@ services:
         condition: service_healthy
       shardingsphere-proxy:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_healthy
+      redis-sentinel-3:
+        condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: docker
       KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
@@ -588,6 +712,15 @@ services:
       # connectTimeout и socketTimeout - в секундах
       DEVICES_DB_URL: "jdbc:postgresql://shardingsphere-proxy:3307/devices?connectTimeout=${DEVICES_DB_CONNECT_TIMEOUT_S}&socketTimeout=${DEVICES_DB_SOCKET_TIMEOUT_S}"
       DEVICES_DB_USERNAME: ${SHARDING_PROXY_USER}
+      # Сброс кэша карточек идёт через Sentinel (application-docker.yaml); REDIS_HOST/REDIS_PORT - базовый файл
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_SENTINEL_MASTER: ${REDIS_SENTINEL_MASTER}
+      REDIS_SENTINEL_NODES: ${REDIS_SENTINEL_NODES}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT}
+      # Срок жизни порога версии в кэше (ключ device:v1:floor:{deviceId}); сам кэш сервис не продлевает
+      DEVICE_CACHE_FLOOR_TTL: ${DEVICE_CACHE_FLOOR_TTL}
       DEVICES_DB_PASSWORD: ${SHARDING_PROXY_PASSWORD}
       # Alloy поднимается профилем observability; без него трейсы просто не доставляются
       MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
@@ -597,6 +730,90 @@ services:
       - "${DEVICE_COLLECTOR_PORTS}:8080"
     healthcheck:
       test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /actuator/health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [ iot-net ]
+
+  # ---------------------------------------------------------------------------
+  # device-service — API устройств: чтение из реплик devices_read, команды в тему devices (ADR-0001)
+  # ---------------------------------------------------------------------------
+  device-service:
+    build:
+      context: ..
+      dockerfile: services/device-service/Dockerfile
+      # Gradle внутри сборки берёт avros из Nexus хоста (как у device-collector-service)
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: iot-platform/device-service:${DEVICE_SERVICE_IMAGE_TAG}
+    <<: *default-restart
+    logging: *default-logging
+    # Два экземпляра: без container_name, порты - диапазон (каждая реплика получает свой порт хоста)
+    deploy:
+      replicas: 2
+    depends_on:
+      schema-register:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      shardingsphere-proxy:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_healthy
+      redis-sentinel-3:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Kafka и Schema Registry: команды в тему devices (тот же топик, что читает device-collector-service)
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      KAFKA_PRODUCER_MAX_BLOCK_MS: ${KAFKA_PRODUCER_MAX_BLOCK_MS}
+      KAFKA_PRODUCER_REQUEST_TIMEOUT_MS: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS}
+      KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS}
+      DEVICE_COMMAND_SEND_TIMEOUT: ${DEVICE_COMMAND_SEND_TIMEOUT}
+      # Чтение: логическая база devices_read в Proxy (реплики шардов) и кэш устройства в Redis через Sentinel
+      DEVICES_READ_DB_URL: ${DEVICES_READ_DB_URL}
+      DEVICES_READ_DB_USER: ${DEVICES_READ_DB_USER}
+      DEVICES_READ_DB_PASSWORD: ${DEVICES_READ_DB_PASSWORD}
+      DEVICES_READ_DB_POOL_CONNECTION_TIMEOUT_MS: ${DEVICES_READ_DB_POOL_CONNECTION_TIMEOUT_MS}
+      DEVICES_READ_DB_INIT_FAIL_TIMEOUT_MS: ${DEVICES_READ_DB_INIT_FAIL_TIMEOUT_MS}
+      DEVICE_CACHE_TTL: ${DEVICE_CACHE_TTL}
+      DEVICE_CACHE_FLOOR_TTL: ${DEVICE_CACHE_FLOOR_TTL}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT}
+      REDIS_SENTINEL_MASTER: ${REDIS_SENTINEL_MASTER}
+      REDIS_SENTINEL_NODES: ${REDIS_SENTINEL_NODES}
+      # Токены Keycloak: iss - адрес с хоста (как в токенах), ключи подписи - внутри сети Compose
+      KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI}
+      KEYCLOAK_JWK_SET_URI: ${KEYCLOAK_JWK_SET_URI}
+      DEVICE_SERVICE_AUDIENCE: ${DEVICE_SERVICE_AUDIENCE}
+      JWT_CLOCK_SKEW: ${JWT_CLOCK_SKEW}
+      KEYCLOAK_JWK_CONNECT_TIMEOUT: ${KEYCLOAK_JWK_CONNECT_TIMEOUT}
+      KEYCLOAK_JWK_READ_TIMEOUT: ${KEYCLOAK_JWK_READ_TIMEOUT}
+      # Идентификатор экземпляра не задаётся: без значения сервис берёт hostname контейнера (свой у каждой реплики)
+      # Alloy поднимается профилем observability; без него трейсы просто не доставляются
+      MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
+      # Management-порт: технические точки без токена; порт не публикуется на хост (ports ниже - только API)
+      DEVICE_SERVICE_MANAGEMENT_PORT: ${DEVICE_SERVICE_MANAGEMENT_PORT}
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
+    ports:
+      # Диапазон, а не один порт: каждая реплика получает свой порт хоста
+      - "${DEVICE_SERVICE_PORTS}:8080"
+    healthcheck:
+      # Liveness: проверяет, что процесс отвечает, а не состояние зависимостей (их проверяет readiness); порт - management
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${DEVICE_SERVICE_MANAGEMENT_PORT}; printf 'GET /actuator/health/liveness HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3" ]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -805,31 +1022,34 @@ services:
   # ---------------------------------------------------------------------------
   # Keycloak — аутентификация и авторизация
   # ---------------------------------------------------------------------------
+  # Базовый стенд (без профиля). Realm - из репозитория, импорт при создании контейнера (ADR-0007).
+  # Хранилище dev-file без тома: пересоздание контейнера импортирует realm заново с новыми ключами, перезапуск
+  # ключи сохраняет. iss токенов един снаружи и внутри сети: KC_HOSTNAME задаёт адрес, по которому клиенты видят Keycloak
+  # с хоста; KC_HOSTNAME_BACKCHANNEL_DYNAMIC - внутренние запросы идут по адресу контейнера (research.md R7)
   keycloak:
     image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}
-    profiles: [platform]
     platform: ${KEYCLOAK_PLATFORM}
     container_name: iot-keycloak
     <<: *default-restart
     logging: *default-logging
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["start-dev", "--http-port=8080", "--health-enabled=true", "--metrics-enabled=true"]
+    command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true", "--metrics-enabled=true"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-      KC_DB: postgres
-      KC_DB_URL: "jdbc:postgresql://postgres:5432/${KEYCLOAK_DB}"
-      KC_DB_USERNAME: ${POSTGRES_USER}
-      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_DB: dev-file
       KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: "http://localhost:${KEYCLOAK_PORT}"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HOSTNAME_STRICT: "false"
+      KC_LOG_CONSOLE_OUTPUT: json
+      # Секреты клиентов realm подставляются из окружения контейнера (${...} в iot-platform-realm.json)
+      DEVICE_SERVICE_CONSUMER_SECRET: ${DEVICE_SERVICE_CONSUMER_SECRET}
+      DEVICE_SERVICE_READER_SECRET: ${DEVICE_SERVICE_READER_SECRET}
       JAVA_OPTS_APPEND: "-Xms256m -Xmx768m"
     ports:
       - "${KEYCLOAK_PORT}:8080"
     volumes:
-      - keycloak-data:/opt/keycloak/data
+      - ./config/keycloak/iot-platform-realm.json:/opt/keycloak/data/import/iot-platform-realm.json:ro
     healthcheck:
       # В образе нет curl — используем /dev/tcp из bash
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\": \"UP\"' <&3"]
@@ -1131,6 +1351,13 @@ networks:
   iot-net:
     name: iot-net
     driver: bridge
+    # Статические адреса узлов Redis и Sentinel (ADR-0008, research.md R9): подсеть задаёт .env.
+    # Динамические адреса остальных контейнеров - только из ip_range (верхняя половина подсети): иначе при
+    # параллельном старте контейнер без статического адреса занимает адрес узла Redis (Address already in use)
+    ipam:
+      config:
+        - subnet: ${IOT_NET_SUBNET}
+          ip_range: ${IOT_NET_IP_RANGE}
 
 volumes:
   postgres-data:
@@ -1138,7 +1365,6 @@ volumes:
   clickhouse-data:
   kafka-data:
   minio-data:
-  keycloak-data:
   prometheus-data:
   loki-data:
   tempo-data:
@@ -1149,3 +1375,7 @@ volumes:
   postgres-shard-1-data:
   postgres-shard-0-replica-data:
   postgres-shard-1-replica-data:
+  redis-replica-data:
+  redis-sentinel-1-data:
+  redis-sentinel-2-data:
+  redis-sentinel-3-data:

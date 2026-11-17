@@ -10,6 +10,12 @@ SERVICE_PROJ  := :services:events-collector-service
 # device-collector-service (реестр устройств)
 DCS_DIR       := $(ROOT_DIR)/services/device-collector-service
 DCS_PROJ      := :services:device-collector-service
+# device-service (API устройств)
+DS_DIR        := $(ROOT_DIR)/services/device-service
+DS_PROJ       := :services:device-service
+# device-service-client (клиент API device-service)
+DS_CLIENT_DIR  := $(ROOT_DIR)/services/device-service-client
+DS_CLIENT_PROJ := :services:device-service-client
 
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
@@ -30,7 +36,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli topics check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check schemas-register schemas
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -118,7 +124,8 @@ wait: ## Дождаться, пока все сервисы станут healthy
 	  pending=""; failed=""; \
 	  status=$$($(COMPOSE) ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}') || exit 1; \
 	  for s in $$services; do \
-	    IFS='|' read -r _ state health code  <<<"$$(grep "^$$s|" <<<"$$status")"; \
+	    lines=$$(grep "^$$s|" <<<"$$status"); [ -n "$$lines" ] || lines="$$s|||"; \
+	    while IFS='|' read -r _ state health code; do \
 	    if [[ "$$init" == *" $$s "* ]]; then \
 	      case "$$state" in \
 	      	exited) [ "$$code" = 0 ] || failed="$$failed $$s(код $$code)";; \
@@ -132,6 +139,7 @@ wait: ## Дождаться, пока все сервисы станут healthy
 	   		*) pending="$$pending $$s" ;; \
 	   	  esac; \
 	   	fi; \
+	    done <<<"$$lines"; \
 	  done; \
 	  if [ -n "$$failed" ]; then echo "!!! Ошибка: $$failed"; $(MAKE) --no-print-directory health; exit 1; fi; \
 	  if [ -z "$$pending" ]; then echo "==> Все сервисы healthy, init-задачи завершены с кодом 0"; break; fi; \
@@ -178,8 +186,10 @@ urls: ## Показать адреса всех сервисов
 psql: ## Открыть psql в контейнере postgres
 	@$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
-redis-cli: ## Открыть redis-cli
-	@$(COMPOSE) exec redis redis-cli
+redis-cli: ## Открыть redis-cli к текущему основному узлу (адрес узнаётся у Sentinel)
+	@m=$$($(COMPOSE) exec -T redis-sentinel-1 redis-cli -p 26379 sentinel get-master-addr-by-name $(call compose_env,REDIS_SENTINEL_MASTER) | sed -n 1p | tr -d '\r'); \
+	[ -n "$$m" ] || { echo "!!! Sentinel не знает основной узел"; exit 1; }; \
+	$(COMPOSE) exec redis redis-cli -h "$$m"
 
 clickhouse-cli: ## Открыть clickhouse-client
 	@$(COMPOSE) exec clickhouse sh -c 'exec clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD"'
@@ -218,7 +228,7 @@ test: ## Модульные тесты сервиса (Docker не нужен)
 integration-test: ## Интеграционные тесты сервиса (Testcontainers, нужен Docker)
 	@$(GRADLE) $(SERVICE_PROJ):integrationTest
 
-coverage: ## Все тесты + проверка порога покрытия 65% + HTML-отчет
+coverage: ## Все тесты + проверка порога покрытия 70% + HTML-отчет
 	@$(GRADLE) $(SERVICE_PROJ):check && echo "Отчет: $(SERVICE_DIR)/build/reports/jacoco/test/html/index.html"
 
 ## ----------------------------------------------------------------- device-collector-service (реестр устройств)
@@ -233,6 +243,25 @@ dcs-coverage: ## Все тесты device-collector-service + порог пок�
 
 dcs-quick-check: ## Быстрая проверка поднятого стенда: устройство сохраняется на ожидаемом шарде (scripts/quick-check.sh)
 	@$(DCS_DIR)/scripts/quick-check.sh
+
+## ----------------------------------------------------------------- device-service (API устройств)
+ds-test: ## Модульные тесты device-service (Docker не нужен)
+	@$(GRADLE) $(DS_PROJ):test
+
+ds-it: ## Интеграционные тесты device-service (Testcontainers, нужен Docker)
+	@$(GRADLE) $(DS_PROJ):integrationTest
+
+ds-coverage: ## Все тесты device-service + порог покрытия + HTML-отчёт
+	@$(GRADLE) $(DS_PROJ):check && echo "Отчёт: $(DS_DIR)/build/reports/jacoco/test/html/index.html"
+
+ds-quick-check: ## Быстрая проверка поднятого стенда: токен, CRUD через REST, данные в реплике за 5 с, 401 без токена (scripts/quick-check.sh)
+	@$(DS_DIR)/scripts/quick-check.sh
+
+## ----------------------------------------------------------- device-service-client (клиент API)
+ds-client-check: ## Сборка и тесты клиента device-service (без публикации)
+	@$(GRADLE) $(DS_CLIENT_PROJ):build
+ds-client-release: ## Публикация клиента device-service в Nexus (необратимо: выпущенная версия не перезаписывается)
+	@$(DS_CLIENT_DIR)/scripts/publish.sh
 
 ## ----------------------------------------------------------------- avros
 avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up; Schema Registry поднимется сама)
