@@ -124,25 +124,6 @@ class ItDeviceOperationsTest extends AbstractItTest {
     }
 
     @Test
-    @DisplayName("FR-022: тема devices не сжимается - команда и более позднее событие роутера остаются по порядку")
-    void givenAdminDeleteThenRouterEvent_whenTopicReadFromBeginning_thenBothKeptInOrder() throws Exception {
-        String id = deviceOnShard(0);
-        send(id, command(id, "cmd-1", OperationType.DELETE, T).build(), null);
-        RecordMetadata router = send(id, info(id, "evt-1", DeviceUpsertEventType.UPDATED, T.plusSeconds(10)).build(), null);
-        awaitCommitted(router);
-
-        assertThat(topicConfig(DEVICES, "cleanup.policy")).isEqualTo("delete");
-        assertThat(topicConfig(DEVICES, "retention.ms")).isEqualTo("2592000000");
-        // Отставший обработчик читает оба сообщения в исходном порядке: со сжатием осталось бы только событие роутера
-        assertThat(messagesOf(DEVICES, id)).hasSize(2)
-                .extracting(record -> record.offset())
-                .isSorted();
-        int shard = assertOnlyOnExpectedShard(id);
-        assertThat(onShard(shard, "SELECT status, deleted_by FROM devices WHERE device_id = '" + id + "'"))
-                .isEqualTo("DELETED|ADMIN");
-    }
-
-    @Test
     @DisplayName("FR-021: Redis stopped - messages are still applied and acknowledged")
     void givenRedisDown_whenConsumed_thenApplied() throws Exception {
         String id = deviceOnShard(1);

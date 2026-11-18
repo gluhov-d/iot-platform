@@ -173,14 +173,22 @@ class ItSecurityTest extends AbstractItTest {
     void givenReaderToken_whenGet_thenNotRejectedByAuthorization() throws Exception {
         String token = keycloak.clientCredentials("device-service-reader", READER_SECRET);
 
-        assertThat(send("GET", DEVICE, token).statusCode()).isNotIn(401, 403);
+        var response = send("GET", DEVICE, token);
+
+        // Доступ разрешён: дальше отвечает чтение (устройства dev-1 нет), а не проверка токена
+        assertThat(response.statusCode()).isEqualTo(404);
+        assertThat(response.body()).contains("\"code\":\"DEVICE_NOT_FOUND\"");
     }
 
     @Test
     void givenConsumerToken_whenPut_thenNotRejectedByAuthorization() throws Exception {
         String token = keycloak.clientCredentials("device-service-consumer", CONSUMER_SECRET);
 
-        assertThat(send("PUT", DEVICE, token).statusCode()).isNotIn(401, 403);
+        var response = send("PUT", DEVICE, token);
+
+        // Доступ разрешён: дальше отвечает проверка тела ({} без обязательных полей), а не проверка токена
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("\"code\":\"VALIDATION_FAILED\"");
     }
 
     @Test

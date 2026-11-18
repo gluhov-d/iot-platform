@@ -15,6 +15,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.SerializationException;
@@ -22,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.boot.health.contributor.Status;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
@@ -47,6 +50,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -68,6 +72,9 @@ class KafkaConfigTest {
     private final MessageListenerContainer container = mock(MessageListenerContainer.class);
     private final ConsumerRecord<Object, Object> record = new ConsumerRecord<>("devices", 2, 10L, "dev-1",
             info("dev-1", "evt-1", DeviceUpsertEventType.CREATED, T0).build());
+    private final DevicesConsumerOffsets offsets = new DevicesConsumerOffsets(() -> {
+        throw new UnsupportedOperationException("Admin is not used by the error handler");
+    }, "devices", "device-collector");
     private DefaultErrorHandler handler;
 
     @BeforeEach
@@ -87,7 +94,7 @@ class KafkaConfigTest {
         when(producerFactory.copyWithConfigurationOverride(anyMap())).thenReturn(mock(ProducerFactory.class));
         return new KafkaConfig().kafkaErrorHandler(producerFactory, template, new KafkaProperties("devices", DLT),
                 new ProcessingProperties(maxAttempts, Duration.ofMillis(1), 2.0, Duration.ofDays(1), Duration.ofMinutes(5)),
-                new MetricsFacade(registry));
+                new MetricsFacade(registry), offsets);
     }
 
     @Test
@@ -216,6 +223,30 @@ class KafkaConfigTest {
                 .isEqualTo(FailureReason.INVALID);
         assertThat(KafkaConfig.reasonOf(new ListenerExecutionFailedException("x", new IllegalStateException("bug"))))
                 .isEqualTo(FailureReason.ERROR);
+    }
+
+    @Test
+    @DisplayName("Committed offset out of range: listener stopped abnormally, health DOWN, not a silent reset (ADR-0011)")
+    void givenOffsetOutOfRange_whenOtherException_thenContainerStoppedAndHealthDown() {
+        OffsetOutOfRangeException outOfRange = new OffsetOutOfRangeException("out of range", Map.of(PARTITION, 5L));
+
+        Throwable thrown = catchThrowable(() -> handler.handleOtherException(outOfRange, consumer, container, false));
+
+        assertThat(thrown).isInstanceOf(KafkaException.class).hasCause(outOfRange);
+        verify(container, timeout(5_000)).stopAbnormally(any());
+        assertThat(offsets.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(offsets.health().getDetails()).containsEntry("partitions", "{devices-2=5}");
+    }
+
+    @Test
+    @DisplayName("Other consumer exception: handled as before, the listener is not stopped")
+    void givenOtherConsumerException_whenOtherException_thenNotStopped() {
+        Throwable thrown = catchThrowable(() -> handler.handleOtherException(new IllegalStateException("commit failed"),
+                consumer, container, false));
+
+        assertThat(thrown).isInstanceOf(IllegalStateException.class);
+        verify(container, never()).stopAbnormally(any());
+        assertThat(offsets.health().getStatus()).isEqualTo(Status.UP);
     }
 
     private void handle(Exception failure) {

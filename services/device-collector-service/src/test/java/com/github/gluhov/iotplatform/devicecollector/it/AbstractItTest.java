@@ -293,34 +293,6 @@ public abstract class AbstractItTest {
         }
     }
 
-    /**
-     * Все сообщения темы по ключу, прочитанные с начала разделов новой группой - как отставший обработчик или
-     * повторное чтение темы после восстановления шардов. Со сжатием такое чтение видело бы только последнее
-     * сообщение ключа (ADR-0011).
-     */
-    protected static List<ConsumerRecord<String, byte[]>> messagesOf(String topic, String key) {
-        try (var consumer = new KafkaConsumer<String, byte[]>(Map.of(
-                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
-                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class))) {
-            List<TopicPartition> partitions = consumer.partitionsFor(topic).stream()
-                    .map(info -> new TopicPartition(topic, info.partition()))
-                    .toList();
-            consumer.assign(partitions);
-            consumer.seekToBeginning(partitions);
-            List<ConsumerRecord<String, byte[]>> found = new ArrayList<>();
-            Map<TopicPartition, Long> end = consumer.endOffsets(partitions);
-            while (partitions.stream().anyMatch(p -> consumer.position(p) < end.get(p))) {
-                consumer.poll(Duration.ofMillis(500)).forEach(record -> {
-                    if (key.equals(record.key())) {
-                        found.add(record);
-                    }
-                });
-            }
-            return found;
-        }
-    }
-
     protected static String header(ConsumerRecord<?, ?> record, String name) {
         Header header = record.headers().lastHeader(name);
         return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);

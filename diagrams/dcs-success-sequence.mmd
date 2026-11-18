@@ -24,8 +24,8 @@ sequenceDiagram
     S->>P: BEGIN
     S->>P: SELECT current_database(), status, last_event_at, last_state_at,<br/>managed_at, deleted_by, version … FROM devices<br/>WHERE device_id = ? FOR UPDATE
     P->>DB: маршрут |hashCode(device_id)| % 2
-    DB-->>S: нет строки, либо managed_at IS NULL, deleted_by ≠ ADMIN<br/>и last_state_at <= eventAt (для события без снимка — last_event_at <= eventAt)
-    opt managed_at не пуст, deleted_by = ADMIN или снимок старее last_state_at
+    DB-->>S: строка устройства (managed_at, deleted_by, last_state_at, version) или пусто
+    break managed_at не пуст, deleted_by = ADMIN или снимок старее last_state_at
         S->>S: действуют правила dcs-operations-sequence.mmd —<br/>IGNORED (удалено администратором, DELETE роутера у управляемого),<br/>только данные устройства (управляемое) или STALE: дальше по этой схеме не идём
     end
     S->>P: INSERT INTO processed_device_events (…, outcome = APPLIED)<br/>ON CONFLICT (device_id, event_key) DO NOTHING

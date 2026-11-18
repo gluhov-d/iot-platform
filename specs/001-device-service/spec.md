@@ -209,17 +209,22 @@
 - **FR-022**: Тема `devices` хранит сообщения без сжатия: `cleanup.policy=delete`,
   `retention.ms=${KAFKA_DEVICES_RETENTION_MS}` (не меньше интервала копий шардов) — порядок «команда администратора →
   событие роутера» по ключу сохраняется, компакция не удаляет команду, за которой пришёл снимок. Восстановление шардов
-  из копии старше этого срока предупреждает о возможной потере изменений.
+  из копии старше этого срока предупреждает о возможной потере изменений. Смещение группы device-collector-service
+  без тихого сброса: раздел без смещения читается с начала, смещение вне диапазона темы останавливает обработчик
+  (health `DOWN`), а не переводит его на самое раннее сохранённое сообщение.
   *Проверка*: настройки темы показывают `cleanup.policy=delete` и это значение `retention.ms`; последовательность
   «`DELETE` администратора, затем событие роутера» после повторного чтения темы с начала оставляет устройство
-  удалённым; восстановление из старой копии печатает предупреждение.
+  удалённым; смещение группы вне диапазона — обработчик остановлен, событие роутера не применено, health `DOWN`;
+  восстановление из старой копии печатает предупреждение.
 
 ### Эксплуатация
 
 - **FR-023**: Метрики через Micrometer; у events-collector-service, device-collector-service, device-service и
   PostgreSQL — своя панель Grafana. *Проверка*: все запросы панелей выполняются без ошибок; в метках нет `deviceId`.
-- **FR-024**: Логи всех компонентов — JSON с `traceId`, собираются в Loki; один `traceId` проходит от HTTP-запроса
-  в device-service через Kafka и device-collector-service до записи в PostgreSQL.
+- **FR-024**: Логи всех компонентов собираются в Loki; у сервисов платформы (events-collector-service,
+  device-collector-service, device-service) — JSON с `traceId`; сторонние компоненты (PostgreSQL, Kafka, Redis, Proxy,
+  Keycloak) пишут в своём формате: `traceId` у них нет, а формат логов задаёт образ. Один `traceId` проходит от
+  HTTP-запроса в device-service через Kafka и device-collector-service до записи в PostgreSQL.
   *Проверка*: трасса одного PUT в Tempo содержит спаны обоих сервисов и запроса к базе; токенов и секретов в логах нет.
 - **FR-025**: Docker Compose общий для платформы; у сервиса Dockerfile в два этапа (JDK → JRE); образы без `latest`;
   секретов в репозитории нет, все параметры — в `.env.example`; у каждого исходящего вызова есть тайм-аут; проверка
@@ -262,7 +267,7 @@
 
 - [ ] Сданы: `.specify/memory/constitution.md`, `spec.md`, `plan.md`, `tasks.md`, `analyze-report.md`, диаграммы
   (`diagrams/containers.mmd`, `component-device-service.mmd`, `ds-write-sequence.mmd`, `ds-read-sequence.mmd`,
-  `ds-cache-consistency-sequence.mmd`, `dcs-operations-sequence.mmd`) и ADR `docs/adr/0001…0010`.
+  `ds-cache-consistency-sequence.mmd`, `dcs-operations-sequence.mmd`) и ADR `docs/adr/0001…0011`.
 - [ ] Отчёт `analyze` без критических находок; дизайн принят до начала кода.
 
 Этап реализации:

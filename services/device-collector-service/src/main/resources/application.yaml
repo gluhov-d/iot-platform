@@ -17,7 +17,11 @@ spring:
     consumer:
       # Своя группа: тему devices читает только этот сервис
       group-id: ${DEVICE_COLLECTOR_CONSUMER_GROUP:device-collector}
-      auto-offset-reset: earliest
+      # Без тихого сброса (ADR-0011): раздел без смещения читается с начала (DevicesConsumerOffsets), а смещение вне
+      # диапазона темы - сообщения удалены по сроку хранения до обработки - останавливает обработчик, health DOWN.
+      # С earliest потребитель молча перешёл бы на самое раннее сохранённое сообщение и применил бы событие роутера
+      # после потерянного DELETE администратора
+      auto-offset-reset: none
       # Offset подтверждается вручную: после COMMIT в PostgreSQL или после записи в devices-dlt
       enable-auto-commit: false
       # Строго по одному сообщению за poll

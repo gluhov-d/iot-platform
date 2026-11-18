@@ -68,7 +68,8 @@ echo "==> SHA-256 of dumps matches manifest"
 
 # Возраст копии против срока хранения темы devices (FR-022, ADR-0011): сообщения старше
 # KAFKA_DEVICES_RETENTION_MS тема удаляет, и изменения, сделанные после копии и уже удалённые из темы,
-# восстановление не вернёт (смещение группы вне диапазона темы). Здесь только предупреждение - до остановки сервисов
+# восстановление не вернёт (смещение группы вне диапазона темы: device-collector-service с auto-offset-reset=none
+# остановит обработчик, health DOWN). Здесь только предупреждение - до остановки сервисов
 # Время копии (UTC, формат created_at из manifest) в секундах эпохи; пусто, если не разобрать.
 # BSD date (macOS) и GNU/busybox date (alpine) разные: BSD пробуем первым (в GNU у него нет -j)
 stamp_epoch() {
@@ -91,6 +92,7 @@ else
   if (( age * 1000 > retention_ms )); then
     echo "[WARN] copy ${created} is older than KAFKA_DEVICES_RETENTION_MS ($((retention_ms / 1000)) s, copy age ${age} s)" >&2
     echo "       the devices topic may have deleted messages (admin commands and router events) made after the copy: restore will not bring them back" >&2
+    echo "       if so, device-collector-service stops its listener (committed offset out of range, health DOWN) instead of skipping them" >&2
   fi
 fi
 
