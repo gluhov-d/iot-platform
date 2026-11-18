@@ -44,7 +44,7 @@ Proxy не стартует без реплик (ADR-0004)
 ```text
 specs/001-device-service/   spec · plan · research · data-model · quickstart · tasks · analyze-report
 └── (контракт API: services/device-service-client/src/main/openapi/device-service.yaml, перенесён T003)
-docs/adr/0001…0010 · diagrams/*.mmd · AGENTS.md
+docs/adr/0001…0011 · diagrams/*.mmd · AGENTS.md
 
 services/device-service-client/       # java-library + maven-publish
 └── src/main/openapi/device-service.yaml   # источник истины; build/generated — DevicesApi и DTO
@@ -99,7 +99,8 @@ services/db-migrator/…/V3__device_management.sql
 
 ## Переменные окружения
 
-В Compose — без значений по умолчанию; значения — в `.env.example`.
+В Compose — без значений по умолчанию (исключения `COMPOSE_PROJECT_NAME`, `DEVICE_COLLECTOR_CONSUMER_GROUP` — AGENTS.md
+«Конфигурация», T109); значения — в `.env.example`.
 
 | Переменная | Пример | Кому |
 |---|---|---|
@@ -107,6 +108,7 @@ services/db-migrator/…/V3__device_management.sql
 | `DEVICE_CACHE_TTL` | `10m` | device-service (ключ `device:v1:{deviceId}`) |
 | `DEVICE_CACHE_FLOOR_TTL` | `24h` | device-service, device-collector-service (ключ `device:v1:floor:{deviceId}`; больше худшего ожидаемого отставания реплики) |
 | `DEVICE_COMMAND_SEND_TIMEOUT` | `5s` | device-service |
+| `SCHEMA_REGISTRY_HTTP_CONNECT_TIMEOUT_MS`, `SCHEMA_REGISTRY_HTTP_READ_TIMEOUT_MS`, `SCHEMA_REGISTRY_MAX_RETRIES` | `1000`, `2000`, `0` | device-service (клиент Schema Registry; сумма меньше `DEVICE_COMMAND_SEND_TIMEOUT`, T111) |
 | `DEVICE_SERVICE_MANAGEMENT_PORT` | `8081` | device-service, Prometheus (в `prometheus.yml` — литерал), healthcheck; на хост не публикуется |
 | `DEVICES_READ_DB_URL`, `DEVICES_READ_DB_USER`, `DEVICES_READ_DB_PASSWORD` | `jdbc:postgresql://shardingsphere-proxy:3307/devices_read?connectTimeout=2&socketTimeout=3` | device-service, Proxy |
 | `SHARD_READER_PASSWORD` | — | `shard-replication-init`, Proxy |

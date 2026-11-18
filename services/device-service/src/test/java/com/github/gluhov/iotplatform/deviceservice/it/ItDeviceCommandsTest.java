@@ -107,6 +107,26 @@ class ItDeviceCommandsTest extends AbstractItTest {
     }
 
     @Test
+    void givenTooLongSettingValue_whenPut_thenBadRequestAndNoMessage() throws Exception {
+        String id = newId();
+        insertDevice(id, "t1", 1, false);
+        // Значение длиннее 1024 символов (additionalProperties.maxLength контракта)
+        String invalid = "{\"tenantId\":\"t1\",\"deviceType\":\"sensor\",\"status\":\"ACTIVE\",\"settings\":{\"k\":\""
+                + "v".repeat(1025) + "\"}}";
+
+        HttpResponse<String> response;
+        List<ConsumerRecord<String, DeviceInfo>> messages;
+        try (KafkaConsumer<String, DeviceInfo> consumer = devicesConsumer()) {
+            response = put(id, invalid);
+            messages = collect(consumer, id, QUIET);
+        }
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("\"code\":\"VALIDATION_FAILED\"").contains("\"field\":\"settings\"");
+        assertThat(messages).isEmpty();
+    }
+
+    @Test
     void givenNoDevice_whenPut_thenNotFoundAndNoMessage() throws Exception {
         String id = newId();
 

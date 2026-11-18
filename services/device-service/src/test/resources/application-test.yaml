@@ -11,6 +11,11 @@ spring:
       connection-timeout: 2000
       initialization-fail-timeout: -1
   kafka:
+    properties:
+      # Неотвечающий Schema Registry - 503 в срок send-timeout (тест ItSchemaRegistryDownTest)
+      schema.registry.http.connect.timeout.ms: 1000
+      schema.registry.http.read.timeout.ms: 500
+      schema.registry.max.retries: 0
     producer:
       properties:
         # Недоступная Kafka должна отвечать 503 за секунды, а не за минуту (тест givenKafkaDown_whenPut_thenCommandNotAccepted)

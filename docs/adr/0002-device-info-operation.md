@@ -1,6 +1,6 @@
 # ADR-0002: Поле operation в DeviceInfo
 
-**Статус**: предложено, 2026-11-11 · **Спецификация**: [specs/001-device-service](../../specs/001-device-service/spec.md)
+**Статус**: принято, 2026-11-17 (ревью дизайна; предложено 2026-11-11) · **Спецификация**: [specs/001-device-service](../../specs/001-device-service/spec.md)
 
 ## Контекст
 

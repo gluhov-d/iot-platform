@@ -24,6 +24,11 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     properties:
       schema.registry.url: ${SCHEMA_REGISTRY_URL}
+      # Клиент Schema Registry: первая отправка экземпляра запрашивает id схемы до передачи в Kafka, и срок
+      # DEVICE_COMMAND_SEND_TIMEOUT на это не действует. Соединение + чтение без повторов - меньше этого срока (FR-002)
+      schema.registry.http.connect.timeout.ms: ${SCHEMA_REGISTRY_HTTP_CONNECT_TIMEOUT_MS}
+      schema.registry.http.read.timeout.ms: ${SCHEMA_REGISTRY_HTTP_READ_TIMEOUT_MS}
+      schema.registry.max.retries: ${SCHEMA_REGISTRY_MAX_RETRIES}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer

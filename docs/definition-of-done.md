@@ -305,11 +305,11 @@ device-collector-service, проект avros и изменения в приём
 ## Тесты реестра устройств и avros
 
 - [ ] Unit-тесты логики сервисов (`make test`, `make dcs-test`, `make ds-test`; числа — из отчётов сборки
-  `build/test-results/test`: events-collector-service — 132, device-collector-service — 126, device-service — 84;
+  `build/test-results/test`: events-collector-service — 132, device-collector-service — 134, device-service — 90;
   db-migrator — числа нет, отчёта сборки в репозитории нет); порог покрытия JaCoCo выполняется (70 %, `make coverage`,
   `make dcs-coverage`; у device-service — `make ds-coverage`), сгенерированные Avro-классы из отчёта исключены.
 - [ ] Интеграционные тесты сервисов на Testcontainers (числа — из `build/test-results/integrationTest`: events-collector-service — 33,
-  `make integration-test`; device-collector-service — 17, `make dcs-it`; device-service — 39, `make ds-it`).
+  `make integration-test`; device-collector-service — 20, `make dcs-it`; device-service — 44, `make ds-it`).
 - [ ] Быстрая проверка `services/device-collector-service/scripts/quick-check.sh` -> "All checks passed" - напрямую,
   через `make dcs-quick-check` и `./gradlew :services:device-collector-service:quickCheck`: ждёт сохранения устройства,
   подтверждает его на ожидаемом шарде (напрямую в PostgreSQL) и отсутствие на другом.

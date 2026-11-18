@@ -15,9 +15,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.net.URI;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -142,5 +145,51 @@ class DeviceControllerRoutingTest {
         mockMvc.perform(post("/api/v1/devices").contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    // Контракт: settings и attributes - не больше 100 ключей, значение не длиннее 1024 символов (maxProperties, maxLength)
+    @Test
+    void givenTooManySettings_whenPut_thenValidationFailed() throws Exception {
+        String body = "{\"tenantId\":\"t1\",\"deviceType\":\"sensor\",\"status\":\"ACTIVE\",\"settings\":" + map(101, 1) + "}";
+
+        mockMvc.perform(put("/api/v1/devices/dev-1").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.errors[0].field").value("settings"));
+        verifyNoInteractions(manageDeviceUseCase);
+    }
+
+    @Test
+    void givenTooLongAttributeValue_whenPost_thenValidationFailed() throws Exception {
+        String body = "{\"deviceId\":\"dev-1\",\"tenantId\":\"t1\",\"deviceType\":\"sensor\",\"status\":\"NEW\",\"attributes\":"
+                + map(1, 1025) + "}";
+
+        mockMvc.perform(post("/api/v1/devices").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.errors[0].field").value("attributes"));
+        verifyNoInteractions(manageDeviceUseCase);
+    }
+
+    @Test
+    void givenMapsAtContractLimits_whenPostAndPut_thenAccepted() throws Exception {
+        String maps = ",\"settings\":" + map(100, 1024) + ",\"attributes\":" + map(100, 1024) + "}";
+        when(manageDeviceUseCase.create(anyString(), any())).thenReturn(accepted(DeviceCommand.Operation.CREATE));
+        when(manageDeviceUseCase.update(anyString(), any())).thenReturn(accepted(DeviceCommand.Operation.UPDATE));
+
+        mockMvc.perform(post("/api/v1/devices").contentType(APPLICATION_JSON)
+                        .content(VALID_CREATE.substring(0, VALID_CREATE.length() - 1) + maps))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(put("/api/v1/devices/dev-1").contentType(APPLICATION_JSON)
+                        .content(VALID_UPDATE.substring(0, VALID_UPDATE.length() - 1) + maps))
+                .andExpect(status().isAccepted());
+    }
+
+    // JSON-объект из keys ключей k0..kN, значение каждого - valueLength символов
+    private static String map(int keys, int valueLength) {
+        String value = "v".repeat(valueLength);
+        return IntStream.range(0, keys)
+                .mapToObj(i -> "\"k" + i + "\":\"" + value + "\"")
+                .collect(Collectors.joining(",", "{", "}"));
     }
 }

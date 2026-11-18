@@ -15,6 +15,8 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.WebDataBinder;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -30,6 +32,8 @@ import java.net.URI;
 @RestController
 public class DeviceController implements DevicesApi {
 
+    private static final ContractMapValuesValidator MAP_VALUES = new ContractMapValuesValidator();
+
     private final Validator validator;
     private final GetDeviceUseCase getDevice;
     private final ManageDeviceUseCase manageDevice;
@@ -41,6 +45,15 @@ public class DeviceController implements DevicesApi {
         this.getDevice = getDevice;
         this.manageDevice = manageDevice;
         this.deviceMapper = deviceMapper;
+    }
+
+    /** Длина значений settings/attributes (контракт): проверка тела вместе с @Valid, ошибка - в errors[]. */
+    @InitBinder
+    void contractMapValues(WebDataBinder binder) {
+        Object target = binder.getTarget();
+        if (target != null && MAP_VALUES.supports(target.getClass())) {
+            binder.addValidators(MAP_VALUES);
+        }
     }
 
     @Override

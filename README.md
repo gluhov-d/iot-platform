@@ -238,6 +238,14 @@ iot-platform/
 * `cleanup.policy=delete` и `retention.ms` темы `devices` задаёт `kafka-init` при каждом запуске
   (`kafka-configs --alter`, настройка `min.compaction.lag.ms` снимается), поэтому и на уже созданной теме политика
   исправляется. Копия шардов старше срока хранения — предупреждение `shard-restore.sh`.
+* Смещения группы device-collector-service — без тихого сброса (`auto-offset-reset: none`, ADR-0011). Раздел без
+  смещения (новая группа, новый раздел) читается с начала темы. Если смещение группы вне диапазона темы — обработчик
+  отстал дольше срока хранения или группе вернули смещение копии старше срока, — часть сообщений удалена до обработки:
+  обработчик останавливается, в логе ERROR `Committed offset is out of range`, health сервиса `DOWN` (контейнер
+  unhealthy). С `earliest` он молча перешёл бы на самое раннее сохранённое сообщение и, например, применил бы событие
+  роутера после потерянного `DELETE` администратора. Выход: восстановить шарды из свежей копии (`make shard-restore`
+  выставит смещения группы из её manifest) либо осознанно сдвинуть смещение группы
+  (`kafka-consumer-groups --reset-offsets`) и перезапустить сервис.
 * Хранение не заменяет идемпотентность потребителей: повторная доставка и повторное чтение темы дают тот же результат.
 * Темы создаёт одноразовый контейнер `kafka-init` скриптом `infrastructure/init/kafka/init-topics.sh`
   после `kafka: service_healthy`; оба сервиса стартуют только после `kafka-init: service_completed_successfully`.
@@ -668,7 +676,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:db-migrator:test
 ```
 
-events-collector-service — 132 теста, device-collector-service — 126 (раздел 19.8), device-service — 84 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
+events-collector-service — 132 теста, device-collector-service — 134 (раздел 19.8), device-service — 90 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
 Сообщения журнала проверяются через `support/LogCapture` (Logback `ListAppender` со снимком MDC на момент записи).
 Ключевые сценарии events-collector-service:
 
@@ -706,7 +714,7 @@ events-collector-service — 132 теста, device-collector-service — 126 (�
 ./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 70 % (make coverage)
 ./gradlew :services:device-collector-service:integrationTest   # или make dcs-it (раздел 19.8)
 ./gradlew :services:device-collector-service:check             # порог покрытия 70 % (make dcs-coverage)
-./gradlew :services:device-service:integrationTest              # или make ds-it (Testcontainers, 39 тестов)
+./gradlew :services:device-service:integrationTest              # или make ds-it (Testcontainers, 44 теста)
 ```
 
 Классы `It*Test` events-collector-service (33 теста). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
@@ -853,12 +861,12 @@ metadata (не метки, чтобы не раздувать индекс). С�
 | `grafana-kafka.png` | дашборд «Kafka»: темы и лаг consumer group |
 | `tempo-trace-events-to-postgres.png` | сквозной трейс одного события: `events process` … `devices send` (events-collector-service) → `devices process` … `insert devices` (device-collector-service) |
 
-Снимки экрана device-service (модуль 4):
+Снимки экрана device-service:
 
 | Файл | Что |
 |---|---|
 | `grafana-device-service.png` | дашборд device-service: запросы по статусам, отказы 401/403/5xx, задержки p95/p99, команды по операциям, публикация в Kafka, исходы кэша и доля попаданий |
-| `grafana-device-collector-m4.png` | дашборд device-collector-service после модуля 4: добавлены исход `ignored` и сброс кэша устройства |
+| `grafana-device-collector-operations.png` | дашборд device-collector-service с командами администратора: добавлены исход `ignored` и сброс кэша устройства |
 | `tempo-trace-device-service.png` | сквозной трейс одного PUT: `http put /api/v1/devices/{deviceId}` и проверка токена (device-service) → `devices send` → `devices process`, `select device for update`, `insert processed_device_events`, `update devices: command`, `evalsha` сброса кэша (device-collector-service) |
 
 Снимать при идущей нагрузке (например, несколько раз `make check-local`), иначе панели без трафика пусты.
@@ -1035,12 +1043,12 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 
 ### 19.8 Тесты
 
-* Unit (126): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
+* Unit (134): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
   `DeviceInfoMapperTest`, `DeviceInfoListenerTest` (ack только после записи, отправка в DLT), `KafkaConfigTest` (невалидное —
   сразу в `devices-dlt`; сбой хранилища — повторы и DLT; ошибка записи в DLT — не подтверждено; паузы 1 с и 2 с),
   `KafkaErrorClassifierTest`, `JdbcTransactionRunnerTest`, `ProxyShardResolverTest`, `SqlErrorsTest`,
   `ContractCompatibilityTest`, `DeviceControllerTest`, `MetricsFacadeTest`, `ArchitectureTest`.
-* Интеграционные (17, Testcontainers — Kafka, Schema Registry, **два контейнера PostgreSQL и ShardingSphere-Proxy**,
+* Интеграционные (20, Testcontainers — Kafka, Schema Registry, **два контейнера PostgreSQL и ShardingSphere-Proxy**,
   схема — через db-migrator): `ItDeviceCollectorTest` — устройство сохранено на ожидаемом шарде;
   `givenDeviceInfo_whenConsumed_thenStoredOnItsShard` проверяет **напрямую в шардах**, что запись есть на шарде,
   который вернул Proxy, и её нет на другом; много устройств распределяются по обоим шардам; повторное сообщение не
@@ -1253,6 +1261,7 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 | `DEVICE_SERVICE_IMAGE_TAG`, `DEVICE_SERVICE_PORTS` | тег образа; диапазон портов хоста (два экземпляра) | `.env.example`; plan.md, «Переменные окружения» |
 | `DEVICE_SERVICE_MANAGEMENT_PORT` | management-порт (health, prometheus), не публикуется | `.env.example`; литерал в `infrastructure/config/prometheus/prometheus.yml` |
 | `DEVICE_COMMAND_SEND_TIMEOUT` | ожидание подтверждения Kafka при записи | `.env.example`; раздел 22.3 |
+| `SCHEMA_REGISTRY_HTTP_CONNECT_TIMEOUT_MS`, `SCHEMA_REGISTRY_HTTP_READ_TIMEOUT_MS`, `SCHEMA_REGISTRY_MAX_RETRIES` | клиент Schema Registry в device-service: соединение и чтение (мс), повторы (`1000`, `2000`, `0`) | `.env.example`; инвариант ниже |
 | `DEVICE_CACHE_TTL` | срок кэша карточки устройства в device-service | `.env.example`; раздел 19.3 |
 | `DEVICES_READ_DB_URL`, `DEVICES_READ_DB_USER`, `DEVICES_READ_DB_PASSWORD` | логическая база `devices_read` в Proxy | `.env.example`; ADR-0004 |
 | `DEVICES_READ_DB_POOL_CONNECTION_TIMEOUT_MS`, `DEVICES_READ_DB_INIT_FAIL_TIMEOUT_MS` | тайм-аут получения соединения из пула (мс) и тайм-аут проверки при старте пула (`-1` — не ждать и не падать при старте) | `.env.example` |
@@ -1272,6 +1281,10 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 Изменены значения: `KEYCLOAK_VERSION` — `26.0.8`; `SHARD_EXPORTER_PASSWORD` — заглушка с пробелом (ломала DSN экспортёра) заменена на `change_me_exporter`.
 
 Инвариант: `KAFKA_PRODUCER_MAX_BLOCK_MS` ≤ `DEVICE_COMMAND_SEND_TIMEOUT`. Иначе продюсер может ждать метаданные Kafka дольше срока ожидания подтверждения, и `503 COMMAND_NOT_ACCEPTED` придёт позже `DEVICE_COMMAND_SEND_TIMEOUT`. В `.env.example` сейчас `KAFKA_PRODUCER_MAX_BLOCK_MS=5000` и `DEVICE_COMMAND_SEND_TIMEOUT=5s` — инвариант соблюдён.
+
+Второй инвариант: `SCHEMA_REGISTRY_HTTP_CONNECT_TIMEOUT_MS` + `SCHEMA_REGISTRY_HTTP_READ_TIMEOUT_MS` (при `SCHEMA_REGISTRY_MAX_RETRIES=0`) < `DEVICE_COMMAND_SEND_TIMEOUT`. Первая команда экземпляра запрашивает у Schema Registry id схемы до передачи сообщения в Kafka, и срок `DEVICE_COMMAND_SEND_TIMEOUT` на этот запрос не действует; с настройками клиента по умолчанию (60 с, 60 с, 3 повтора) ответа не было и через 20 с (`ItSchemaRegistryDownTest` до правки). Дальше id схемы берётся из кэша. Сейчас `1000` + `2000` мс < 5 с.
+
+Инварианты проверяют каждое ожидание отдельно. Если при первой команде экземпляра метаданные Kafka приходят почти через `KAFKA_PRODUCER_MAX_BLOCK_MS`, а затем медленно отвечает Schema Registry, ожидания складываются: `503` придёт позже `DEVICE_COMMAND_SEND_TIMEOUT` (с текущими значениями — до 5 + 3 с). Это известное ограничение: оба сбоя должны совпасть на первой команде после старта.
 
 ### 22.5 Цели make
 
@@ -1320,3 +1333,4 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 ### 22.8 Известные ограничения
 
 * **Коды ошибок для 405, 406, 415 и неизвестного пути.** Эти ответы отдаются с кодом `VALIDATION_FAILED`, хотя в контракте для них кода нет. Решение сознательное: контракт OpenAPI не меняется, клиенты получают Problem Details с известным кодом. Если понадобится отдельный код, сначала меняется контракт (и клиент `device-service-client`).
+* **`deviceId` с пробелом или `/` из событий роутера.** device-collector-service принимает любой непустой `deviceId` до 128 символов, а device-service — только без пробелов и `/` (шаблон контракта; `/` ломает путь `/api/v1/devices/{deviceId}`). Такое устройство есть в реестре, но `GET`, `PUT` и `DELETE` отвечают на него `400 VALIDATION_FAILED`, создать его через `POST` тоже нельзя (ADR-0006).

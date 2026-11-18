@@ -47,7 +47,11 @@
 - Тесты: `*Test` — unit без Docker, `It*Test` — интеграционные в пакете `it`; имена методов
   `givenX_whenY_thenZ`. Число тестов и покрытие в документах — из отчётов сборки, не по памяти.
 - Конфигурация — только из переменных окружения: в `application.yaml` нет зашитых адресов, тайм-аутов и чисел попыток;
-  в `docker-compose.yaml` переменные без значений по умолчанию, значения — в `.env.example`.
+  в `docker-compose.yaml` переменные без значений по умолчанию, значения — в `.env.example`. Исключения (решение при
+  converge, 18.11.2026): значения по умолчанию в `application.yaml` events-collector-service и device-collector-service
+  (код прошлых модулей, совпадают с `.env.example`, кроме пустого `REDIS_PASSWORD` для запуска без пароля);
+  в Compose — `COMPOSE_PROJECT_NAME` и `DEVICE_COLLECTOR_CONSUMER_GROUP`
+  (стенд со старым `.env` сохраняет имя проекта и группы). Новый код исключений не добавляет.
 - Avro-схемы — только в `avros/`; сервисы подключают явную версию; `auto.register.schemas=false`.
 - HTTP API — только из OpenAPI: DTO и интерфейсы генерируются при сборке, в Git не попадают; ошибки — Problem Details.
 - Схема БД — только миграциями `services/db-migrator` с `IF NOT EXISTS`; сервисы работают с БД через ShardingSphere-Proxy.

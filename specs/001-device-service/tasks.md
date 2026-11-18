@@ -391,34 +391,140 @@ events-collector-service 132; интеграционные — device-collector-
 - [X] T100 README и DoD по факту кода: тема `devices` (`delete`, срок хранения, переход существующей темы), два ключа
   кэша и `DEVICE_CACHE_FLOOR_TTL`, известное ограничение порога, таблицы переменных — `README.md`,
   `docs/definition-of-done.md` (FR-018, FR-022)
-- [ ] T101 **ЧЕЛОВЕК** Дописать в локальный `.env`: `KAFKA_DEVICES_RETENTION_MS`, `DEVICE_CACHE_FLOOR_TTL`; строку
+- [X] T101 **ЧЕЛОВЕК** Дописать в локальный `.env`: `KAFKA_DEVICES_RETENTION_MS`, `DEVICE_CACHE_FLOOR_TTL`; строку
   `KAFKA_DEVICES_MIN_COMPACTION_LAG_MS` удалить (агент `.env` не читает и не меняет)
-- [ ] T102 `converge` повторно до `Converged`; результат — в раздел «Результат converge» этого файла
+- [X] T102 `converge` повторно до `Converged`; результат — в раздел «Результат converge» этого файла
 
 **Checkpoint**: `./gradlew :services:device-service:check :services:device-collector-service:check
 :services:events-collector-service:check` проходит; на стенде `make up`, затем `make check-local`,
 `make dcs-quick-check`, `make ds-quick-check` — код 0; `make topics` показывает `cleanup.policy=delete` у `devices`.
 
+## Phase 12: Смещения группы без тихого сброса и остатки проверки (18.11.2026)
+
+Проверка реализации показала: у device-collector-service `auto-offset-reset: earliest`, поэтому смещение вне диапазона
+темы (обработчик отстал дольше срока хранения) не даёт явной ошибки, как написано в ADR-0011, а молча переводит
+обработчик на самое раннее сохранённое сообщение — замечание 4 ревью дизайна воспроизводится, только через 30 суток.
+Решение человека: `auto-offset-reset: none` и явная установка смещения для раздела без него. Тест T093 читал тему
+отдельным потребителем, а не группой сервиса, — повторное чтение не проверял.
+
+Состояние на 2026-11-18: T103–T107 выполнены. Прогон на Mac: device-collector-service unit 134 / IT 20, device-service
+unit 87 / IT 42 (`check` с порогом покрытия), `make up`, `check-local`, `dcs-quick-check`, `ds-quick-check` — код 0,
+сквозной `e2eTest` (новая группа на чистом стенде) пройден. T101 выполнен (переменные в локальном `.env` есть, проверено по именам). Открыт T108 (`converge`).
+
+- [X] T103 (R) Интеграционный тест до кода: раздел без смещения группы читается с начала; повторное чтение темы с
+  начала после восстановления шарда оставляет `DELETE` администратора (заменяет проверку T093); смещение вне диапазона
+  (`deleteRecords`) — обработчик остановлен, событие роутера не применено, health `DOWN`. На коде с `earliest`
+  последний сценарий падает (обработчик продолжает работу) — `DCST/it/ItConsumerOffsetsTest.java`,
+  `DCST/it/ItDeviceOperationsTest.java`, `DCST/it/AbstractItTest.java` (FR-022, ADR-0011)
+- [X] T104 `auto-offset-reset: none`; `DevicesConsumerOffsets` — перед первым `poll` (событие `ConsumerStartingEvent`)
+  разделам без смещения группы через Admin выставляется самое раннее смещение, health `DOWN` при смещении вне диапазона; `KafkaConfig.DevicesErrorHandler` останавливает обработчик при
+  `OffsetOutOfRangeException`; unit-тесты — `DCSR/application.yaml`, `DCS/config/DevicesConsumerOffsets.java`,
+  `DCS/config/KafkaConfig.java`, `DCST/config/DevicesConsumerOffsetsTest.java`, `DCST/config/KafkaConfigTest.java`
+  (FR-022, ADR-0011)
+- [X] T105 Документы по T104: ADR-0011 (статус «принято», раздел о смещениях группы, неверное «брокер отвергает
+  явной ошибкой» исправлено), FR-022, README раздел 5, предупреждение `shard-restore.sh` — `docs/adr/0011-devices-topic-retention.md`,
+  `specs/001-device-service/spec.md`, `README.md`, `INF/config/postgres/shard-restore.sh` (FR-022)
+- [X] T106 `dcs-success-sequence`: ветка «не этот случай» завершается `break` (после `opt` поток на схеме шёл дальше
+  к `APPLIED`), ответ базы — строка или пусто; перерендерить PNG — `diagrams/dcs-success-sequence.{mmd,png}` (замечание 2)
+- [X] T107 Остатки проверки: `ItSecurityTest` — конкретный статус и код вместо `isNotIn(401, 403)`; FR-024 — JSON с
+  `traceId` у сервисов платформы, сторонние компоненты в своём формате; ссылки на ADR `0001…0011` в spec.md и plan.md;
+  README без номеров модулей, снимок `grafana-device-collector-operations.png` — `DST/it/ItSecurityTest.java`,
+  `specs/001-device-service/spec.md`, `specs/001-device-service/plan.md`, `README.md`, `docs/screenshots/`
+- [X] T108 `converge` до `Converged` (вместе с T102); результат — в раздел «Результат converge»
+
+**Checkpoint**: `./gradlew :services:device-collector-service:check :services:device-service:check` проходит; на стенде
+`make up`, `make check-local`, `make dcs-quick-check`, `make ds-quick-check` — код 0.
+
 ## Результат converge
 
-**Converged** — после трёх проходов (2026-11-15/16) код реализует spec.md, plan.md и tasks.md; нерешённых расхождений уровня MEDIUM и выше нет.
-Статус снят ревью дизайна (17.11.2026): открыта Phase 11 (T090–T102), после её выполнения `converge` прогоняется заново (T102).
+Текущий статус: **Converged** (2026-11-18, проход 6 после Phase 13 и Phase 14).
+Проходы 1–3 (2026-11-15/16) закончились `Converged`; статус снят ревью дизайна (17.11.2026) и проверкой реализации (18.11.2026).
 
 | Проход | Находки | Итог |
 |---|---|---|
 | 1 | 3 независимых аудита (FR-001…012, FR-013…022, FR-023…026 + конституция): 20 находок, из них в работу взяты 12 (Phase 9, T074–T085) | исправлено |
 | 2 | 12 находок (D1–D12), главная: 405/415 отдавались как `500 INTERNAL_ERROR` вместо своего статуса (Phase 10, T086–T089) | исправлено |
 | 3 | 4 мелких остатка (N1–N4: комментарии, одна строка README, перепрогон тестов) | исправлено; новых расхождений нет |
+| 4 | после Phase 11–12: 3 аудита, находки перепроверены; 6 приняты (Phase 13, T109–T114), из них 2 решения человека (T109, T113), 2 ложных отклонены. Главное: длина значений `settings`/`attributes` не проверялась; первая команда при неотвечающем Schema Registry не получала ответа 20 с и дольше | исправлено |
+| 5 | 3 аудита: 4 принятые находки (Phase 14, T116–T119: ADR-0006 о проверке `deviceId` коллектором, тестовый профиль, худший случай 503, формулировки исключения), 10 отклонено с причиной | исправлено |
+| 6 | проверка правок Phase 14 по коду и документам, `ItSchemaRegistryDownTest` на новом тестовом профиле | новых расхождений нет |
 
 Решения человека, зафиксированные при converge: 405/406/415 и неизвестный путь отдаются с кодом `VALIDATION_FAILED` (README 22.8, контракт не менялся);
-событие роутера `DELETE` без снимка для управляемого устройства — `IGNORED` (FR-015, строка 12); порог покрытия events-collector-service — 70 %.
+событие роутера `DELETE` без снимка для управляемого устройства — `IGNORED` (FR-015, строка 12); порог покрытия events-collector-service — 70 %;
+тайм-ауты клиента Schema Registry в device-service — из окружения (T111); `deviceId` с пробелом или `/` из событий роутера через device-service
+недоступен — известное ограничение (ADR-0006, README 22.8, T116).
 Сознательно оставлено: снимок старше `last_state_at` для управляемого устройства даёт `STALE` (шапка FR-015); `infrastructure/.env` — отслеживаемая
-символическая ссылка с первого модуля.
+символическая ссылка с первого модуля. Значения по умолчанию в `application.yaml` events-collector-service и
+device-collector-service (код прошлых модулей, совпадают с `.env.example`, кроме пустого `REDIS_PASSWORD` для запуска без пароля; стенд передаёт переменные явно) и в Compose
+у `COMPOSE_PROJECT_NAME`, `DEVICE_COLLECTOR_CONSUMER_GROUP` — исключение из правила AGENTS.md «Конфигурация» (T109, 18.11.2026).
 
-Проверено сборкой без кэша (`--rerun-tasks`): events-collector-service unit 132 / IT 33, device-collector-service 126 / 17, device-service 84 / 39
+Отчёты сборки на 18.11.2026: events-collector-service unit 132 / IT 33, device-collector-service 134 / 20 (прогон на Mac после Phase 12),
+device-service 90 / 44 (`check --rerun-tasks` после T110–T111)
 (`check`: порог покрытия строк 70 %, у device-service 96 %), падений нет; сквозной тест `ItEndToEndTest` (метка `e2e`, Testcontainers `ComposeContainer`)
 пройден на стенде разработчика: изменение видно на другой реплике за 0,4 с при лимите 5 с. Проверки стенда: `make ds-quick-check`, `make dcs-quick-check`
 (код 0); трасса одного PUT через device-service, Kafka и device-collector-service до PostgreSQL — в Tempo, логи по `traceId` — в Loki.
 
-Не закрыто задачами человека: T071 (публикация `device-service-client` в Nexus, необратима), T081 (удалить `.env.bak2` из рабочей копии).
+На момент прохода 3 не были закрыты задачи человека T071 (публикация `device-service-client` в Nexus) и T081 (удалить `.env.bak2`); позже обе выполнены — отмечены в списке задач.
 
+
+## Phase 13: Convergence
+
+Проход 4 (T108, 2026-11-18): три независимых аудита (FR-001…012; FR-013…022 с Phase 12; FR-023…026, конституция, документы),
+находки перепроверены по коду. FR-013…FR-022 и Phase 12 (T103–T107) расхождений не дали. Не проверялось (нужен запуск):
+поведение Spring Kafka при `OffsetOutOfRangeException`, Schema Registry без ответа, публикация в Nexus.
+
+- [X] T109 **ЧЕЛОВЕК** решает по значениям по умолчанию: (а) в Compose — `COMPOSE_PROJECT_NAME` (`:-iot-platform`, строки 1
+  и 1293), `DEVICE_COLLECTOR_CONSUMER_GROUP` (`:-device-collector`, строка 699); (б) в `application.yaml` device-collector-service
+  (15) и events-collector-service (20) — тайм-ауты, пулы, попытки, темы, `MANAGEMENT_OTLP_ENDPOINT` с `localhost`. AGENTS.md
+  требует переменные без значений, README (строки 1009 и 1257) описывает эти значения как допустимые. Либо убрать значения
+  отдельной задачей (тестам и `application-local.yaml` задать их явно), либо записать исключение в «Результат converge» и в
+  AGENTS.md (AGENTS.md «Конфигурация»; contradicts). Решение: исключение — AGENTS.md «Соглашения кода», «Результат converge»
+- [X] T110 Сервер применяет ограничения контракта `settings`/`attributes` (до 100 ключей, значение до 1024 символов):
+  тест до кода — `givenTooManySettings_whenPut_thenValidationFailed`, `givenTooLongAttributeValue_whenPost_thenValidationFailed`
+  (сначала падают); проверка без правки генерируемого кода — `DST/adapter/in/web/`, `DST/it/` (FR-011, US2/AC3; partial)
+- [X] T111 (R) Проверить, ограничен ли `send()` в `KafkaDeviceCommandPublisher` сроком `DEVICE_COMMAND_SEND_TIMEOUT`, когда Schema
+  Registry не отвечает (`docker pause`): тест `It*` — `503 COMMAND_NOT_ACCEPTED` в срок, сообщений нет. Не подтвердилось —
+  остановиться, предложить тайм-ауты клиента Schema Registry через переменные окружения (новые имена — в `.env.example`) —
+  `DS/adapter/out/kafka/KafkaDeviceCommandPublisher.java`, `DSR/application.yaml` (FR-002, Constitution IV; partial)
+- [X] T112 Числа тестов в README (строки 679 и 717: 126 / 84 / 39) и в «Результат converge» (126/17, 84/39) привести к прогону
+  18.11.2026 (device-collector-service unit 134 / IT 20, device-service unit 87 / IT 42) — из отчётов сборки (AGENTS.md
+  «Соглашения кода»; partial)
+- [X] T113 Статусы ADR-0001…0009 «предложено» при реализованных решениях — **ЧЕЛОВЕК** переводит в «принято» с датой ответа
+  преподавателя по дизайну (2026-11-17); контекст ADR не меняется — он описывает положение на момент решения —
+  `docs/adr/0001…0009` (spec DoD «Этап дизайна»; partial)
+- [X] T114 `settings.gradle.kts`: `include("services:device-collector-service")` указан дважды (строки 12 и 15) — убрать
+  повтор (unrequested)
+- [X] T115 `converge` повторно до `Converged`; результат — в раздел «Результат converge» (T102, T108)
+
+Отклонено при перепроверке: `GET /api/v1/devices/{deviceId}` у device-collector-service — есть с прошлого модуля, вне рамок
+фичи; клиент `device-service-reader` в realm — назван в задаче Phase 2 (Keycloak). Значения по умолчанию в `application.yaml`
+коллекторов конституцию не нарушают: все переменные есть в `.env.example` и передаются в Compose, значения совпадают; поэтому
+не отдельные задачи агента, а решение человека (T109).
+
+## Phase 14: Convergence
+
+Проход 5 (T115, 2026-11-18): три аудита по тем же диапазонам, каждая находка перепроверена по коду и Git. T110–T114
+подтверждены: валидатор длины значений и `@Size(max = 100)` на геттерах моделей, тайм-ауты клиента Schema Registry,
+числа тестов (отчёты на Mac 132/33, 134/20; device-service 90/44), `settings.gradle.kts` без дубля. Отклонено при
+перепроверке: healthcheck events-collector-service и device-collector-service по общему `/actuator/health` (с прошлых
+модулей; health `DOWN` при смещении вне диапазона использует ADR-0011); `REDIS_PASSWORD:` и `APP_INSTANCE_ID` в
+device-service (не адрес, не тайм-аут, не число попыток); `DEVICES_DB_*` и `HOSTNAME` вне `.env.example` (собирает Compose,
+системная переменная); тайм-ауты Schema Registry у коллекторов (не путь запроса клиента, вне FR-002); Complexity
+Tracking (исключение T109 — из AGENTS.md, не из конституции); устаревшие отчёты сборки в `build/` на VPS (на Mac — 134/20).
+
+- [X] T116 **ЧЕЛОВЕК** решает по ADR-0006: «device-service проверяет формат так же, как device-collector-service: … без
+  пробелов и `/`» неверно — `DeviceInfoValidator` проверяет только непустой `deviceId` и длину до 128 (так с прошлого
+  модуля). Устройство `a/b` из события роутера попадает в реестр, но device-service отвечает на него `400`. Либо поправить
+  формулировку ADR-0006 и назвать ограничение в README, либо добавить проверку в `DeviceInfoValidator` (такие события
+  уйдут в `devices-dlt`) — `docs/adr/0006-device-id-assigned-by-client.md`,
+  `DCS/domain/service/DeviceInfoValidator.java` (ADR-0006, FR-004; contradicts)
+- [X] T117 Тестовый профиль device-service: сумма тайм-аутов клиента Schema Registry (1000 + 1000 мс) равна `send-timeout`
+  (2 с), а инвариант README 22.4 требует «меньше» — `read` 500 мс —
+  `services/device-service/src/test/resources/application-test.yaml` (FR-002, T111; partial)
+- [X] T118 README 22.4: худший случай — метаданные Kafka ждут почти `KAFKA_PRODUCER_MAX_BLOCK_MS`, затем первый запрос к
+  Schema Registry — 503 придёт позже `DEVICE_COMMAND_SEND_TIMEOUT` (до 5 + 3 с). Назвать это ограничение рядом с
+  инвариантами — `README.md` (FR-002; partial)
+- [X] T119 Формулировки исключения T109: значения по умолчанию коллекторов совпадают с `.env.example`, кроме пустого
+  `REDIS_PASSWORD` (запуск без пароля); `plan.md` «Переменные окружения» — «без значений по умолчанию» с отсылкой к
+  исключению — `AGENTS.md`, `tasks.md` «Результат converge», `plan.md` (T109; partial)
+- [X] T120 `converge` повторно до `Converged`; результат — в раздел «Результат converge» (T102, T108, T115)
