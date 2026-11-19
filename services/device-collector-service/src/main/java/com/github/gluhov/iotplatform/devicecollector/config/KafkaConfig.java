@@ -13,11 +13,13 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.slf4j.MDC;
+import org.springframework.boot.kafka.autoconfigure.DefaultKafkaConsumerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.config.ContainerCustomizer;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
@@ -45,7 +47,9 @@ import java.util.Map;
  *   <li>Schema Registry недоступен - повторять без ограничения: это сбой не сообщения, а инфраструктуры,
  *       иначе в devices-dlt ушли бы все сообщения подряд;</li>
  *   <li>смещение группы вне диапазона темы (сообщения удалены по сроку хранения до обработки) - обработчик
- *       останавливается, health DOWN (DevicesConsumerOffsets, ADR-0011).</li>
+ *       останавливается, health DOWN (DevicesConsumerOffsets, ADR-0011);</li>
+ *   <li>раздел без смещения у работающей группы (к теме добавили раздел) - читается с начала без остановки и перезапуска
+ *       (NoOffsetRecoveringConsumer, R18).</li>
  * </ul>
  * Offset отправленного в devices-dlt сообщения подтверждается только после успешной записи в devices-dlt;
  * не удалось записать - сообщение не подтверждено и будет обработано снова.
@@ -96,6 +100,16 @@ public class KafkaConfig {
         });
         handler.setCommitRecovered(true);
         return handler;
+    }
+
+    /** R18: раздел без смещения читается с начала в потоке потребителя, без остановки обработчика. */
+    @Bean
+    DefaultKafkaConsumerFactoryCustomizer noOffsetRecovery() {
+        return factory -> addNoOffsetRecovery(factory);
+    }
+
+    private static <K, V> void addNoOffsetRecovery(DefaultKafkaConsumerFactory<K, V> factory) {
+        factory.addPostProcessor(NoOffsetRecoveringConsumer::wrap);
     }
 
     /** Номер доставки в заголовке kafka_deliveryAttempt: повтор после ошибки не считается новым сообщением. */

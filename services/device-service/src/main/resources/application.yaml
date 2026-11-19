@@ -59,9 +59,9 @@ app:
     jwk-connect-timeout: ${KEYCLOAK_JWK_CONNECT_TIMEOUT}
     jwk-read-timeout: ${KEYCLOAK_JWK_READ_TIMEOUT}
   cache:
-    # Срок жизни кэша устройства (ключ device:v1:{deviceId})
+    # Срок жизни кэша устройства (ключ device:cache:v1:{deviceId})
     device-ttl: ${DEVICE_CACHE_TTL}
-    # Срок жизни порога версии (ключ device:v1:floor:{deviceId}); его же задаёт device-collector-service.
+    # Срок жизни порога версии (ключ device:floor:v1:{deviceId}); его же задаёт device-collector-service.
     # Больше device-ttl: порог должен пережить истечение кэша, пока реплика не догонит применённую версию (ADR-0003)
     floor-ttl: ${DEVICE_CACHE_FLOOR_TTL}
   commands:

@@ -31,6 +31,8 @@ spring:
       properties:
         spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
         spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # Раздел, добавленный к теме у работающей группы, потребитель замечает при обновлении метаданных (R16, ADR-0011)
+        metadata.max.age.ms: ${DEVICES_CONSUMER_METADATA_MAX_AGE_MS}
         # SpecificRecord (сгенерированный DeviceInfo), а не GenericRecord
         specific.avro.reader: true
         # Читаем только DeviceInfo: запись другого типа (даже с настоящим schemaId из Schema Registry) не десериализуется
@@ -74,8 +76,8 @@ app:
   # Пусто или не задано -> hostname контейнера
   instance-id: ${APP_INSTANCE_ID:${HOSTNAME:local}}
   cache:
-    # Срок жизни порога версии (ключ device:v1:floor:{deviceId}): тот же, что у device-service.
-    # Сам кэш (device:v1:{deviceId}) этот сервис не продлевает - только убирает из него устаревший ответ
+    # Срок жизни порога версии (ключ device:floor:v1:{deviceId}): тот же, что у device-service.
+    # Сам кэш (device:cache:v1:{deviceId}) этот сервис не продлевает - только убирает из него устаревший ответ
     floor-ttl: ${DEVICE_CACHE_FLOOR_TTL}
   kafka:
     devices-topic: ${KAFKA_DEVICES_TOPIC:devices}

@@ -73,8 +73,8 @@ public abstract class AbstractItTest {
     private static final String SHARD_USER = "devices";
     // Пароли с кавычками, #, \, & и пробелом: render-config.sh должен подставить их в YAML Proxy без искажений
     private static final String SHARD_PASSWORD="it-shard p'a\"s#s\\&1";
-    private static final String PROXY_USER = "devices_app";
-    private static final String PROXY_PASSWORD="it-proxy p'a\"s#s\\&2";
+    protected static final String PROXY_USER = "devices_app";
+    protected static final String PROXY_PASSWORD="it-proxy p'a\"s#s\\&2";
     // Учётная запись чтения через Proxy (база devices_read) и роль device_reader на репликах
     private static final String READ_PROXY_USER = "devices_read_app";
     private static final String READ_PROXY_PASSWORD = "it-read-proxy-pw";
@@ -101,7 +101,7 @@ public abstract class AbstractItTest {
     // Здесь - отдельные базы со схемой и ролью device_reader без репликации: DCS на реплики не ходит
     protected static final GenericContainer<?> REPLICA_0 = replica(0);
     protected static final GenericContainer<?> REPLICA_1 = replica(1);
-    // Redis общий для платформы: кэш устройства (device:v1:{deviceId}) - сброс после APPLIED. На стенде - через Sentinel
+    // Redis общий для платформы: кэш устройства (device:cache:v1:{deviceId}) - сброс после APPLIED. На стенде - через Sentinel
     // Недоступность Redis и Proxy в тестах - пауза контейнера (docker pause): порт и адрес не меняются, пулы
     // соединений продолжают работать после снятия паузы. Остановка и запуск дали бы другой порт на хосте
     protected static final GenericContainer<?> REDIS = new GenericContainer<>("redis:8.6.7-alpine")
@@ -165,7 +165,7 @@ public abstract class AbstractItTest {
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
     }
 
-    private static String proxyUrl() {
+    protected static String proxyUrl() {
         return "jdbc:postgresql://%s:%d/devices?connectTimeout=3&socketTimeout=15"
                 .formatted(PROXY.getHost(), PROXY.getMappedPort(3307));
     }

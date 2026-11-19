@@ -1,6 +1,6 @@
 -- Поднимает порог версии устройства (floor) и убирает из кэша устаревший ответ.
--- KEYS[1] = device:v1:{deviceId} (hash: body, version) - кэш device-service, его срок не меняем;
--- KEYS[2] = device:v1:floor:{deviceId} - порог; живёт дольше кэша (DEVICE_CACHE_FLOOR_TTL), пока чтение не положит
+-- KEYS[1] = device:cache:v1:{deviceId} (hash: body, version) - кэш device-service, его срок не меняем;
+-- KEYS[2] = device:floor:v1:{deviceId} - порог; живёт дольше кэша (DEVICE_CACHE_FLOOR_TTL), пока чтение не положит
 --           в кэш версию не ниже порога (тогда device-service удаляет этот ключ). В одном ключе с ответом порог
 --           истекал вместе с ним, и отставание реплики дольше TTL возвращало старые данные (ADR-0003).
 -- ARGV[1] = версия записи после APPLIED; ARGV[2] = срок жизни порога, мс.

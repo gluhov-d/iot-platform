@@ -9,16 +9,21 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
  * device_cache_requests_total{result=hit|miss|stale_replica|error}, device_commands_accepted_total{operation},
- * device_commands_rejected_total{operation,code}, device_command_publish_seconds{operation}: Prometheus добавит суффиксы.
+ * device_commands_rejected_total{operation,code}, device_command_publish_seconds{operation},
+ * device_command_precheck_cache_total{operation,result=hit|miss|error} (предварительная проверка по кэшу при
+ * недоступной реплике): Prometheus добавит суффиксы.
  * Исходы чтения регистрируются сразу - в /actuator/prometheus они видны с нуля.
  */
 @Component
 public class MicrometerDeviceServiceMetrics implements DeviceServiceMetrics {
+
+    private static final List<CacheResult> PRECHECK_RESULTS = List.of(CacheResult.HIT, CacheResult.MISS, CacheResult.ERROR);
 
     private final MeterRegistry registry;
     private final Map<CacheResult, Counter> cacheRequests = new EnumMap<>(CacheResult.class);
@@ -33,6 +38,9 @@ public class MicrometerDeviceServiceMetrics implements DeviceServiceMetrics {
         }
         for (DeviceCommand.Operation operation : DeviceCommand.Operation.values()) {
             registry.counter("device.commands.accepted", "operation", label(operation));
+            for (CacheResult result : PRECHECK_RESULTS) {
+                precheckCounter(operation, result);
+            }
         }
     }
 
@@ -52,8 +60,21 @@ public class MicrometerDeviceServiceMetrics implements DeviceServiceMetrics {
     }
 
     @Override
+    public void commandPrecheckFromCache(DeviceCommand.Operation operation, CacheResult result) {
+        precheckCounter(operation, result).increment();
+    }
+
+    @Override
     public void commandPublished(DeviceCommand.Operation operation, Duration duration) {
         registry.timer("device.command.publish", "operation", label(operation)).record(duration);
+    }
+
+    private Counter precheckCounter(DeviceCommand.Operation operation, CacheResult result) {
+        return Counter.builder("device.command.precheck.cache")
+                .description("Command prechecks answered from the cache because the replica is unavailable: hit, miss, error (cache unavailable)")
+                .tag("operation", label(operation))
+                .tag("result", result.label())
+                .register(registry);
     }
 
     private static String label(DeviceCommand.Operation operation) {

@@ -57,6 +57,15 @@ class ItSecurityTest extends AbstractItTest {
         keycloak.createForeignRealmServiceClient(FOREIGN_REALM, FOREIGN_CLIENT, SERVICE_SECRET);
     }
 
+    // R15: по умолчанию Keycloak 26 пропускает HTTP только с частных адресов (sslRequired=external); адрес, с которого
+    // Docker доставляет запрос с хоста, от проекта не зависит (Docker Desktop, VPN), поэтому режим задан явно
+    @Test
+    void givenRealmsOfTests_whenReadSslRequired_thenNone() throws Exception {
+        assertThat(keycloak.sslRequired(REALM)).as("iot-platform").isEqualTo("none");
+        assertThat(keycloak.sslRequired("master")).as("master").isEqualTo("none");
+        assertThat(keycloak.sslRequired(FOREIGN_REALM)).as("realm для чужого iss").isEqualTo("none");
+    }
+
     @Test
     void givenNoToken_whenGet_thenUnauthorizedProblemDetails() throws Exception {
         var response = send("GET", DEVICE, null);

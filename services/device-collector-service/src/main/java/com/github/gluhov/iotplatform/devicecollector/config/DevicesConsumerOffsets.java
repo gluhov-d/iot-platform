@@ -6,13 +6,16 @@ import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.context.ApplicationListener;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.event.ConsumerStartingEvent;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
@@ -22,6 +25,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -36,6 +40,7 @@ import java.util.function.Supplier;
  *       удалённое администратором устройство вернулось бы событием роутера. KafkaConfig останавливает обработчик,
  *       здесь хранится, какие разделы и с какими смещениями вышли за диапазон: health DOWN до следующего запуска.</li>
  * </ul>
+ * Health DOWN и тогда, когда обработчик devices остановлен по любой другой причине (в том числе вручную).
  */
 @Slf4j
 @Component
@@ -43,18 +48,35 @@ public class DevicesConsumerOffsets implements ApplicationListener<ConsumerStart
     private final Supplier<Admin> admins;
     private final String topic;
     private final String group;
+    private final BooleanSupplier listenerRunning;
     private final AtomicReference<Map<TopicPartition, Long>> outOfRange = new AtomicReference<>(Map.of());
 
+    // Реестр - через ObjectProvider: он создаёт контейнер, а контейнеру нужен обработчик ошибок, которому нужен этот бин
     @Autowired
     public DevicesConsumerOffsets(KafkaAdmin kafkaAdmin, KafkaProperties kafkaProperties,
-                                  @Value("${spring.kafka.consumer.group-id}") String group) {
-        this(() -> Admin.create(kafkaAdmin.getConfigurationProperties()), kafkaProperties.devicesTopic(), group);
+                                  @Value("${spring.kafka.consumer.group-id}") String group,
+                                  ObjectProvider<KafkaListenerEndpointRegistry> registry) {
+        this(() -> Admin.create(kafkaAdmin.getConfigurationProperties()), kafkaProperties.devicesTopic(), group,
+                () -> allRunning(registry.getIfAvailable()));
     }
 
     DevicesConsumerOffsets(Supplier<Admin> admins, String topic, String group) {
+        this(admins, topic, group, () -> true);
+    }
+
+    DevicesConsumerOffsets(Supplier<Admin> admins, String topic, String group, BooleanSupplier listenerRunning) {
         this.admins = admins;
         this.topic = topic;
         this.group = group;
+        this.listenerRunning = listenerRunning;
+    }
+
+    private static boolean allRunning(KafkaListenerEndpointRegistry registry) {
+        if (registry == null) {
+            return false;
+        }
+        var containers = registry.getListenerContainers();
+        return !containers.isEmpty() && containers.stream().allMatch(MessageListenerContainer::isRunning);
     }
 
     /** Поток обработчика до первого poll: группа ещё не вступила, смещения можно менять. */
@@ -67,8 +89,8 @@ public class DevicesConsumerOffsets implements ApplicationListener<ConsumerStart
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (ExecutionException | RuntimeException e) {
-            // Смещения не выставлены: раздел без смещения остановит обработчик (NoOffsetForPartitionException) -
-            // тихого чтения не с того места не будет
+            // Смещения не выставлены: раздел без смещения всё равно читается с начала - его переведёт в начало
+            // NoOffsetRecoveringConsumer (R18)
             log.warn("Initial offsets of group {} for {} are not set: {}", group, topic, e.toString());
         }
     }
@@ -112,12 +134,15 @@ public class DevicesConsumerOffsets implements ApplicationListener<ConsumerStart
     @Override
     public Health health() {
         Map<TopicPartition, Long> partitions = outOfRange.get();
-        if (partitions.isEmpty()) {
-            return Health.up().build();
+        if (!partitions.isEmpty()) {
+            return Health.down()
+                    .withDetail("reason", "committed offset out of range: messages removed by retention before processing")
+                    .withDetail("partitions", partitions.toString())
+                    .build();
         }
-        return Health.down()
-                .withDetail("reason", "committed offset out of range: messages removed by retention before processing")
-                .withDetail("partitions", partitions.toString())
-                .build();
+        if (!listenerRunning.getAsBoolean()) {
+            return Health.down().withDetail("reason", "devices listener is not running").build();
+        }
+        return Health.up().build();
     }
 }

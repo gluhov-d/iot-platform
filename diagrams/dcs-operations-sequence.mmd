@@ -41,7 +41,7 @@ sequenceDiagram
     P-->>S: RETURNING current_database(), version
     S->>P: COMMIT
     opt исход APPLIED или DUPLICATE (после сбоя между COMMIT и сбросом кэша повторная доставка поднимет floor)
-        S->>RD: Lua raise-floor: floor = max(floor, version) в device:v1:floor:{deviceId}<br/>(свой срок DEVICE_CACHE_FLOOR_TTL), удалить body, если его version < floor
+        S->>RD: Lua raise-floor: floor = max(floor, version) в device:floor:v1:{deviceId}<br/>(свой срок DEVICE_CACHE_FLOOR_TTL), удалить body, если его version < floor
         alt Redis недоступен
             S->>S: WARN + devices_cache_invalidations_total{result=error}, обработка не падает
         end

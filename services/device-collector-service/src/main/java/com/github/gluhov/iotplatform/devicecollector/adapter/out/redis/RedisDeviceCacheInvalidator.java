@@ -13,8 +13,8 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * Сброс кэша устройства: скрипт raise-floor.lua поднимает порог версии в ключе device:v1:floor:{deviceId} и удаляет
- * устаревший ответ из hash device:v1:{deviceId}. Порог живёт дольше кэша (DEVICE_CACHE_FLOOR_TTL), поэтому отставание
+ * Сброс кэша устройства: скрипт raise-floor.lua поднимает порог версии в ключе device:floor:v1:{deviceId} и удаляет
+ * устаревший ответ из hash device:cache:v1:{deviceId}. Порог живёт дольше кэша (DEVICE_CACHE_FLOOR_TTL), поэтому отставание
  * реплики дольше срока кэша не возвращает старые данные (ADR-0003). Версия формата - v1, её читает device-service.
  * Redis недоступен - ошибка журналируется, исключение не бросается: обработка сообщения уже зафиксирована,
  * данные в кэше устареют не позже его срока.
@@ -47,11 +47,11 @@ public class RedisDeviceCacheInvalidator implements DeviceCacheInvalidator {
     }
 
     static String key(String deviceId) {
-        return "device:v1:" + deviceId;
+        return "device:cache:v1:" + deviceId;
     }
 
     /** Порог версии - отдельный ключ со своим сроком жизни: он переживает истечение ключа кэша (ADR-0003). */
     static String floorKey(String deviceId) {
-        return "device:v1:floor:" + deviceId;
+        return "device:floor:v1:" + deviceId;
     }
 }

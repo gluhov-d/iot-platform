@@ -40,7 +40,7 @@ flowchart LR
         pg[("<b>PostgreSQL</b><br/><i>Реляционная БД</i><br/>device_commands; БД Camunda")]
         subgraph redis_ha["Redis · общий для платформы"]
             sentinel["<b>redis-sentinel</b> ×3<br/><i>Redis Sentinel, кворум 2</i><br/>Следит за master platform-redis,<br/>при отказе назначает новый; клиенты<br/>узнают адрес master у Sentinel"]
-            redis[("<b>redis</b> (master) + <b>redis-replica</b><br/><i>Redis 8</i><br/>outbox:lease, devices:published, devices:fingerprint;<br/>кэш device:v1:{deviceId} — данные и version (TTL кэша);<br/>device:v1:floor:{deviceId} — минимальная версия для<br/>записи, свой срок DEVICE_CACHE_FLOOR_TTL")]
+            redis[("<b>redis</b> (master) + <b>redis-replica</b><br/><i>Redis 8</i><br/>outbox:lease, devices:published, devices:fingerprint;<br/>кэш device:cache:v1:{deviceId} — данные и version (TTL кэша);<br/>device:floor:v1:{deviceId} — минимальная версия для<br/>записи, свой срок DEVICE_CACHE_FLOOR_TTL")]
         end
         clickhouse[("<b>ClickHouse</b><br/><i>Колоночная БД</i><br/>iot_platform: device_events, device_outbox<br/>(ReplacingMergeTree),<br/>device_publication_audit (MergeTree)")]
         minio[("<b>MinIO</b><br/><i>Object Storage</i><br/>Бакеты iot-dlt, iot-attachments")]
@@ -85,10 +85,10 @@ flowchart LR
     orchestrator -- "A2. POST / PUT / DELETE /api/v1/devices + JWT<br/>· REST (device-service-client)" --> device_service
     device_service -- "A3. Ключи JWKS (кэш, обновление по kid) · HTTP" --> keycloak
     device_service -- "A4. DeviceInfo: operation, eventId, поля администратора;<br/>ключ deviceId, acks=all; 202 только после ack · Kafka, Avro" --> topic_device
-    device_collector -- "A5. После COMMIT: floor = version в device:v1:floor:{id},<br/>старые данные удалить (Lua) · Redis master, адрес от Sentinel" --> redis
+    device_collector -- "A5. После COMMIT: floor = version в device:floor:v1:{id},<br/>старые данные удалить (Lua) · Redis master, адрес от Sentinel" --> redis
     %% Q: чтение устройства (Cache-Aside)
     orchestrator -- "Q1. GET /api/v1/devices/{deviceId} + JWT<br/>· REST (device-service-client)" --> device_service
-    device_service -- "Q2. device:v1:{deviceId}; при промахе - запись, только если<br/>version ≥ floor (Lua), затем порог снимается · Redis master" --> redis
+    device_service -- "Q2. device:cache:v1:{deviceId}; при промахе - запись, только если<br/>version ≥ floor (Lua), затем порог снимается · Redis master" --> redis
     device_service -- "Q3. Промах: SELECT по device_id,<br/>база devices_read · JDBC" --> proxy
     proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica0
     proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica1

@@ -39,7 +39,7 @@ sequenceDiagram
     Note over S,DB: eventType = DELETED или снимок со status = DELETED → status = DELETED, deleted_at (мягкое удаление)<br/>device = null (контракт 1.0.0, событие без снимка) → только seen_count, last_event_*, last_seen_at
     DB-->>S: shard_N, version
     S->>P: COMMIT
-    S->>RD: сброс кэша device:v1:{deviceId}: Lua raise-floor — floor = max(floor, version)<br/>в отдельном ключе device:v1:floor:{deviceId}, старые данные удалить
+    S->>RD: сброс кэша device:cache:v1:{deviceId}: Lua raise-floor — floor = max(floor, version)<br/>в отдельном ключе device:floor:v1:{deviceId}, старые данные удалить
     S-->>L: APPLIED, shard_N
     Note over S: devices_messages_received_total++ (только первая доставка, kafka_deliveryAttempt = 1),<br/>devices_messages_processed_total{outcome=applied}++<br/>devices_db_write_seconds{shard, result=success}, лог status=APPLIED, shard
     L->>K: ack.acknowledge() - commit offset после COMMIT и сброса кэша (ошибка Redis ack не задерживает)

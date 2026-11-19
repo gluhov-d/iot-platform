@@ -26,8 +26,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
- * Чтение устройства (US1) с настоящими Redis и PostgreSQL: кэш device:v1:{deviceId}, правило «карточка есть»,
- * порог device:v1:floor:{deviceId} от device-collector-service (живёт дольше кэша), отказ кэша и контракт ответа.
+ * Чтение устройства (US1) с настоящими Redis и PostgreSQL: кэш device:cache:v1:{deviceId}, правило «карточка есть»,
+ * порог device:floor:v1:{deviceId} от device-collector-service (живёт дольше кэша), отказ кэша и контракт ответа.
  * Идентификаторы устройств у каждого теста свои: контейнеры общие для всех классов на JVM.
  */
 class ItDeviceReadTest extends AbstractItTest {
@@ -206,12 +206,12 @@ class ItDeviceReadTest extends AbstractItTest {
     }
 
     private static String cacheKey(String id) {
-        return "device:v1:" + id;
+        return "device:cache:v1:" + id;
     }
 
     /** Порог версии - отдельный ключ со своим сроком жизни (ADR-0003). */
     private static String floorKey(String id) {
-        return "device:v1:floor:" + id;
+        return "device:floor:v1:" + id;
     }
 
     private static Set<String> fieldNames(JsonNode node) {

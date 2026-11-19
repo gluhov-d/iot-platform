@@ -707,6 +707,7 @@ services:
       DEVICES_DLT_MAX_BLOCK_MS: ${DEVICES_DLT_MAX_BLOCK_MS}
       DEVICES_DLT_REQUEST_TIMEOUT_MS: ${DEVICES_DLT_REQUEST_TIMEOUT_MS}
       DEVICES_DLT_DELIVERY_TIMEOUT_MS: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS}
+      DEVICES_CONSUMER_METADATA_MAX_AGE_MS: ${DEVICES_CONSUMER_METADATA_MAX_AGE_MS}
       # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
       # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml);
       # connectTimeout и socketTimeout - в секундах
@@ -719,7 +720,7 @@ services:
       REDIS_SENTINEL_MASTER: ${REDIS_SENTINEL_MASTER}
       REDIS_SENTINEL_NODES: ${REDIS_SENTINEL_NODES}
       REDIS_TIMEOUT: ${REDIS_TIMEOUT}
-      # Срок жизни порога версии в кэше (ключ device:v1:floor:{deviceId}); сам кэш сервис не продлевает
+      # Срок жизни порога версии в кэше (ключ device:floor:v1:{deviceId}); сам кэш сервис не продлевает
       DEVICE_CACHE_FLOOR_TTL: ${DEVICE_CACHE_FLOOR_TTL}
       DEVICES_DB_PASSWORD: ${SHARDING_PROXY_PASSWORD}
       # Alloy поднимается профилем observability; без него трейсы просто не доставляются

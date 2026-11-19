@@ -7,5 +7,6 @@ APP_INSTANCE_ID: ide-local
 # Redis без Sentinel: профиль docker подключает Sentinel, здесь - адрес по умолчанию (localhost:6379)
 REDIS_TIMEOUT: 2s
 DEVICE_CACHE_FLOOR_TTL: 24h
+DEVICES_CONSUMER_METADATA_MAX_AGE_MS: 60000
 server:
   port: 8095

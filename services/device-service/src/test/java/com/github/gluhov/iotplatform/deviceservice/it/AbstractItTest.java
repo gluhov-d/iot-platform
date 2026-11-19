@@ -107,6 +107,7 @@ public abstract class AbstractItTest {
 
     static {
         Startables.deepStart(KAFKA, SCHEMA_REGISTRY, POSTGRES, REDIS, KEYCLOAK).join();
+        disableMasterSslRequirement();
         createTopics();
         registerDeviceSchema();
         DbMigrator.migrateAll(List.of(new ShardTarget("shard_0", jdbcUrl(), DB_USER, DB_PASSWORD)));
@@ -123,7 +124,8 @@ public abstract class AbstractItTest {
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("KAFKA_BOOTSTRAP_SERVERS", KAFKA::getBootstrapServers);
         registry.add("SCHEMA_REGISTRY_URL", AbstractItTest::schemaRegistryUrl);
-        registry.add("spring.datasource.url", AbstractItTest::jdbcUrl);
+        // Как DEVICES_READ_DB_URL на стенде: недоступная (на паузе) база отвечает за секунды, а не зависает
+        registry.add("spring.datasource.url", () -> jdbcUrl() + "?connectTimeout=3&socketTimeout=5");
         registry.add("spring.datasource.username", () -> DB_USER);
         registry.add("spring.datasource.password", () -> DB_PASSWORD);
         registry.add("spring.data.redis.host", REDIS::getHost);
@@ -144,6 +146,26 @@ public abstract class AbstractItTest {
 
     private static String schemaRegistryUrl() {
         return "http://%s:%d".formatted(SCHEMA_REGISTRY.getHost(), SCHEMA_REGISTRY.getMappedPort(8081));
+    }
+
+    // R15: у realm master по умолчанию sslRequired=external - административный токен по HTTP не выдаётся, если запрос
+    // пришёл с публичного адреса (Docker Desktop, VPN). kcadm ходит по localhost внутри контейнера, HTTPS ему не нужен;
+    // свой master-realm.json подменил бы master и сломал бы вход администратора, поэтому правится только режим
+    private static void disableMasterSslRequirement() {
+        try {
+            for (String[] command : new String[][]{
+                    {"/opt/keycloak/bin/kcadm.sh", "config", "credentials", "--server", "http://localhost:8080",
+                            "--realm", "master", "--user", KEYCLOAK_ADMIN, "--password", KEYCLOAK_ADMIN_PASSWORD},
+                    {"/opt/keycloak/bin/kcadm.sh", "update", "realms/master", "-s", "sslRequired=NONE"}}) {
+                var result = KEYCLOAK.execInContainer(command);
+                if (result.getExitCode() != 0) {
+                    throw new IllegalStateException("kcadm.sh " + command[1] + " exited with code "
+                            + result.getExitCode() + ":\n" + result.getStdout() + result.getStderr());
+                }
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to set sslRequired=NONE for the master realm", e);
+        }
     }
 
     private static void createTopics() {

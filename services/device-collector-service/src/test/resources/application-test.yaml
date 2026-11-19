@@ -4,6 +4,12 @@ spring:
   data:
     redis:
       timeout: 2s
+  kafka:
+    consumer:
+      properties:
+        # Раздел, добавленный к теме у работающей группы, потребитель замечает при обновлении метаданных:
+        # в тестах - за секунды (R16), а не за 5 минут
+        metadata.max.age.ms: 1000
 app:
   instance-id: it
   cache:

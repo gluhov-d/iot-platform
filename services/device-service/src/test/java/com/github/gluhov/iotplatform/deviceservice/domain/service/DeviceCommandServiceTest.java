@@ -1,11 +1,15 @@
 package com.github.gluhov.iotplatform.deviceservice.domain.service;
 
+import com.github.gluhov.iotplatform.deviceservice.domain.exception.CacheUnavailableException;
 import com.github.gluhov.iotplatform.deviceservice.domain.exception.CommandNotAcceptedException;
 import com.github.gluhov.iotplatform.deviceservice.domain.exception.DeviceAlreadyExistsException;
 import com.github.gluhov.iotplatform.deviceservice.domain.exception.DeviceNotFoundException;
+import com.github.gluhov.iotplatform.deviceservice.domain.exception.ReadModelUnavailableException;
+import com.github.gluhov.iotplatform.deviceservice.domain.model.CacheResult;
 import com.github.gluhov.iotplatform.deviceservice.domain.model.Device;
 import com.github.gluhov.iotplatform.deviceservice.domain.model.DeviceCommand;
 import com.github.gluhov.iotplatform.deviceservice.domain.model.DeviceCommand.Operation;
+import com.github.gluhov.iotplatform.deviceservice.domain.port.out.DeviceCache;
 import com.github.gluhov.iotplatform.deviceservice.domain.port.out.DeviceCommandPublisher;
 import com.github.gluhov.iotplatform.deviceservice.domain.port.out.DeviceReadRepository;
 import com.github.gluhov.iotplatform.deviceservice.domain.port.out.DeviceServiceMetrics;
@@ -26,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -34,10 +39,11 @@ class DeviceCommandServiceTest {
     private static final Instant NOW = Instant.parse("2026-11-14T10:00:00Z");
 
     private final DeviceReadRepository readRepository = mock(DeviceReadRepository.class);
+    private final DeviceCache cache = mock(DeviceCache.class);
     private final DeviceCommandPublisher publisher = mock(DeviceCommandPublisher.class);
     private final DeviceServiceMetrics metrics = mock(DeviceServiceMetrics.class);
     private final DeviceCommandService service =
-            new DeviceCommandService(readRepository, publisher, metrics, Clock.fixed(NOW, ZoneOffset.UTC));
+            new DeviceCommandService(readRepository, cache, publisher, metrics, Clock.fixed(NOW, ZoneOffset.UTC));
 
     @Test
     void givenDeviceExists_whenUpdate_thenUpdateCommandPublishedWithRequestFields() {
@@ -183,6 +189,81 @@ class DeviceCommandServiceTest {
         assertThatThrownBy(() -> service.delete("dev-1")).isInstanceOf(DeviceNotFoundException.class);
 
         verify(publisher, never()).publish(any());
+    }
+
+    // FR-005: реплика - основной источник предварительной проверки; кэш - только при её недоступности
+
+    @Test
+    void givenReplicaAvailable_whenUpdateCreateDelete_thenCacheNotRead() {
+        when(readRepository.findById("dev-1")).thenReturn(Optional.of(device("dev-1")));
+
+        service.update("dev-1", fields("ACTIVE"));
+        service.delete("dev-1");
+        assertThatThrownBy(() -> service.create("dev-1", fields("NEW"))).isInstanceOf(DeviceAlreadyExistsException.class);
+
+        verifyNoInteractions(cache);
+        verify(metrics, never()).commandPrecheckFromCache(any(), any());
+    }
+
+    @Test
+    void givenReplicaDownAndCardCached_whenUpdateAndDelete_thenCommandsPublished() {
+        replicaDown();
+        when(cache.find("dev-1")).thenReturn(Optional.of(device("dev-1")));
+
+        DeviceCommand update = service.update("dev-1", fields("ACTIVE"));
+        DeviceCommand delete = service.delete("dev-1");
+
+        assertThat(update.operation()).isEqualTo(Operation.UPDATE);
+        assertThat(delete.operation()).isEqualTo(Operation.DELETE);
+        verify(publisher).publish(update);
+        verify(publisher).publish(delete);
+        verify(metrics).commandPrecheckFromCache(Operation.UPDATE, CacheResult.HIT);
+        verify(metrics).commandPrecheckFromCache(Operation.DELETE, CacheResult.HIT);
+    }
+
+    @Test
+    void givenReplicaDownAndCardCached_whenCreate_thenAlreadyExistsAndNothingPublished() {
+        replicaDown();
+        when(cache.find("dev-1")).thenReturn(Optional.of(device("dev-1")));
+
+        assertThatThrownBy(() -> service.create("dev-1", fields("NEW"))).isInstanceOf(DeviceAlreadyExistsException.class);
+
+        verify(publisher, never()).publish(any());
+        verify(metrics).commandPrecheckFromCache(Operation.CREATE, CacheResult.HIT);
+        verify(metrics).commandRejected(Operation.CREATE, "DEVICE_ALREADY_EXISTS");
+    }
+
+    @Test
+    void givenReplicaDownAndNoCardInCache_whenAnyCommand_thenReadModelUnavailableAndNothingPublished() {
+        replicaDown();
+        when(cache.find("dev-1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.update("dev-1", fields("ACTIVE"))).isInstanceOf(ReadModelUnavailableException.class);
+        assertThatThrownBy(() -> service.delete("dev-1")).isInstanceOf(ReadModelUnavailableException.class);
+        // Нет карточки в кэше не значит «устройства нет»: создание без проверки реплики не разрешается
+        assertThatThrownBy(() -> service.create("dev-1", fields("NEW"))).isInstanceOf(ReadModelUnavailableException.class);
+
+        verify(publisher, never()).publish(any());
+        verify(metrics).commandPrecheckFromCache(Operation.UPDATE, CacheResult.MISS);
+        verify(metrics).commandPrecheckFromCache(Operation.DELETE, CacheResult.MISS);
+        verify(metrics).commandPrecheckFromCache(Operation.CREATE, CacheResult.MISS);
+    }
+
+    @Test
+    void givenReplicaAndCacheDown_whenUpdate_thenReplicaFailurePropagatesAndNothingPublished() {
+        ReadModelUnavailableException replica = replicaDown();
+        when(cache.find("dev-1")).thenThrow(new CacheUnavailableException("redis down", null));
+
+        assertThatThrownBy(() -> service.update("dev-1", fields("ACTIVE"))).isSameAs(replica);
+
+        verify(publisher, never()).publish(any());
+        verify(metrics).commandPrecheckFromCache(Operation.UPDATE, CacheResult.ERROR);
+    }
+
+    private ReadModelUnavailableException replicaDown() {
+        ReadModelUnavailableException failure = new ReadModelUnavailableException("proxy down", null);
+        when(readRepository.findById("dev-1")).thenThrow(failure);
+        return failure;
     }
 
     static Device device(String id) {

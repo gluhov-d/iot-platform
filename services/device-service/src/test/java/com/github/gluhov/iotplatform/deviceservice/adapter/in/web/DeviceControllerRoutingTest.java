@@ -5,6 +5,7 @@ import com.github.gluhov.iotplatform.deviceservice.domain.model.DeviceCommand;
 import com.github.gluhov.iotplatform.deviceservice.domain.port.in.GetDeviceUseCase;
 import com.github.gluhov.iotplatform.deviceservice.domain.port.in.ManageDeviceUseCase;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -18,8 +19,10 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
@@ -183,6 +186,46 @@ class DeviceControllerRoutingTest {
         mockMvc.perform(put("/api/v1/devices/dev-1").contentType(APPLICATION_JSON)
                         .content(VALID_UPDATE.substring(0, VALID_UPDATE.length() - 1) + maps))
                 .andExpect(status().isAccepted());
+    }
+
+    // FR-011: null не определён в контракте - ни у самой карты, ни у её значений; ошибка поля, публикации нет
+    @Test
+    void givenNullMapOrNullValue_whenPostAndPut_thenValidationFailedWithField() throws Exception {
+        for (String field : new String[]{"settings", "attributes"}) {
+            for (String map : new String[]{"null", "{\"k\":null}", "{\"k\":\"v\",\"n\":null}"}) {
+                String tail = ",\"" + field + "\":" + map + "}";
+                mockMvc.perform(post("/api/v1/devices").contentType(APPLICATION_JSON)
+                                .content(VALID_CREATE.substring(0, VALID_CREATE.length() - 1) + tail))
+                        .andExpect(status().isBadRequest())
+                        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                        .andExpect(jsonPath("$.errors[0].field").value(field));
+                mockMvc.perform(put("/api/v1/devices/dev-1").contentType(APPLICATION_JSON)
+                                .content(VALID_UPDATE.substring(0, VALID_UPDATE.length() - 1) + tail))
+                        .andExpect(status().isBadRequest())
+                        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                        .andExpect(jsonPath("$.errors[0].field").value(field));
+            }
+        }
+        verifyNoInteractions(manageDeviceUseCase);
+    }
+
+    @Test
+    void givenNoSettingsAndAttributes_whenPostAndPut_thenAcceptedWithEmptyMaps() throws Exception {
+        when(manageDeviceUseCase.create(anyString(), any())).thenReturn(accepted(DeviceCommand.Operation.CREATE));
+        when(manageDeviceUseCase.update(anyString(), any())).thenReturn(accepted(DeviceCommand.Operation.UPDATE));
+
+        mockMvc.perform(post("/api/v1/devices").contentType(APPLICATION_JSON).content(VALID_CREATE))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(put("/api/v1/devices/dev-1").contentType(APPLICATION_JSON).content(VALID_UPDATE))
+                .andExpect(status().isAccepted());
+
+        ArgumentCaptor<DeviceCommand.Fields> fields = ArgumentCaptor.forClass(DeviceCommand.Fields.class);
+        verify(manageDeviceUseCase).create(anyString(), fields.capture());
+        verify(manageDeviceUseCase).update(anyString(), fields.capture());
+        assertThat(fields.getAllValues()).allSatisfy(f -> {
+            assertThat(f.settings()).isEmpty();
+            assertThat(f.attributes()).isEmpty();
+        });
     }
 
     // JSON-объект из keys ключей k0..kN, значение каждого - valueLength символов

@@ -79,6 +79,7 @@ final class KeycloakTokens {
         ObjectNode body = JSON.createObjectNode();
         body.put("realm", realm);
         body.put("enabled", true);
+        body.put("sslRequired", "none");
         adminPostAt("/realms", body);
         ObjectNode client = baseClient(clientId);
         client.put("publicClient", false);
@@ -139,6 +140,11 @@ final class KeycloakTokens {
         assignRoles("/users/" + userId(username), roles);
     }
 
+    /** Режим SSL realm (sslRequired) по Admin API: none, external или all. */
+    String sslRequired(String realm) throws Exception {
+        return adminGetAt("/realms/" + enc(realm)).get("sslRequired").asString();
+    }
+
     String issuer() {
         return realmUrl("");
     }
@@ -193,9 +199,14 @@ final class KeycloakTokens {
     }
 
     private JsonNode adminGet(String path) throws Exception {
-        HttpResponse<String> response = HTTP.send(adminRequest(path).GET().build(), HttpResponse.BodyHandlers.ofString());
+        return adminGetAt("/realms/" + REALM + path);
+    }
+
+    /** Путь - от /admin (например, /realms/master). */
+    private JsonNode adminGetAt(String adminPath) throws Exception {
+        HttpResponse<String> response = HTTP.send(adminRequestAt(adminPath).GET().build(), HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
-            throw new IllegalStateException("Admin API GET " + path + ": HTTP " + response.statusCode());
+            throw new IllegalStateException("Admin API GET " + adminPath + ": HTTP " + response.statusCode());
         }
         return JSON.readTree(response.body());
     }
@@ -215,10 +226,6 @@ final class KeycloakTokens {
         if (status != 409 && status / 100 != 2) {
             throw new IllegalStateException("Admin API POST " + adminPath + ": HTTP " + status + " " + response.body());
         }
-    }
-
-    private HttpRequest.Builder adminRequest(String path) throws Exception {
-        return adminRequestAt("/realms/" + REALM + path);
     }
 
     private HttpRequest.Builder adminRequestAt(String adminPath) throws Exception {

@@ -106,8 +106,8 @@ class ItDeviceOperationsTest extends AbstractItTest {
     void givenCachedDevice_whenUpdateConsumed_thenCacheEvicted() throws Exception {
         String id = deviceOnShard(0);
         awaitCommitted(send(id, command(id, "cmd-1", OperationType.CREATE, T).build(), null));
-        String key = "device:v1:" + id;
-        String floorKey = "device:v1:floor:" + id;
+        String key = "device:cache:v1:" + id;
+        String floorKey = "device:floor:v1:" + id;
         // Как device-service при промахе кэша: тело и версия записи, прочитанной с реплики, со сроком кэша
         redis.opsForHash().putAll(key, Map.of("body", "{\"version\":1}", "version", "1"));
         redis.expire(key, Duration.ofMinutes(10));
@@ -121,6 +121,25 @@ class ItDeviceOperationsTest extends AbstractItTest {
         // дольше срока кэша не вернёт старые данные (ADR-0003)
         Long floorTtl = redis.getExpire(floorKey, TimeUnit.MILLISECONDS);
         assertThat(floorTtl).isNotNull().isGreaterThan(TimeUnit.MINUTES.toMillis(10));
+    }
+
+    @Test
+    @DisplayName("FR-018: the cache of device \"floor:<id>\" does not collide with the floor key of device \"<id>\"")
+    void givenCachedDeviceNamedLikeFloorKey_whenUpdateConsumed_thenOnlyOwnCardEvicted() throws Exception {
+        String id = deviceOnShard(0);
+        awaitCommitted(send(id, command(id, "cmd-1", OperationType.CREATE, T).build(), null));
+        String key = "device:cache:v1:" + id;
+        String floorKey = "device:floor:v1:" + id;
+        // deviceId допускает «:» (FR-004): карточка устройства «floor:<id>» - hash, а не порог устройства «<id>»
+        String otherKey = "device:cache:v1:floor:" + id;
+        redis.opsForHash().putAll(key, Map.of("body", "{\"version\":1}", "version", "1"));
+        redis.opsForHash().putAll(otherKey, Map.of("body", "{\"version\":5}", "version", "5"));
+        RecordMetadata update = send(id, command(id, "cmd-2", OperationType.UPDATE, T.plusSeconds(1)).build(), null);
+
+        awaitCommitted(update);
+        assertThat(redis.opsForValue().get(floorKey)).isEqualTo("2");
+        assertThat(redis.opsForHash().hasKey(key, "body")).isFalse();
+        assertThat(redis.opsForHash().get(otherKey, "body")).isEqualTo("{\"version\":5}");
     }
 
     @Test

@@ -44,7 +44,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("org.springframework.boot:spring-boot-starter-kafka")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
-    // Сброс кэша устройства в Redis (device:v1:{deviceId}, floor); подключение через Sentinel в профиле docker
+    // Сброс кэша устройства в Redis (device:cache:v1:{deviceId}, floor); подключение через Sentinel в профиле docker
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-opentelemetry")
     implementation("io.micrometer:micrometer-registry-prometheus")

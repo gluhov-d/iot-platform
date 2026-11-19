@@ -35,16 +35,26 @@ class RedisDeviceCacheTest {
     @Test
     void givenNoBody_whenFind_thenEmptyAndKeyWithVersionPrefix() {
         when(redis.opsForHash()).thenReturn(hash);
-        when(hash.get("device:v1:dev-1", "body")).thenReturn(null);
+        when(hash.get("device:cache:v1:dev-1", "body")).thenReturn(null);
 
         assertThat(cache.find("dev-1")).isEmpty();
+    }
+
+    @Test
+    void givenDeviceIdWithFloorPrefix_whenKeys_thenCacheAndFloorKeysNeverCollide() {
+        assertThat(RedisDeviceCache.key("floor:dev-42")).isNotEqualTo(RedisDeviceCache.floorKey("dev-42"));
+        // Ни один префикс не начинает другой: допустимый deviceId (FR-004, «:») не превратит ключ кэша в ключ порога
+        String cachePrefix = RedisDeviceCache.key("");
+        String floorPrefix = RedisDeviceCache.floorKey("");
+        assertThat(cachePrefix).doesNotStartWith(floorPrefix);
+        assertThat(floorPrefix).doesNotStartWith(cachePrefix);
     }
 
     @Test
     void givenStoredBody_whenFind_thenDeviceParsed() {
         Device device = device("dev-1", 7);
         when(redis.opsForHash()).thenReturn(hash);
-        when(hash.get("device:v1:dev-1", "body")).thenReturn(RedisDeviceCache.toJson(device));
+        when(hash.get("device:cache:v1:dev-1", "body")).thenReturn(RedisDeviceCache.toJson(device));
 
         Optional<Device> found = cache.find("dev-1");
 
@@ -86,15 +96,15 @@ class RedisDeviceCacheTest {
 
         // Порог - отдельный ключ (ADR-0003): скрипт получает оба и TTL кэша
         verify(redis).execute(ArgumentMatchers.<org.springframework.data.redis.core.script.RedisScript<Long>>any(),
-                eq(List.of("device:v1:dev-1", "device:v1:floor:dev-1")),
+                eq(List.of("device:cache:v1:dev-1", "device:floor:v1:dev-1")),
                 any(), eq("7"), eq("600000"));
-        assertThat(RedisDeviceCache.floorKey("dev-1")).isEqualTo("device:v1:floor:dev-1");
+        assertThat(RedisDeviceCache.floorKey("dev-1")).isEqualTo("device:floor:v1:dev-1");
     }
 
     @Test
     void givenRedisDown_whenFind_thenCacheUnavailable() {
         when(redis.opsForHash()).thenReturn(hash);
-        when(hash.get("device:v1:dev-1", "body")).thenThrow(new RedisConnectionFailureException("down"));
+        when(hash.get("device:cache:v1:dev-1", "body")).thenThrow(new RedisConnectionFailureException("down"));
 
         assertThatThrownBy(() -> cache.find("dev-1")).isInstanceOf(CacheUnavailableException.class);
     }

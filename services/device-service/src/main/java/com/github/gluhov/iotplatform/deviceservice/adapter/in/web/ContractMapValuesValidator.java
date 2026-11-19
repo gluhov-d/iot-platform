@@ -8,8 +8,9 @@ import org.springframework.validation.Validator;
 import java.util.Map;
 
 /**
- * Ограничение контракта, которое генератор не переносит в модели: длина значения в settings и attributes не больше
- * 1024 символов (additionalProperties.maxLength). Число ключей (maxProperties) генератор проверяет сам - @Size на геттере.
+ * Ограничения контракта, которые генератор не переносит в модели: длина значения в settings и attributes не больше
+ * 1024 символов (additionalProperties.maxLength) и отсутствие null - у самой карты и у её значений (FR-011: null в
+ * контракте не определён). Число ключей (maxProperties) генератор проверяет сам - @Size на геттере.
  * Подключается к проверке тела через @InitBinder, поэтому ошибка попадает в errors[] ответа VALIDATION_FAILED.
  */
 public class ContractMapValuesValidator implements Validator {
@@ -34,9 +35,14 @@ public class ContractMapValuesValidator implements Validator {
 
     private static void check(String field, Map<String, String> values, Errors errors) {
         if (values == null) {
+            errors.rejectValue(field, "NotNull", "must not be null");
             return;
         }
-        boolean tooLong = values.values().stream().anyMatch(v -> v != null && v.length() > MAX_VALUE_LENGTH);
+        if (values.containsValue(null)) {
+            errors.rejectValue(field, "NotNull", "values must not be null");
+            return;
+        }
+        boolean tooLong = values.values().stream().anyMatch(v -> v.length() > MAX_VALUE_LENGTH);
         if (tooLong) {
             errors.rejectValue(field, "Size", "values must be at most " + MAX_VALUE_LENGTH + " characters");
         }

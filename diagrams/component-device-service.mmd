@@ -21,12 +21,12 @@ flowchart LR
         controller["DeviceController<br/>adapter.in.web<br/>implements DevicesApi (из клиента), @Valid<br/>202 + Location · 200 · Problem Details"]
         advice["ProblemDetailsAdvice<br/>adapter.in.web<br/>код ошибки + traceId, без стека и SQL"]
         mapper["DeviceMapper (MapStruct)<br/>модель → DeviceResponse<br/>незаполненное поле — ошибка сборки"]
-        command["DeviceCommandService<br/>domain.service<br/>есть / нет устройства (409, 404) → eventId (UUID),<br/>время приёма → публикация, ждёт ack Kafka"]
+        command["DeviceCommandService<br/>domain.service<br/>есть / нет устройства — по реплике, при её недоступности — по кэшу<br/>(409, 404; карточки в кэше нет или Redis недоступен — 503) → eventId (UUID),<br/>время приёма → публикация, ждёт ack Kafka"]
         query["DeviceQueryService<br/>domain.service<br/>Cache-Aside: кэш → реплики → кэш<br/>Redis недоступен — читает реплики"]
         pub["KafkaDeviceCommandPublisher · DeviceInfoFactory<br/>adapter.out.kafka (порт DeviceCommandPublisher)<br/>DeviceInfo Avro, ключ deviceId, acks=all, idempotence,<br/>auto.register.schemas=false, send().get(тайм-аут)"]
-        cache["RedisDeviceCache<br/>adapter.out.redis (порт DeviceCache)<br/>хеш device:v1:{id}: body, version (TTL DEVICE_CACHE_TTL)<br/>порог — отдельный ключ device:v1:floor:{id}<br/>запись только если version ≥ floor (Lua), сроки из env"]
+        cache["RedisDeviceCache<br/>adapter.out.redis (порт DeviceCache)<br/>хеш device:cache:v1:{id}: body, version (TTL DEVICE_CACHE_TTL)<br/>порог — отдельный ключ device:floor:v1:{id}<br/>запись только если version ≥ floor (Lua), сроки из env"]
         repo["JdbcDeviceReadRepository<br/>adapter.out.postgres (порт DeviceReadRepository)<br/>JdbcClient · база devices_read · read-only пользователь"]
-        metrics["MicrometerDeviceServiceMetrics (порт DeviceServiceMetrics)<br/>device_commands_*, device_cache_*<br/>(без deviceId в метках)"]
+        metrics["MicrometerDeviceServiceMetrics (порт DeviceServiceMetrics)<br/>device_commands_*, device_cache_*,<br/>device_command_precheck_cache_*<br/>(без deviceId в метках)"]
 
         chain --> jwtval
         chain --> roles
@@ -36,7 +36,8 @@ flowchart LR
         controller --> command
         controller --> query
         controller -. "исключение" .-> advice
-        command -- "есть ли устройство" --> query
+        command -- "есть ли устройство: findById" --> repo
+        command -. "реплика недоступна" .-> cache
         command --> pub
         query --> cache
         query --> repo
@@ -49,7 +50,7 @@ flowchart LR
         topic[["Kafka: devices<br/>ключ deviceId · cleanup.policy=delete<br/>хранение KAFKA_DEVICES_RETENTION_MS"]]
         sr[("Schema Registry<br/>devices-value · FULL_TRANSITIVE")]
         sentinel["Redis Sentinel ×3<br/>сообщает адрес master,<br/>переключает при отказе"]
-        redis[("redis (master) + redis-replica<br/>Redis 8 · операции с данными кэша:<br/>device:v1:{id}, device:v1:floor:{id}")]
+        redis[("redis (master) + redis-replica<br/>Redis 8 · операции с данными кэша:<br/>device:cache:v1:{id}, device:floor:v1:{id}")]
         proxy["ShardingSphere-Proxy<br/>логическая база devices_read"]
         replicas[("postgres-shard-N-replica<br/>hot standby")]
         dcs["device-collector-service<br/>применяет команду, после COMMIT<br/>сбрасывает кэш (floor = version)"]

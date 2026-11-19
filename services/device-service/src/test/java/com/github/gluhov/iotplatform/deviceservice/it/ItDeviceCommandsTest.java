@@ -107,6 +107,52 @@ class ItDeviceCommandsTest extends AbstractItTest {
     }
 
     @Test
+    void givenNullMapOrNullValue_whenPutAndPost_thenBadRequestAndNoMessage() throws Exception {
+        String id = newId();
+        insertDevice(id, "t1", 1, false);
+        List<String> invalidMaps = List.of("\"settings\":null", "\"attributes\":null",
+                "\"settings\":{\"k\":null}", "\"attributes\":{\"k\":null}");
+
+        List<HttpResponse<String>> responses = new ArrayList<>();
+        List<ConsumerRecord<String, DeviceInfo>> messages;
+        try (KafkaConsumer<String, DeviceInfo> consumer = devicesConsumer()) {
+            for (String map : invalidMaps) {
+                String tail = ",\"tenantId\":\"t1\",\"deviceType\":\"sensor\",\"status\":\"ACTIVE\"," + map + "}";
+                responses.add(put(id, "{" + tail.substring(1)));
+                responses.add(sendJson("POST", "/api/v1/devices", "{\"deviceId\":\"" + id + "\"" + tail));
+            }
+            messages = collect(consumer, id, QUIET);
+        }
+
+        for (int i = 0; i < responses.size(); i++) {
+            String field = invalidMaps.get(i / 2).startsWith("\"settings\"") ? "settings" : "attributes";
+            assertThat(responses.get(i).statusCode()).as(invalidMaps.get(i / 2)).isEqualTo(400);
+            assertThat(responses.get(i).body()).contains("\"code\":\"VALIDATION_FAILED\"")
+                    .contains("\"field\":\"" + field + "\"");
+        }
+        assertThat(messages).isEmpty();
+    }
+
+    @Test
+    void givenNoSettingsAndAttributes_whenPut_thenAcceptedWithEmptyMaps() throws Exception {
+        String id = newId();
+        insertDevice(id, "t1", 1, false);
+        String body = "{\"tenantId\":\"t1\",\"deviceType\":\"sensor\",\"status\":\"ACTIVE\"}";
+
+        HttpResponse<String> response;
+        List<ConsumerRecord<String, DeviceInfo>> messages;
+        try (KafkaConsumer<String, DeviceInfo> consumer = devicesConsumer()) {
+            response = put(id, body);
+            messages = awaitMessages(consumer, id);
+        }
+
+        assertThat(response.statusCode()).isEqualTo(202);
+        assertThat(messages).hasSize(1);
+        assertThat(messages.get(0).value().getDevice().getSettings()).isEmpty();
+        assertThat(messages.get(0).value().getDevice().getAttributes()).isEmpty();
+    }
+
+    @Test
     void givenTooLongSettingValue_whenPut_thenBadRequestAndNoMessage() throws Exception {
         String id = newId();
         insertDevice(id, "t1", 1, false);
@@ -162,6 +208,55 @@ class ItDeviceCommandsTest extends AbstractItTest {
         assertThat(response.body()).contains("\"code\":\"COMMAND_NOT_ACCEPTED\"");
         // Срок отправки в тестовом профиле - 2 с; запас на HTTP и прогрев. Раньше ответ ждал 60 с (наблюдение Kafka)
         assertThat(elapsed).isLessThan(Duration.ofSeconds(6));
+    }
+
+    // FR-005: реплика недоступна (в IT её роль у PostgreSQL: Proxy в этом стенде нет) - проверка по кэшу карточек
+    @Test
+    void givenReplicaDownAndCardCached_whenPut_thenAcceptedAndOneUpdateMessage() throws Exception {
+        String id = newId();
+        insertDevice(id, "t1", 3, false);
+        // Чтение кладёт карточку в кэш; дальше реплика недоступна
+        assertThat(sendJson("GET", "/api/v1/devices/" + id, null).statusCode()).isEqualTo(200);
+
+        HttpResponse<String> response;
+        List<ConsumerRecord<String, DeviceInfo>> messages;
+        try (KafkaConsumer<String, DeviceInfo> consumer = devicesConsumer()) {
+            String postgresId = POSTGRES.getContainerId();
+            // Пауза, а не остановка: порт не меняется. Снимается в finally, чтобы не задеть другие тесты класса
+            DockerClientFactory.instance().client().pauseContainerCmd(postgresId).exec();
+            try {
+                response = put(id, UPDATE_BODY);
+            } finally {
+                DockerClientFactory.instance().client().unpauseContainerCmd(postgresId).exec();
+            }
+            messages = awaitMessages(consumer, id);
+        }
+
+        assertThat(response.statusCode()).isEqualTo(202);
+        assertThat(messages).hasSize(1);
+        assertThat(messages.get(0).value().getOperation()).isEqualTo(OperationType.UPDATE);
+    }
+
+    @Test
+    void givenReplicaDownAndNoCardInCache_whenPut_thenServiceUnavailableAndNoMessage() throws Exception {
+        String id = newId();
+
+        HttpResponse<String> response;
+        List<ConsumerRecord<String, DeviceInfo>> messages;
+        try (KafkaConsumer<String, DeviceInfo> consumer = devicesConsumer()) {
+            String postgresId = POSTGRES.getContainerId();
+            DockerClientFactory.instance().client().pauseContainerCmd(postgresId).exec();
+            try {
+                response = put(id, UPDATE_BODY);
+            } finally {
+                DockerClientFactory.instance().client().unpauseContainerCmd(postgresId).exec();
+            }
+            messages = collect(consumer, id, QUIET);
+        }
+
+        assertThat(response.statusCode()).isEqualTo(503);
+        assertThat(response.body()).contains("\"code\":\"READ_MODEL_UNAVAILABLE\"");
+        assertThat(messages).isEmpty();
     }
 
     @Test

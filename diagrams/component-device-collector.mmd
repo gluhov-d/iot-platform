@@ -42,7 +42,7 @@ flowchart LR
 
     subgraph redisha["Redis (общий для платформы)"]
         rsentinel["Redis Sentinel ×3 → адрес master<br/>кворум 2 (ADR-0008); операций с данными не выполняет"]
-        rmaster[("platform-redis master<br/>кэш device:v1:{deviceId}: body, version<br/>порог device:v1:floor:{deviceId}")]
+        rmaster[("platform-redis master<br/>кэш device:cache:v1:{deviceId}: body, version<br/>порог device:floor:v1:{deviceId}")]
     end
     migrator["db-migrator<br/>Flyway · одноразовый<br/>до старта Proxy и сервиса"]
 

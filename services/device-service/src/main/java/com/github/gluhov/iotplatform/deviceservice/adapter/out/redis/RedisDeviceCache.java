@@ -17,8 +17,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Кэш устройства: hash device:v1:{deviceId} (body, version) со сроком DEVICE_CACHE_TTL. Порог версии живёт
- * в отдельном ключе device:v1:floor:{deviceId} со своим, более долгим сроком - его пишет device-collector-service
+ * Кэш устройства: hash device:cache:v1:{deviceId} (body, version) со сроком DEVICE_CACHE_TTL. Порог версии живёт
+ * в отдельном ключе device:floor:v1:{deviceId} со своим, более долгим сроком - его пишет device-collector-service
  * (ADR-0003). Запись - скриптом put-if-fresh.lua: отказ, если версия ниже порога или ниже уже закэшированной;
  * принятая запись удаляет ключ порога (реплика догнала применённую версию).
  * Ошибки Redis (включая тайм-аут REDIS_TIMEOUT) переводятся в CacheUnavailableException.
@@ -61,12 +61,12 @@ public class RedisDeviceCache implements DeviceCache {
     }
 
     static String key(String deviceId) {
-        return "device:v1:" + deviceId;
+        return "device:cache:v1:" + deviceId;
     }
 
     /** Порог версии - отдельный ключ: он должен переживать истечение срока ключа кэша (ADR-0003). */
     static String floorKey(String deviceId) {
-        return "device:v1:floor:" + deviceId;
+        return "device:floor:v1:" + deviceId;
     }
 
     static String toJson(Device device) {

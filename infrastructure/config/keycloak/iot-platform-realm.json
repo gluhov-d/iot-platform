@@ -1,6 +1,7 @@
 {
   "realm": "iot-platform",
   "enabled": true,
+  "sslRequired": "none",
   "accessTokenLifespan": 300,
   "roles": {
     "client": {

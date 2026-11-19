@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -112,6 +113,34 @@ class DevicesConsumerOffsetsTest {
         offsets.onApplicationEvent(new ConsumerStartingEvent(this, this));
 
         assertThat(offsets.health().getStatus()).isEqualTo(Status.UP);
+    }
+
+    @Test
+    @DisplayName("Listener stopped for any reason: health DOWN with the reason; running again: UP")
+    void givenListenerStopped_whenHealth_thenDownWithReason() {
+        AtomicBoolean running = new AtomicBoolean(true);
+        DevicesConsumerOffsets watched = new DevicesConsumerOffsets(() -> admin, TOPIC, GROUP, running::get);
+        assertThat(watched.health().getStatus()).isEqualTo(Status.UP);
+
+        running.set(false);
+
+        assertThat(watched.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(watched.health().getDetails()).containsEntry("reason", "devices listener is not running");
+
+        running.set(true);
+
+        assertThat(watched.health().getStatus()).isEqualTo(Status.UP);
+    }
+
+    @Test
+    @DisplayName("Offset out of range and listener stopped: the reason names the offsets, not just the stop")
+    void givenOffsetOutOfRangeAndStopped_whenHealth_thenOutOfRangeReason() {
+        DevicesConsumerOffsets watched = new DevicesConsumerOffsets(() -> admin, TOPIC, GROUP, () -> false);
+
+        watched.offsetOutOfRange(Map.of(P0, 3L));
+
+        assertThat(watched.health().getDetails()).containsEntry("partitions", "{devices-0=3}")
+                .containsEntry("reason", "committed offset out of range: messages removed by retention before processing");
     }
 
     private void topicWithPartitions(int count) {

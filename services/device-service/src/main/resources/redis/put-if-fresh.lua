@@ -1,6 +1,6 @@
 -- Записывает карточку устройства в кэш, если её версия не ниже порога floor и не ниже уже закэшированной.
--- KEYS[1] = device:v1:{deviceId} (hash: body, version) - срок жизни DEVICE_CACHE_TTL;
--- KEYS[2] = device:v1:floor:{deviceId} - порог, его пишет device-collector-service после COMMIT. У порога свой,
+-- KEYS[1] = device:cache:v1:{deviceId} (hash: body, version) - срок жизни DEVICE_CACHE_TTL;
+-- KEYS[2] = device:floor:v1:{deviceId} - порог, его пишет device-collector-service после COMMIT. У порога свой,
 --           более долгий срок (DEVICE_CACHE_FLOOR_TTL): в одном ключе с ответом он истекал вместе с ним, и отставание
 --           реплики дольше TTL снова возвращало старые данные в кэш (ADR-0003).
 -- ARGV[1] = body (JSON), ARGV[2] = версия записи, ARGV[3] = TTL кэша, мс.
