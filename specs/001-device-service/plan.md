@@ -35,7 +35,7 @@ Proxy не стартует без реплик (ADR-0004)
 | III. Идемпотентность | журнал по `eventId`; `202` после подтверждения; команда сравнивается с `managed_at` | ✅ |
 | IV. Без состояния, окружение | `STATELESS`, кэш только в Redis; все параметры — `.env.example` | ✅ |
 | V. Безопасность | resource server; `aud`, сервисная учётная запись, роли; Problem Details без внутренностей | ✅ |
-| VI. Наблюдаемость | метрики без `deviceId`, JSON-логи, трасса HTTP → Kafka → PostgreSQL, панель сервиса | ✅ |
+| VI. Наблюдаемость | метрики без `deviceId` (сервисы платформы собирает Alloy, [ADR-0012](../../docs/adr/0012-service-metrics-via-alloy.md)), JSON-логи, трасса HTTP → Kafka → PostgreSQL, панель сервиса | ✅ |
 | VII. Тесты | Testcontainers и настоящий Keycloak; полный путь зависит от R12 | ⚠ до проверки R12 |
 | Необратимые действия — человек | публикация avros и клиента, коммиты — задачи с пометкой **ЧЕЛОВЕК** | ✅ |
 
@@ -44,7 +44,7 @@ Proxy не стартует без реплик (ADR-0004)
 ```text
 specs/001-device-service/   spec · plan · research · data-model · quickstart · tasks · analyze-report
 └── (контракт API: services/device-service-client/src/main/openapi/device-service.yaml, перенесён T003)
-docs/adr/0001…0011 · diagrams/*.mmd · AGENTS.md
+docs/adr/0001…0012 · diagrams/*.mmd · AGENTS.md
 
 services/device-service-client/       # java-library + maven-publish
 └── src/main/openapi/device-service.yaml   # источник истины; build/generated — DevicesApi и DTO
@@ -82,7 +82,8 @@ services/db-migrator/…/V3__device_management.sql
 | Только сервисные токены; realm в репозитории; Keycloak в базовом стенде | нулевое доверие; воспроизводимый стенд | 0007 |
 | Redis через Sentinel для всех сервисов | общий Redis переживает отказ основного узла | 0008 |
 | OpenAPI в `device-service-client`, два прогона генератора | API First; один прогон не даёт проверок полей (R2) | 0009 |
-| Тема `devices` — `cleanup.policy=delete`, хранение ≥ интервала копирования | сжатие стирало команду, за которой пришёл снимок роутера: повторное чтение возвращало удалённое устройство | 0011 (заменяет 0010) |
+| Тема `devices` — `cleanup.policy=delete`, хранение ≥ интервала копирования; раздел без смещения — с начала (и появившийся у работающей группы), смещение вне диапазона — остановка | сжатие стирало команду, за которой пришёл снимок роутера: повторное чтение возвращало удалённое устройство | 0011 (заменяет 0010) |
+| Метрики сервисов платформы собирает Alloy и передаёт в Prometheus (remote write) | один агент сбора телеметрии (логи, трассы, метрики); экспортёры и сторонние компоненты Prometheus опрашивает сам | 0012 |
 
 ## Ошибки
 
@@ -90,11 +91,12 @@ services/db-migrator/…/V3__device_management.sql
 |---|---|
 | Нет токена; подпись, `iss`, срок, `aud` | `401 UNAUTHORIZED` |
 | Пользовательский токен / нет роли | `403 SERVICE_TOKEN_REQUIRED` / `403 FORBIDDEN` |
-| Тело или `deviceId` невалидны | `400 VALIDATION_FAILED` + `errors[]` |
+| Тело или `deviceId` невалидны, в том числе `null` в `settings`/`attributes` или в их значениях | `400 VALIDATION_FAILED` + `errors[]` |
 | POST существующего / PUT, DELETE отсутствующего | `409 DEVICE_ALREADY_EXISTS` / `404 DEVICE_NOT_FOUND` |
 | Kafka не подтвердила за `DEVICE_COMMAND_SEND_TIMEOUT` | `503 COMMAND_NOT_ACCEPTED` |
 | Redis недоступен | чтение из реплик, `device_cache_requests_total{result="error"}` |
-| Proxy или реплика недоступны при промахе | `503 READ_MODEL_UNAVAILABLE` |
+| Proxy или реплика недоступны при промахе GET | `503 READ_MODEL_UNAVAILABLE` |
+| Proxy или реплика недоступны при предварительной проверке POST/PUT/DELETE | решение по кэшу: карточка есть — PUT/DELETE публикуют, POST — `409`; нет карточки или Redis недоступен — `503 READ_MODEL_UNAVAILABLE`; счётчик `device_command_precheck_cache_total{operation,result=hit\|miss\|error}` |
 | Непредвиденная ошибка | `500 INTERNAL_ERROR`, стек — только в лог |
 
 ## Переменные окружения
@@ -105,11 +107,11 @@ services/db-migrator/…/V3__device_management.sql
 | Переменная | Пример | Кому |
 |---|---|---|
 | `DEVICE_SERVICE_IMAGE_TAG`, `DEVICE_SERVICE_PORTS` | `0.1.0`, `8105-8106` | device-service |
-| `DEVICE_CACHE_TTL` | `10m` | device-service (ключ `device:v1:{deviceId}`) |
-| `DEVICE_CACHE_FLOOR_TTL` | `24h` | device-service, device-collector-service (ключ `device:v1:floor:{deviceId}`; больше худшего ожидаемого отставания реплики) |
+| `DEVICE_CACHE_TTL` | `10m` | device-service (ключ `device:cache:v1:{deviceId}`) |
+| `DEVICE_CACHE_FLOOR_TTL` | `24h` | device-service, device-collector-service (ключ `device:floor:v1:{deviceId}`; больше худшего ожидаемого отставания реплики) |
 | `DEVICE_COMMAND_SEND_TIMEOUT` | `5s` | device-service |
 | `SCHEMA_REGISTRY_HTTP_CONNECT_TIMEOUT_MS`, `SCHEMA_REGISTRY_HTTP_READ_TIMEOUT_MS`, `SCHEMA_REGISTRY_MAX_RETRIES` | `1000`, `2000`, `0` | device-service (клиент Schema Registry; сумма меньше `DEVICE_COMMAND_SEND_TIMEOUT`, T111) |
-| `DEVICE_SERVICE_MANAGEMENT_PORT` | `8081` | device-service, Prometheus (в `prometheus.yml` — литерал), healthcheck; на хост не публикуется |
+| `DEVICE_SERVICE_MANAGEMENT_PORT` | `8081` | device-service, Alloy (сбор метрик, `sys.env`), healthcheck; на хост не публикуется |
 | `DEVICES_READ_DB_URL`, `DEVICES_READ_DB_USER`, `DEVICES_READ_DB_PASSWORD` | `jdbc:postgresql://shardingsphere-proxy:3307/devices_read?connectTimeout=2&socketTimeout=3` | device-service, Proxy |
 | `SHARD_READER_PASSWORD` | — | `shard-replication-init`, Proxy |
 | `KEYCLOAK_REALM`, `KEYCLOAK_ISSUER_URI`, `KEYCLOAK_JWK_SET_URI`, `DEVICE_SERVICE_AUDIENCE` | `iot-platform`, …, `device-service` | device-service |
@@ -117,6 +119,7 @@ services/db-migrator/…/V3__device_management.sql
 | `REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES`, `REDIS_MAXMEMORY` | `platform-redis`, `redis-sentinel-1:26379,…`, `256mb` | все сервисы, Redis |
 | `IOT_NET_SUBNET`, `IOT_NET_IP_RANGE`, `REDIS_MASTER_IP`, `REDIS_REPLICA_IP`, `REDIS_SENTINEL_IPS` | свободная подсеть `/24`, верхняя половина подсети `/25` для динамических адресов и статические адреса Redis и Sentinel в нижней | сеть Compose, Redis, Sentinel |
 | `KAFKA_DEVICES_RETENTION_MS` | `2592000000` | `kafka-init`, `shard-restore.sh` |
+| `DEVICES_CONSUMER_METADATA_MAX_AGE_MS` | `60000` | device-collector-service (как часто потребитель темы `devices` обновляет метаданные: раздел, добавленный к теме у работающей группы, читается с начала не позже этого срока; R18, ADR-0011) |
 
 Уже есть и используются: `REDIS_PASSWORD`, `REDIS_TIMEOUT`, `KAFKA_DEVICES_TOPIC`, `SCHEMA_REGISTRY_PORT`,
 `KEYCLOAK_VERSION`, `KEYCLOAK_PORT`.
@@ -132,7 +135,7 @@ services/db-migrator/…/V3__device_management.sql
 - Сборка и тесты: `./gradlew :services:device-service-client:build`, `./gradlew :services:device-service:check`,
   `./gradlew :services:device-collector-service:check`, `./gradlew :services:events-collector-service:check`.
 - Стенд: `make up`, `make check-local`, `make dcs-quick-check`, `make ds-quick-check` ([quickstart.md](quickstart.md)).
-- Наблюдаемость: `make up PROFILES=observability`, панели и трасса — T066, T067.
+- Наблюдаемость: `make up PROFILES=observability`, панели и трасса — T066, T067; метрики сервисов через Alloy — Phase 16.
 
 ## Complexity Tracking
 

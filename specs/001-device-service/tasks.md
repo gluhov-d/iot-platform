@@ -296,6 +296,7 @@ R8, R9), в задачах записаны как требования.
 - T017 → T024…T033; T018 → T019; T020 → T021, T030, T034, T043; T022 → T035.
 - US5 раньше остальных историй: все методы защищены. US1 раньше US2–US4: предварительные проверки читают модель чтения.
 - T064 — после T033 и T053; T071 и T072 — перед сдачей.
+- Phase 15 и Phase 16 (ревью PR #5) не зависят друг от друга; Phase 16 — отдельный коммит.
 
 ## Implementation Strategy
 
@@ -437,8 +438,10 @@ unit 87 / IT 42 (`check` с порогом покрытия), `make up`, `check-
 
 ## Результат converge
 
-Текущий статус: **Converged** (2026-11-18, проход 6 после Phase 13 и Phase 14).
+Текущий статус: Phase 15 — **Converged** (2026-11-19, проход 7); Phase 16 (метрики через Alloy) открыта, `converge` по ней — T140.
+До ревью реализации: **Converged** (2026-11-18, проход 6 после Phase 13 и Phase 14).
 Проходы 1–3 (2026-11-15/16) закончились `Converged`; статус снят ревью дизайна (17.11.2026) и проверкой реализации (18.11.2026).
+Статус снова снят ревью реализации (PR #5, 19.11.2026): открыты Phase 15 и Phase 16. Phase 15 закрыта проходом 7 (19.11.2026); открыта Phase 16 (метрики через Alloy).
 
 | Проход | Находки | Итог |
 |---|---|---|
@@ -448,6 +451,7 @@ unit 87 / IT 42 (`check` с порогом покрытия), `make up`, `check-
 | 4 | после Phase 11–12: 3 аудита, находки перепроверены; 6 приняты (Phase 13, T109–T114), из них 2 решения человека (T109, T113), 2 ложных отклонены. Главное: длина значений `settings`/`attributes` не проверялась; первая команда при неотвечающем Schema Registry не получала ответа 20 с и дольше | исправлено |
 | 5 | 3 аудита: 4 принятые находки (Phase 14, T116–T119: ADR-0006 о проверке `deviceId` коллектором, тестовый профиль, худший случай 503, формулировки исключения), 10 отклонено с причиной | исправлено |
 | 6 | проверка правок Phase 14 по коду и документам, `ItSchemaRegistryDownTest` на новом тестовом профиле | новых расхождений нет |
+| 7 | после Phase 15 (T122–T133), по изменённым местам: шесть замечаний ревью (SSL realm, ключи кэша, `null` в картах, раздел без перезапуска, предварительная проверка по кэшу; метрики через Alloy — Phase 16) сверены с кодом, тестами и документами; `grep` старых утверждений (`device:v1` в коде и действующих документах, «только по реплике», «без кэша», `LISTENER_RESTART`) пуст; новая переменная `DEVICES_CONSUMER_METADATA_MAX_AGE_MS` — в `.env.example`, Compose, `application.yaml`, `application-local.yaml`, `application-test.yaml`, README (разделы 19.3, 22.4), `plan.md`; в README и DoD обновлены числа тестов (найдено при проходе); аудиторы не привлекались | расхождений кроме чисел тестов нет; R16 не подтвердилось, принят R18 (решение человека, 19.11.2026) |
 
 Решения человека, зафиксированные при converge: 405/406/415 и неизвестный путь отдаются с кодом `VALIDATION_FAILED` (README 22.8, контракт не менялся);
 событие роутера `DELETE` без снимка для управляемого устройства — `IGNORED` (FR-015, строка 12); порог покрытия events-collector-service — 70 %;
@@ -457,6 +461,11 @@ unit 87 / IT 42 (`check` с порогом покрытия), `make up`, `check-
 символическая ссылка с первого модуля. Значения по умолчанию в `application.yaml` events-collector-service и
 device-collector-service (код прошлых модулей, совпадают с `.env.example`, кроме пустого `REDIS_PASSWORD` для запуска без пароля; стенд передаёт переменные явно) и в Compose
 у `COMPOSE_PROJECT_NAME`, `DEVICE_COLLECTOR_CONSUMER_GROUP` — исключение из правила AGENTS.md «Конфигурация» (T109, 18.11.2026).
+
+Отчёты сборки на 19.11.2026 (Mac, Docker Desktop, `check --rerun`, после Phase 15): events-collector-service unit 132 / IT 33, device-collector-service 142 / 23,
+device-service 100 / 49, падений нет; покрытие строк 98,2 % / 97,4 % / 96,8 %. Проверки стенда `make check-local`, `dcs-quick-check`, `ds-quick-check` — код 0.
+Те же интеграционные тесты device-service и device-collector-service на Linux (VPS) проходят. Не проверялись: `ItEndToEndTest` (нужна остановка стенда и согласие с лицензией
+Nexus) и Phase 16.
 
 Отчёты сборки на 18.11.2026: events-collector-service unit 132 / IT 33, device-collector-service 134 / 20 (прогон на Mac после Phase 12),
 device-service 90 / 44 (`check --rerun-tasks` после T110–T111)
@@ -528,3 +537,124 @@ Tracking (исключение T109 — из AGENTS.md, не из констит
   `REDIS_PASSWORD` (запуск без пароля); `plan.md` «Переменные окружения» — «без значений по умолчанию» с отсылкой к
   исключению — `AGENTS.md`, `tasks.md` «Результат converge», `plan.md` (T109; partial)
 - [X] T120 `converge` повторно до `Converged`; результат — в раздел «Результат converge» (T102, T108, T115)
+
+## Phase 15: Правки по ревью реализации (PR #5)
+
+Шесть замечаний преподавателя (19.11.2026). Ошибки в артефактах, а не только в коде: ключи кэша и порога в spec.md,
+data-model.md и ADR-0003 пересекались при допустимом `deviceId` (FR-004 разрешает `:`); `null` в `settings`/`attributes`
+нигде не был определён; FR-022 проверялся только при запуске обработчика; режим SSL realm и окружение Docker Desktop в
+research.md не учитывались; диаграммы описывали проверку записи через кэш, а код при недоступной реплике отвечал
+`503`, даже если карточка лежит в кэше (решение: реплика — основной источник, кэш — только при её недоступности; T121
+приводит диаграммы к прежнему коду, T129–T131 — новое поведение). Документы исправлены до кода (spec.md, сессия
+2026-11-19; data-model.md, plan.md, research.md R15–R16, ADR-0001, ADR-0003, ADR-0011). Замечание о метриках через
+Alloy — Phase 16, отдельным коммитом. Тест пишется раньше кода, который он проверяет, и сначала падает.
+
+- [X] T121 Диаграммы — фактический путь предварительной проверки: `ds-write-sequence` — запрос к реплике без кэша,
+  ветка `503 READ_MODEL_UNAVAILABLE`, заметка о `404` сразу после `POST`; `component-device-service` —
+  `DeviceCommandService → JdbcDeviceReadRepository`; перерендерить PNG — `diagrams/ds-write-sequence.{mmd,png}`,
+  `diagrams/component-device-service.{mmd,png}` (FR-005, замечание 6)
+- [X] T122 (R15) Тест до кода: через Admin API у `iot-platform`, `master` и realm, который создаёт `KeycloakTokens`,
+  `sslRequired` = `none` (сначала падает); затем `"sslRequired": "none"` в файле realm `iot-platform`; `master` —
+  `execInContainer` с `kcadm.sh update realms/master -s sslRequired=NONE` после старта Keycloak и до первого
+  административного токена; realm для проверки «чужого `iss`» создаётся с `sslRequired: none`. Стенд, Compose и порядок
+  старта не меняются (`master` стенду не нужен). Не подтвердилось — остановиться, запасной вариант из research.md —
+  `INF/config/keycloak/iot-platform-realm.json`, `DST/it/AbstractItTest.java`, `DST/it/KeycloakTokens.java`
+  (FR-010, FR-026; замечание 1)
+- [X] T123 [P] Тесты ключей до кода: `key("floor:dev-42")` не равен `floorKey("dev-42")` и ни один префикс не является началом
+  другого — в обоих сервисах; на Redis (Testcontainers) кэш `floor:dev-42` записан `put-if-fresh`, затем `raise-floor` для
+  `dev-42` проходит без `WRONGTYPE`, карточка `dev-42` удалена из кэша, а карточка `floor:dev-42` не тронута —
+  `DST/adapter/out/redis/RedisDeviceCacheTest.java`, `DCST/adapter/out/redis/RedisDeviceCacheInvalidatorTest.java`,
+  `DCST/it/ItDeviceOperationsTest.java` (FR-018; замечание 2)
+- [X] T124 Ключи `device:cache:v1:{deviceId}` и `device:floor:v1:{deviceId}` в обоих сервисах (Lua-скрипты не меняются, ключи
+  передаются в `KEYS`); тесты T123 и прежние тесты кэша проходят —
+  `DS/adapter/out/redis/RedisDeviceCache.java`, `DCS/adapter/out/redis/RedisDeviceCacheInvalidator.java`, тесты с
+  литералами ключей и комментарии с прежними именами — поиск по репозиторию, кроме исторических разделов `specs/`
+  (`grep -rn 'device:v1' services/ infrastructure/`) (FR-018)
+- [X] T125 [P] Тесты до кода: POST и PUT с `settings: null`, `attributes: null`, `{"k": null}` в `settings` и в `attributes` —
+  `400 VALIDATION_FAILED`, поле в `errors[]`; публикации нет (порт публикации не вызван; в интеграционном тесте сообщений
+  в теме нет); тело без `settings`/`attributes` — `202`, в сообщении пустые карты —
+  `DST/adapter/in/web/DeviceControllerRoutingTest.java`, `DST/it/ItDeviceCommandsTest.java` (FR-011, US2/AC3; замечание 3)
+- [X] T126 Проверка тела: `null` у карты и у её значений в `settings` и `attributes` — ошибка поля с кодом `NotNull`;
+  тесты T125 проходят — `DS/adapter/in/web/ContractMapValuesValidator.java` (FR-011)
+- [X] T127 (R18) Тесты до кода (R16 не подтвердилось: `NoOffsetForPartitionException` приходит из `onPartitionsAssigned`,
+  контейнер останавливается; перезапуск с Admin на двух экземплярах не сходится): unit-тест обёртки `Consumer` —
+  `NoOffsetForPartitionException` из `position(...)` → `seekToBeginning` этих разделов и повтор, возвращается позиция;
+  `OffsetOutOfRangeException` пробрасывается без `seek`; остальные методы делегируются как есть. `ItConsumerOffsetsTest`:
+  (а) один экземпляр — на работающем сервисе число разделов `devices` увеличено (Admin `createPartitions`), сообщение с
+  ключом, попадающим в новый раздел, применено, контейнер не останавливался (нет `ConsumerStoppedEvent` с причиной
+  `NO_OFFSET`), health `UP`; (б) два экземпляра в одной группе (второй — второй контекст Spring) — то же за 60 с, оба
+  обработчика работают, health `UP` у обоих, три прогона; (в) регрессия: смещение вне диапазона — обработчик остановлен,
+  событие не применено, health `DOWN`. Срок обновления метаданных потребителя в тестовом профиле — короткий. Не
+  подтвердилось (Spring или клиент не принимает обёртку, либо (б) не сходится) — остановиться; запасной вариант из
+  research.md — ограничение «один экземпляр» с перезапуском контейнера —
+  `DCST/config/NoOffsetRecoveringConsumerTest.java`, `DCST/it/ItConsumerOffsetsTest.java`, `DCST/it/AbstractItTest.java`,
+  `services/device-collector-service/src/test/resources/application-test.yaml` (FR-022; замечание 4)
+- [X] T128 Раздел без смещения у работающей группы читается с начала при любом числе экземпляров (R18): обёртка `Consumer`
+  подключена через `DefaultKafkaConsumerFactory.addPostProcessor` (перехват только `position(...)` и `poll(...)`);
+  `OffsetOutOfRangeException` по-прежнему останавливает обработчик; health `DOWN`, если обработчик `devices` остановлен по
+  любой причине; срок обновления метаданных потребителя — из переменной окружения `DEVICES_CONSUMER_METADATA_MAX_AGE_MS`
+  (`.env.example`, `INF/docker-compose.yaml`); `DevicesConsumerOffsets` при старте остаётся, если тесты не покажут, что он
+  лишний; unit-тесты — `DCS/config/NoOffsetRecoveringConsumer.java`, `DCS/config/KafkaConfig.java`,
+  `DCS/config/DevicesConsumerOffsets.java`, `DCSR/application.yaml`, `DCST/config/KafkaConfigTest.java`,
+  `DCST/config/DevicesConsumerOffsetsTest.java` (FR-022, ADR-0011). Удалить `DevicesListenerRestarter`,
+  `DevicesListenerRestarterTest` и `DEVICES_LISTENER_RESTART_DELAY` (`application.yaml`, `application-local.yaml`,
+  `application-test.yaml`, `.env.example`, `INF/docker-compose.yaml`). Проверка:
+  `grep -rn 'LISTENER_RESTART\|ListenerRestarter' .` вне истории `specs/` пуст
+- [X] T129 Тесты до кода: Proxy недоступен, карточка в кэше — `update`/`delete` публикуют команду, `create` —
+  `DeviceAlreadyExistsException`; Proxy недоступен, карточки в кэше нет или кэш недоступен — `ReadModelUnavailableException`,
+  публикации нет; реплика доступна — кэш не читается; интеграционные: Proxy на паузе (`docker pause`), карточка в кэше —
+  `PUT` `202` и одно сообщение `UPDATE`, без карточки — `503 READ_MODEL_UNAVAILABLE`, сообщений нет —
+  `DST/domain/service/DeviceCommandServiceTest.java`, `DST/it/ItDeviceCommandsTest.java` (FR-005; замечание 6)
+- [X] T130 Предварительная проверка: `findById` по реплике; при `ReadModelUnavailableException` — `DeviceCache.find`
+  (порт кэша, не `DeviceQueryService`: он при промахе снова пошёл бы в реплику и записал бы в кэш); счётчик
+  `device_command_precheck_cache_total{operation,result=hit|miss|error}`; тесты T129 проходят —
+  `DS/domain/service/DeviceCommandService.java`, `DS/domain/port/out/DeviceServiceMetrics.java`,
+  `DS/support/MicrometerDeviceServiceMetrics.java` (FR-005, FR-023)
+- [X] T131 Диаграммы по T130: `ds-write-sequence` — запрос к реплике, при её недоступности — кэш (`HGET body`): карточка
+  есть — дальше, нет или Redis недоступен — `503`; `component-device-service` — `DeviceCommandService → JdbcDeviceReadRepository`
+  и `DeviceCommandService -. реплика недоступна .-> RedisDeviceCache`; перерендерить PNG —
+  `diagrams/ds-write-sequence.{mmd,png}`, `diagrams/component-device-service.{mmd,png}` (FR-005; замечание 6)
+- [X] T132 Документы по T122–T131: ADR-0011 — выбранный способ (R16 → «проверено»), research.md R15/R16 — результат
+  проверки; README — ключи кэша и переход со старых ключей, `null` в `settings`/`attributes`, раздел без перезапуска,
+  `sslRequired: none` (стенд локальный, по HTTP; нелокальному развёртыванию нужны сертификат и `external`),
+  предварительная проверка записи (реплика, при её недоступности — кэш) и счётчик
+  `device_command_precheck_cache_total`, новые переменные; DoD; диаграммы с именами ключей (`grep -ln 'device:v1' diagrams/*.mmd`) — перерендерить
+  PNG; `quickstart.md` — ключ кэша в строке проверки — `docs/adr/0011-devices-topic-retention.md`,
+  `specs/001-device-service/research.md`, `specs/001-device-service/quickstart.md`, `README.md`,
+  `docs/definition-of-done.md`, `diagrams/*.{mmd,png}` (FR-010, FR-011, FR-018, FR-022)
+- [X] T133 **ЧЕЛОВЕК** По желанию — удалить на своём стенде прежние ключи `device:v1:*` (иначе истекают сами, пороги — до
+  `DEVICE_CACHE_FLOOR_TTL`). Выполнено человеком 19.11.2026
+- [X] T134 `converge` повторно до `Converged`; результат — в раздел «Результат converge»
+
+**Checkpoint**: на Mac (Docker Desktop) `./gradlew :services:device-service:check :services:device-collector-service:check`
+проходит, интеграционные тесты device-service в том числе; те же интеграционные тесты — на Linux (VPS); `make up`,
+`make check-local`, `make dcs-quick-check`, `make ds-quick-check` — код 0.
+
+## Phase 16: Метрики сервисов через Alloy (отдельный коммит)
+
+Решение — [ADR-0012](../../docs/adr/0012-service-metrics-via-alloy.md), FR-023 (сессия 2026-11-19). Сервисы платформы:
+events-collector-service, device-collector-service, device-service (все экземпляры). Экспортёры и сторонние
+компоненты Prometheus опрашивает сам, как раньше.
+
+- [ ] T135 (R17) Проверить на стенде с `PROFILES=observability` до переноса: Alloy (`prometheus.scrape` →
+  `prometheus.remote_write`) передаёт метрики одного сервиса в Prometheus с `--web.enable-remote-write-receiver`, метки
+  `job`/`instance` и ряд `up` совпадают с прежними. Не подтвердилось — остановиться, запасной вариант из research.md
+  (FR-023)
+- [ ] T136 Alloy: обнаружение экземпляров трёх сервисов, сбор `/actuator/prometheus` (у device-service — порт из
+  `DEVICE_SERVICE_MANAGEMENT_PORT` через `sys.env`; у events-collector-service и device-collector-service — порт
+  контейнера 8080, как прежде в `prometheus.yml`), метки `job` = имя сервиса, переименование `outbox_candidate_total` →
+  `outbox_candidate_created_total`, `prometheus.remote_write` в Prometheus; Prometheus — приём remote write, задания трёх
+  сервисов из `prometheus.yml` удалить; Alloy стартует после Prometheus, переменные портов передаются в Alloy —
+  `INF/config/alloy/config.alloy`, `INF/config/prometheus/prometheus.yml`, `INF/docker-compose.yaml`, `.env.example` (FR-023)
+- [ ] T137 Проверка на стенде с `PROFILES=observability`: `up{job=…}` = 1 для каждого экземпляра трёх сервисов (у
+  device-service — два), в `prometheus.yml` их заданий нет, все запросы панелей events-collector, device-collector,
+  device-service возвращают данные; результат — research.md R17 (FR-023)
+- [ ] T138 Диаграммы: `containers.mmd` (метрики сервисов: Alloy → `/actuator/prometheus`, Alloy → Prometheus remote write),
+  компонентные `component-events-collector`, `component-device-collector`, `component-device-service`; перерендерить PNG —
+  `diagrams/*.{mmd,png}` (FR-023)
+- [ ] T139 README и DoD: путь метрик сервисов, где смотреть состояние сбора (интерфейс Alloy), новые переменные —
+  `README.md`, `docs/definition-of-done.md` (FR-023)
+- [ ] T140 `converge` повторно до `Converged`; результат — в раздел «Результат converge»
+
+**Checkpoint**: `make check`; стенд `make up PROFILES=observability` — проверки T137; `make check-local`,
+`make dcs-quick-check`, `make ds-quick-check` — код 0.

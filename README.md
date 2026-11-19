@@ -239,10 +239,14 @@ iot-platform/
   (`kafka-configs --alter`, настройка `min.compaction.lag.ms` снимается), поэтому и на уже созданной теме политика
   исправляется. Копия шардов старше срока хранения — предупреждение `shard-restore.sh`.
 * Смещения группы device-collector-service — без тихого сброса (`auto-offset-reset: none`, ADR-0011). Раздел без
-  смещения (новая группа, новый раздел) читается с начала темы. Если смещение группы вне диапазона темы — обработчик
+  смещения (новая группа, новый раздел) читается с начала темы. Раздел, добавленный к теме у работающей группы
+  (`kafka-topics --alter --partitions`), сервис начинает читать с начала сам, без перезапуска и при любом числе
+  экземпляров: `Consumer` обёрнут (`NoOffsetRecoveringConsumer`), на `NoOffsetForPartitionException` в `position()` и
+  `poll()` делается `seekToBeginning` для этих разделов (ADR-0011, R18). Новый раздел потребитель замечает при
+  обновлении метаданных — не позже `DEVICES_CONSUMER_METADATA_MAX_AGE_MS`. Если смещение группы вне диапазона темы — обработчик
   отстал дольше срока хранения или группе вернули смещение копии старше срока, — часть сообщений удалена до обработки:
   обработчик останавливается, в логе ERROR `Committed offset is out of range`, health сервиса `DOWN` (контейнер
-  unhealthy). С `earliest` он молча перешёл бы на самое раннее сохранённое сообщение и, например, применил бы событие
+  unhealthy). Health `DOWN` и при остановке обработчика `devices` по любой другой причине. С `earliest` он молча перешёл бы на самое раннее сохранённое сообщение и, например, применил бы событие
   роутера после потерянного `DELETE` администратора. Выход: восстановить шарды из свежей копии (`make shard-restore`
   выставит смещения группы из её manifest) либо осознанно сдвинуть смещение группы
   (`kafka-consumer-groups --reset-offsets`) и перезапустить сервис.
@@ -470,11 +474,17 @@ docker compose -f infrastructure/docker-compose.yaml exec clickhouse bash /docke
 | `devices:published` | Set | `deviceId`, для которых `DeviceInfo` уже отправлен в Kafka |
 | `devices:snapshot-at` | Hash | `deviceId` → время исходного события последнего опубликованного снимка (мс Unix) |
 | `devices:fingerprint` | Hash | `deviceId` → отпечаток опубликованных данных устройства (SHA-256, 64 символа hex) |
-| `device:v1:{deviceId}` | Hash | кэш карточки устройства для device-service: `body`, `version`; TTL — `DEVICE_CACHE_TTL` (раздел 22) |
-| `device:v1:floor:{deviceId}` | String | нижняя граница версии для записи в кэш: пишет device-collector-service после `COMMIT`, удаляет device-service, записав версию не ниже порога; TTL — `DEVICE_CACHE_FLOOR_TTL` (больше `DEVICE_CACHE_TTL`, ADR-0003) |
+| `device:cache:v1:{deviceId}` | Hash | кэш карточки устройства для device-service: `body`, `version`; TTL — `DEVICE_CACHE_TTL` (раздел 22) |
+| `device:floor:v1:{deviceId}` | String | нижняя граница версии для записи в кэш: пишет device-collector-service после `COMMIT`, удаляет device-service, записав версию не ниже порога; TTL — `DEVICE_CACHE_FLOOR_TTL` (больше `DEVICE_CACHE_TTL`, ADR-0003) |
 
 Redis работает через Sentinel (ADR-0008): адрес основного узла клиенты получают у Sentinel (`REDIS_SENTINEL_MASTER`,
-`REDIS_SENTINEL_NODES`). Ключи `device:v1:*` пишут device-service и device-collector-service; ключи аренды и отметки публикации — только events-collector-service.
+`REDIS_SENTINEL_NODES`). Ключи `device:cache:v1:*` и `device:floor:v1:*` пишут device-service и device-collector-service; ключи аренды и отметки публикации — только events-collector-service.
+
+Префиксы `device:cache:` и `device:floor:` не являются началом друг друга: `deviceId` допускает `:` (FR-004), и при прежних
+`device:v1:` и `device:v1:floor:` ключ кэша устройства `floor:dev-42` совпадал с ключом порога `dev-42` — сброс кэша
+`dev-42` падал с `WRONGTYPE`, старая карточка отдавалась до истечения TTL. Переход со старых ключей: `device:v1:*` больше
+не читаются и истекают сами (ответы — через `DEVICE_CACHE_TTL`, пороги — через `DEVICE_CACHE_FLOOR_TTL`); при желании их
+можно удалить в `make redis-cli`: `--scan --pattern 'device:v1:*'` и `DEL` (по желанию, задача T133).
 
 * Захват: `SET outbox:lease <ownerToken> NX PX <OUTBOX_LEASE_TTL_MS>`. Не получили — итерация пропускается.
 * Продление — Lua-скрипт: `PEXPIRE outbox:lease <OUTBOX_LEASE_TTL_MS>`, только если значение совпадает с токеном.
@@ -676,7 +686,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:db-migrator:test
 ```
 
-events-collector-service — 132 теста, device-collector-service — 134 (раздел 19.8), device-service — 90 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
+events-collector-service — 132 теста, device-collector-service — 142 (раздел 19.8), device-service — 100 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
 Сообщения журнала проверяются через `support/LogCapture` (Logback `ListAppender` со снимком MDC на момент записи).
 Ключевые сценарии events-collector-service:
 
@@ -714,7 +724,7 @@ events-collector-service — 132 теста, device-collector-service — 134 (�
 ./gradlew :services:events-collector-service:check             # все тесты + порог покрытия 70 % (make coverage)
 ./gradlew :services:device-collector-service:integrationTest   # или make dcs-it (раздел 19.8)
 ./gradlew :services:device-collector-service:check             # порог покрытия 70 % (make dcs-coverage)
-./gradlew :services:device-service:integrationTest              # или make ds-it (Testcontainers, 44 теста)
+./gradlew :services:device-service:integrationTest              # или make ds-it (Testcontainers, 49 тестов)
 ```
 
 Классы `It*Test` events-collector-service (33 теста). Kafka, Schema Registry, ClickHouse и Redis поднимаются Testcontainers
@@ -942,7 +952,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 `DELETE`; ADR-0002, ADR-0005). Команда администратора применяется по `managed_at` и `deleted_at`; событие роутера
 не воскрешает устройство, удалённое администратором, и не перезаписывает поля, заданные администратором.
 После `COMMIT` сервис сбрасывает кэш device-service в Redis: `floor = max(floor, version)` в отдельном ключе
-`device:v1:floor:{deviceId}`, старые данные из кэша удаляются (Lua, `raise-floor.lua`). Порог живёт дольше кэша
+`device:floor:v1:{deviceId}`, старые данные из кэша удаляются (Lua, `raise-floor.lua`). Порог живёт дольше кэша
 (`DEVICE_CACHE_FLOOR_TTL`): в одном ключе с ответом он истекал вместе с ним, и отставание реплики дольше
 `DEVICE_CACHE_TTL` снова возвращало старые данные (ADR-0003). Известное ограничение: если отставание переживёт и
 `DEVICE_CACHE_FLOOR_TTL`, старая версия может лечь в кэш ещё на один `DEVICE_CACHE_TTL` — срок выбирается больше
@@ -990,7 +1000,8 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 | `DEVICES_DB_CONNECTION_TIMEOUT_MS` | сколько ждать свободное соединение из пула, мс | `2000` |
 | `DEVICES_DLT_MAX_BLOCK_MS`, `DEVICES_DLT_REQUEST_TIMEOUT_MS`, `DEVICES_DLT_DELIVERY_TIMEOUT_MS` | продюсер `devices-dlt`: блокировка при отправке, ответ брокера, общий срок доставки, мс | `5000`, `5000`, `15000` |
 | `REDIS_TIMEOUT`, `REDIS_PASSWORD`, `REDIS_SENTINEL_MASTER`, `REDIS_SENTINEL_NODES` | Redis через Sentinel: тайм-аут команд, пароль узлов, имя основного узла и узлы Sentinel (профиль `docker`) | `2s`; задаёт compose / `.env` |
-| `DEVICE_CACHE_FLOOR_TTL` | срок ключа порога `device:v1:floor:{deviceId}`; тот же срок задаёт device-service | `24h` |
+| `DEVICE_CACHE_FLOOR_TTL` | срок ключа порога `device:floor:v1:{deviceId}`; тот же срок задаёт device-service | `24h` |
+| `DEVICES_CONSUMER_METADATA_MAX_AGE_MS` | как часто потребитель `devices` обновляет метаданные: добавленный к теме раздел читается с начала не позже этого срока, мс | `60000` |
 | `APP_INSTANCE_ID` | `instanceId` в метриках и логах | hostname |
 | `MANAGEMENT_OTLP_ENDPOINT` | OTLP-экспорт трейсов | `http://alloy:4320/v1/traces` в compose |
 
@@ -1043,12 +1054,13 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 
 ### 19.8 Тесты
 
-* Unit (134): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
+* Unit (142): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
   `DeviceInfoMapperTest`, `DeviceInfoListenerTest` (ack только после записи, отправка в DLT), `KafkaConfigTest` (невалидное —
   сразу в `devices-dlt`; сбой хранилища — повторы и DLT; ошибка записи в DLT — не подтверждено; паузы 1 с и 2 с),
   `KafkaErrorClassifierTest`, `JdbcTransactionRunnerTest`, `ProxyShardResolverTest`, `SqlErrorsTest`,
-  `ContractCompatibilityTest`, `DeviceControllerTest`, `MetricsFacadeTest`, `ArchitectureTest`.
-* Интеграционные (20, Testcontainers — Kafka, Schema Registry, **два контейнера PostgreSQL и ShardingSphere-Proxy**,
+  `ContractCompatibilityTest`, `DeviceControllerTest`, `MetricsFacadeTest`, `NoOffsetRecoveringConsumerTest`
+  (раздел без смещения — в начало, выход за диапазон пробрасывается), `DevicesConsumerOffsetsTest`, `ArchitectureTest`.
+* Интеграционные (23, Testcontainers — Kafka, Schema Registry, **два контейнера PostgreSQL и ShardingSphere-Proxy**,
   схема — через db-migrator): `ItDeviceCollectorTest` — устройство сохранено на ожидаемом шарде;
   `givenDeviceInfo_whenConsumed_thenStoredOnItsShard` проверяет **напрямую в шардах**, что запись есть на шарде,
   который вернул Proxy, и её нет на другом; много устройств распределяются по обоим шардам; повторное сообщение не
@@ -1243,14 +1255,24 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 |---|---|---|
 | 202 | команда принята Kafka (POST, PUT, DELETE); `Location` указывает на ресурс | — |
 | 200 | GET, устройство есть | — |
-| 400 | тело не прошло проверку | `VALIDATION_FAILED` |
+| 400 | тело не прошло проверку (в том числе `null` в `settings`, `attributes` или среди их значений) | `VALIDATION_FAILED` |
 | 401 | нет токена, он недействителен или выдан для другой аудитории | `UNAUTHORIZED` |
 | 403 | пользовательский токен, не сервисный | `SERVICE_TOKEN_REQUIRED` |
 | 403 | сервисный токен без нужной роли (например, `device-service-reader` на POST) | `FORBIDDEN` |
 | 404 | устройства нет или оно удалено | `DEVICE_NOT_FOUND` |
 | 409 | POST для уже существующего устройства | `DEVICE_ALREADY_EXISTS` |
 | 503 | Kafka не подтвердила команду за `DEVICE_COMMAND_SEND_TIMEOUT` (повтор безопасен) | `COMMAND_NOT_ACCEPTED` |
-| 503 | Proxy или реплика шарда недоступны при промахе кэша | `READ_MODEL_UNAVAILABLE` |
+| 503 | GET: Proxy или реплика шарда недоступны при промахе кэша; PUT, POST, DELETE: реплика недоступна, а карточки в кэше нет (или недоступен и Redis) | `READ_MODEL_UNAVAILABLE` |
+
+Тело запроса и `null`: `settings` и `attributes` — карты строк, `null` у самой карты и у любого её значения контракт не
+допускает — `400 VALIDATION_FAILED` с полем в `errors[]`, команда не публикуется. Поля, которого нет в теле, — пустая
+карта (в сообщении `devices` — пустые карты).
+
+Предварительная проверка записи (PUT, POST, DELETE): есть ли устройство, решает реплика (`devices_read`). Реплика
+недоступна — карточка ищется в кэше: нашлась — команда проходит проверку, не нашлась или Redis тоже недоступен —
+`503 READ_MODEL_UNAVAILABLE`, команда не публикуется. Ответ по кэшу считает счётчик
+`device_command_precheck_cache_total{operation,result=hit|miss|error}`; пока реплика доступна, кэш при записи не
+читается. Проверка предварительная: окончательно решает владелец данных — device-collector-service.
 
 ### 22.4 Переменные окружения
 
@@ -1277,6 +1299,7 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 | `IOT_NET_IP_RANGE` | диапазон динамических адресов контейнеров (верхняя половина подсети: `/25`); статические адреса Redis и Sentinel остаются в нижней | `.env.example` |
 | `KAFKA_DEVICES_RETENTION_MS` | `retention.ms` темы `devices` без сжатия (`2592000000`) | `.env.example`; ADR-0011; раздел 5 |
 | `DEVICE_CACHE_FLOOR_TTL` | срок ключа порога версии в кэше (`24h`, больше `DEVICE_CACHE_TTL`) | `.env.example`; ADR-0003; разделы 11, 19 |
+| `DEVICES_CONSUMER_METADATA_MAX_AGE_MS` | обновление метаданных потребителя `devices` (`60000` мс): срок, за который работающая группа замечает добавленный раздел | `.env.example`; ADR-0011; раздел 5 |
 
 Изменены значения: `KEYCLOAK_VERSION` — `26.0.8`; `SHARD_EXPORTER_PASSWORD` — заглушка с пробелом (ломала DSN экспортёра) заменена на `change_me_exporter`.
 
@@ -1331,6 +1354,13 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 Окружение платформы (C4, Postgres/Camunda/MinIO) описано в истории Git и в профиле `platform`.
 
 ### 22.8 Известные ограничения
+
+* **Keycloak по HTTP, `sslRequired: none`.** Стенд локальный (одна машина или доверенная сеть, HTTP, без сертификата), поэтому
+  в `infrastructure/config/keycloak/iot-platform-realm.json` задано `"sslRequired": "none"`. По умолчанию (`external`)
+  Keycloak пропускает HTTP только с частных адресов, а адрес, с которого Docker доставляет запрос с хоста в контейнер, от
+  проекта не зависит (Docker Desktop, VPN) — отсюда `403 HTTPS required`. Интеграционные тесты переводят в `none` и realm
+  `master` (`kcadm.sh update realms/master -s sslRequired=NONE`; он нужен только им для административного токена), и
+  realm, который создают сами. Нелокальному развёртыванию нужны сертификат и `external`.
 
 * **Коды ошибок для 405, 406, 415 и неизвестного пути.** Эти ответы отдаются с кодом `VALIDATION_FAILED`, хотя в контракте для них кода нет. Решение сознательное: контракт OpenAPI не меняется, клиенты получают Problem Details с известным кодом. Если понадобится отдельный код, сначала меняется контракт (и клиент `device-service-client`).
 * **`deviceId` с пробелом или `/` из событий роутера.** device-collector-service принимает любой непустой `deviceId` до 128 символов, а device-service — только без пробелов и `/` (шаблон контракта; `/` ломает путь `/api/v1/devices/{deviceId}`). Такое устройство есть в реестре, но `GET`, `PUT` и `DELETE` отвечают на него `400 VALIDATION_FAILED`, создать его через `POST` тоже нельзя (ADR-0006).

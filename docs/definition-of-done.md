@@ -305,7 +305,7 @@ device-collector-service, проект avros и изменения в приём
 ## Тесты реестра устройств и avros
 
 - [ ] Unit-тесты логики сервисов (`make test`, `make dcs-test`, `make ds-test`; числа — из отчётов сборки
-  `build/test-results/test`: events-collector-service — 132, device-collector-service — 134, device-service — 90;
+  `build/test-results/test`: events-collector-service — 132, device-collector-service — 142, device-service — 100;
   db-migrator — числа нет, отчёта сборки в репозитории нет); порог покрытия JaCoCo выполняется (70 %, `make coverage`,
   `make dcs-coverage`; у device-service — `make ds-coverage`), сгенерированные Avro-классы из отчёта исключены.
 - [ ] Интеграционные тесты сервисов на Testcontainers (числа — из `build/test-results/integrationTest`: events-collector-service — 33,
@@ -347,8 +347,16 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
   (миграция V3), сброс кэша после `COMMIT`, Redis как новая зависимость («device-collector-service», «База данных»).
 - Тема `devices`: `cleanup.policy=delete` и `retention.ms` вместо сжатия (ADR-0011); предупреждение `shard-restore.sh`
   о копии старше срока хранения («База данных», бэкап).
-- Кэш устройства: порог версии в отдельном ключе `device:v1:floor:{deviceId}` со сроком `DEVICE_CACHE_FLOOR_TTL`
+- Кэш устройства: порог версии в отдельном ключе `device:floor:v1:{deviceId}` со сроком `DEVICE_CACHE_FLOOR_TTL`
   (ADR-0003), его снимает успешное чтение («device-service», «Redis»).
+- Ключи кэша: `device:cache:v1:{deviceId}` и `device:floor:v1:{deviceId}` (префиксы не являются началом друг друга,
+  `deviceId` с `:` их не смешивает); прежние `device:v1:*` не читаются и истекают сами.
+- `null` в `settings`, `attributes` и среди их значений — `400 VALIDATION_FAILED`, команда не публикуется.
+- Предварительная проверка записи: реплика, а при её недоступности — кэш карточек; нет карточки или Redis недоступен —
+  `503 READ_MODEL_UNAVAILABLE`; счётчик `device_command_precheck_cache_total`.
+- Раздел, добавленный к теме `devices` у работающей группы, читается с начала без перезапуска при любом числе
+  экземпляров (`DEVICES_CONSUMER_METADATA_MAX_AGE_MS`, ADR-0011); health `DOWN` при остановленном обработчике.
+- Keycloak по HTTP: `"sslRequired": "none"` у realm `iot-platform` (стенд локальный); тесты задают его у `master` и своих realm.
 - Запуск: Keycloak с realm из репозитория и Redis с Sentinel — в базовом стенде, а не в профиле `platform` («Запуск»).
 - Наблюдаемость: job `device-service` (management-порт 8081 внутри сети Compose; на основном порту actuator не открыт),
   дашборд «IoT Platform — device-service» (`infrastructure/config/grafana/dashboards/device-service.json`), метрики
