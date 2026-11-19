@@ -289,10 +289,12 @@ device-collector-service, проект avros и изменения в приём
 ## Наблюдаемость
 
 - [ ] Метрики со всех компонентов: оба сервиса и device-service (`/actuator/prometheus`, jobs `events-collector-service`,
-  `device-collector-service`, `device-service` — management-порт 8081 внутри сети Compose, на хост не публикуется), ShardingSphere-Proxy (агент метрик из образа 5.5.3, `PROXY_AGENT_ENABLED=true`, job
+  `device-collector-service`, `device-service` — management-порт 8081 внутри сети Compose, на хост не публикуется);
+  их собирает Alloy (все экземпляры, DNS Docker) и передаёт в Prometheus по remote write, заданий этих сервисов в
+  `prometheus.yml` нет, состояние сбора — в интерфейсе Alloy (ADR-0012), `up` каждого экземпляра равен 1; ShardingSphere-Proxy (агент метрик из образа 5.5.3, `PROXY_AGENT_ENABLED=true`, job
   `shardingsphere-proxy`), шарды PostgreSQL и их реплики (`postgres-exporter` v0.20.1 на каждый, job `postgres-shards`;
   отставание реплики - `pg_replication_lag_seconds`, `pg_stat_replication_pg_wal_lsn_diff`), Kafka (job `kafka`).
-  Все цели профиля `observability` в Prometheus (`/targets`) — `UP`; `minio`, `keycloak`, `postgres` относятся к профилю
+  Все цели профиля `observability`, которые опрашивает Prometheus (`/targets`), — `UP`; `minio`, `keycloak`, `postgres` относятся к профилю
   `platform`.
 - [ ] Дашборды в Grafana: «events-collector-service», «device-collector-service», «device-service» (`device-service.json`), «Proxy и шарды реестра устройств»
   (`device-shards`), «Kafka» — панели получают данные (все запросы дашбордов возвращают ряды при нагрузке).

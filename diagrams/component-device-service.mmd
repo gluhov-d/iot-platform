@@ -59,7 +59,7 @@ flowchart LR
 
     subgraph obs["Наблюдаемость"]
         prom["Prometheus"]
-        alloy["Grafana Alloy → Loki / Tempo"]
+        alloy["Grafana Alloy → Prometheus / Loki / Tempo"]
     end
 
     consumer -- "HTTP + Bearer JWT, traceparent" --> chain
@@ -77,5 +77,5 @@ flowchart LR
     topic --> dcs
     dcs -. "адрес master · Sentinel :26379" .-> sentinel
     dcs -- "Lua raise-floor: порог версии, удаление устаревшего ответа" --> redis
-    prom -- "management-порт 8081: /actuator/prometheus (без токена, в сети Compose)" --> svc
-    svc -- "логи JSON (traceId, spanId) · OTLP-трейсы" --> alloy
+    alloy -- "remote write" --> prom
+    svc <-- "в Alloy: логи JSON, OTLP-трейсы<br/>из Alloy: метрики, порт 8081" --> alloy

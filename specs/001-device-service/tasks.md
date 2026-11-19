@@ -441,7 +441,7 @@ unit 87 / IT 42 (`check` с порогом покрытия), `make up`, `check-
 Текущий статус: Phase 15 — **Converged** (2026-11-19, проход 7); Phase 16 (метрики через Alloy) открыта, `converge` по ней — T140.
 До ревью реализации: **Converged** (2026-11-18, проход 6 после Phase 13 и Phase 14).
 Проходы 1–3 (2026-11-15/16) закончились `Converged`; статус снят ревью дизайна (17.11.2026) и проверкой реализации (18.11.2026).
-Статус снова снят ревью реализации (PR #5, 19.11.2026): открыты Phase 15 и Phase 16. Phase 15 закрыта проходом 7 (19.11.2026); открыта Phase 16 (метрики через Alloy).
+Статус снова снят ревью реализации (PR #5, 19.11.2026): открыты Phase 15 и Phase 16. Phase 15 закрыта проходом 7, Phase 16 (метрики через Alloy) — проходом 8 (19.11.2026).
 
 | Проход | Находки | Итог |
 |---|---|---|
@@ -452,6 +452,7 @@ unit 87 / IT 42 (`check` с порогом покрытия), `make up`, `check-
 | 5 | 3 аудита: 4 принятые находки (Phase 14, T116–T119: ADR-0006 о проверке `deviceId` коллектором, тестовый профиль, худший случай 503, формулировки исключения), 10 отклонено с причиной | исправлено |
 | 6 | проверка правок Phase 14 по коду и документам, `ItSchemaRegistryDownTest` на новом тестовом профиле | новых расхождений нет |
 | 7 | после Phase 15 (T122–T133), по изменённым местам: шесть замечаний ревью (SSL realm, ключи кэша, `null` в картах, раздел без перезапуска, предварительная проверка по кэшу; метрики через Alloy — Phase 16) сверены с кодом, тестами и документами; `grep` старых утверждений (`device:v1` в коде и действующих документах, «только по реплике», «без кэша», `LISTENER_RESTART`) пуст; новая переменная `DEVICES_CONSUMER_METADATA_MAX_AGE_MS` — в `.env.example`, Compose, `application.yaml`, `application-local.yaml`, `application-test.yaml`, README (разделы 19.3, 22.4), `plan.md`; в README и DoD обновлены числа тестов (найдено при проходе); аудиторы не привлекались | расхождений кроме чисел тестов нет; R16 не подтвердилось, принят R18 (решение человека, 19.11.2026) |
+| 8 | после Phase 16 (T135–T139), по изменённым местам: `grep` старых утверждений («Prometheus забирает/находит», `dns_sd_configs`, литерал порта в `prometheus.yml`) в README, DoD, диаграммах пуст; Alloy — все 8 компонентов сбора `healthy`; три задания удалены из `prometheus.yml`; панели и `up` — R17; аудиторы не привлекались | расхождений нет |
 
 Решения человека, зафиксированные при converge: 405/406/415 и неизвестный путь отдаются с кодом `VALIDATION_FAILED` (README 22.8, контракт не менялся);
 событие роутера `DELETE` без снимка для управляемого устройства — `IGNORED` (FR-015, строка 12); порог покрытия events-collector-service — 70 %;
@@ -636,25 +637,25 @@ Alloy — Phase 16, отдельным коммитом. Тест пишется
 events-collector-service, device-collector-service, device-service (все экземпляры). Экспортёры и сторонние
 компоненты Prometheus опрашивает сам, как раньше.
 
-- [ ] T135 (R17) Проверить на стенде с `PROFILES=observability` до переноса: Alloy (`prometheus.scrape` →
+- [X] T135 (R17) Проверить на стенде с `PROFILES=observability` до переноса: Alloy (`prometheus.scrape` →
   `prometheus.remote_write`) передаёт метрики одного сервиса в Prometheus с `--web.enable-remote-write-receiver`, метки
   `job`/`instance` и ряд `up` совпадают с прежними. Не подтвердилось — остановиться, запасной вариант из research.md
   (FR-023)
-- [ ] T136 Alloy: обнаружение экземпляров трёх сервисов, сбор `/actuator/prometheus` (у device-service — порт из
+- [X] T136 Alloy: обнаружение экземпляров трёх сервисов, сбор `/actuator/prometheus` (у device-service — порт из
   `DEVICE_SERVICE_MANAGEMENT_PORT` через `sys.env`; у events-collector-service и device-collector-service — порт
   контейнера 8080, как прежде в `prometheus.yml`), метки `job` = имя сервиса, переименование `outbox_candidate_total` →
   `outbox_candidate_created_total`, `prometheus.remote_write` в Prometheus; Prometheus — приём remote write, задания трёх
   сервисов из `prometheus.yml` удалить; Alloy стартует после Prometheus, переменные портов передаются в Alloy —
   `INF/config/alloy/config.alloy`, `INF/config/prometheus/prometheus.yml`, `INF/docker-compose.yaml`, `.env.example` (FR-023)
-- [ ] T137 Проверка на стенде с `PROFILES=observability`: `up{job=…}` = 1 для каждого экземпляра трёх сервисов (у
+- [X] T137 Проверка на стенде с `PROFILES=observability`: `up{job=…}` = 1 для каждого экземпляра трёх сервисов (у
   device-service — два), в `prometheus.yml` их заданий нет, все запросы панелей events-collector, device-collector,
   device-service возвращают данные; результат — research.md R17 (FR-023)
-- [ ] T138 Диаграммы: `containers.mmd` (метрики сервисов: Alloy → `/actuator/prometheus`, Alloy → Prometheus remote write),
+- [X] T138 Диаграммы: `containers.mmd` (метрики сервисов: Alloy → `/actuator/prometheus`, Alloy → Prometheus remote write),
   компонентные `component-events-collector`, `component-device-collector`, `component-device-service`; перерендерить PNG —
   `diagrams/*.{mmd,png}` (FR-023)
-- [ ] T139 README и DoD: путь метрик сервисов, где смотреть состояние сбора (интерфейс Alloy), новые переменные —
+- [X] T139 README и DoD: путь метрик сервисов, где смотреть состояние сбора (интерфейс Alloy), новые переменные —
   `README.md`, `docs/definition-of-done.md` (FR-023)
-- [ ] T140 `converge` повторно до `Converged`; результат — в раздел «Результат converge»
+- [X] T140 `converge` повторно до `Converged`; результат — в раздел «Результат converge»
 
 **Checkpoint**: `make check`; стенд `make up PROFILES=observability` — проверки T137; `make check-local`,
 `make dcs-quick-check`, `make ds-quick-check` — код 0.

@@ -69,7 +69,8 @@ flowchart LR
     invalidator -- "Lua raise-floor: порог версии, удаление устаревшего ответа" --> rmaster
     rsentinel -. "наблюдение, failover" .-> rmaster
 
-    prom -- "/actuator/prometheus" --> svc
+    alloy -- "/actuator/prometheus, все экземпляры" --> svc
+    alloy -- "remote write" --> prom
     prom -- "метрики Proxy (агент)" --> proxy
     svc -- "логи stdout JSON · трейсы OTLP" --> alloy
     alloy --> loki

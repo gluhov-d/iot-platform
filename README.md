@@ -539,7 +539,7 @@ docker compose -f infrastructure/docker-compose.yaml up -d --scale events-collec
   `docker compose -f infrastructure/docker-compose.yaml up -d --scale device-collector-service=2 device-collector-service`.
 
 У обоих сервисов нет `container_name` и фиксированного хост-порта (диапазоны `EVENTS_COLLECTOR_PORTS` и
-`DEVICE_COLLECTOR_PORTS`), Prometheus находит реплики через DNS (`dns_sd_configs`), `instanceId` по умолчанию —
+`DEVICE_COLLECTOR_PORTS`), Alloy находит реплики через DNS Docker (`discovery.dns`) и собирает их метрики (раздел 16), `instanceId` по умолчанию —
 hostname контейнера.
 У остальных контейнеров стенда имена фиксированные (`iot-kafka`, `iot-clickhouse`, …).
 
@@ -761,7 +761,8 @@ Avro-классы приходят из `avros` и в отчёт не входя
 | Health | http://localhost:&lt;порт&gt;/actuator/health |
 | Метрики | http://localhost:&lt;порт&gt;/actuator/prometheus |
 | Grafana | http://localhost:3000 → папка «IoT Platform»: «events-collector-service», «device-collector-service», «device-service», «Proxy и шарды реестра устройств», «Kafka», «PostgreSQL» (платформенный) |
-| Prometheus | http://localhost:9090 → Status → Targets: jobs `events-collector-service`, `device-collector-service`, `device-service`, `shardingsphere-proxy`, `postgres-shards` (шарды и их реплики), `kafka` |
+| Prometheus | http://localhost:9090 → Status → Targets: jobs `shardingsphere-proxy`, `postgres-shards` (шарды и их реплики), `kafka` |
+| Alloy | http://localhost:12345 (`ALLOY_PORT`) → Graph / компоненты `prometheus.scrape.*`: состояние сбора метрик трёх сервисов (по экземплярам: health и последняя ошибка). Ряд `up{job="events-collector-service"\|"device-collector-service"\|"device-service"}` в Prometheus формирует Alloy; страница Targets этих заданий не показывает |
 | Loki | Grafana → Explore → Loki: `{service="events-collector-service"} \| json`, `{service="device-collector-service", shard="shard_0"} \| json` |
 | Tempo | Grafana → Explore → Tempo: `{name="events process"}` (приём), `{name="publish devices"}` (публикация), `{name="devices process"}` (device-collector-service) |
 | Kafka UI | http://localhost:8090 (профиль `tools`): темы, сообщения Avro как JSON, лаг consumer group, схемы |
@@ -782,9 +783,17 @@ Avro-классы приходят из `avros` и в отчёт не входя
 > **Про `outbox_candidate_created_total`.** Spring Boot 4 использует Prometheus Java client 1.x, который
 > запрещает имена метрик с суффиксом `_created` (он зарезервирован в OpenMetrics под время создания
 > счётчика). Поэтому `/actuator/prometheus` отдаёт этот счётчик как `outbox_candidate_total`, а требуемое
-> имя `outbox_candidate_created_total` восстанавливает `metric_relabel_configs` в
-> `infrastructure/config/prometheus/prometheus.yml`. В Prometheus и Grafana метрика называется так, как
+> имя `outbox_candidate_created_total` восстанавливает правило `prometheus.relabel` в
+> `infrastructure/config/alloy/config.alloy`. В Prometheus и Grafana метрика называется так, как
 > требует задание. Остальные шесть имён совпадают уже в `/actuator/prometheus` (проверяет `MetricsFacadeTest`).
+
+**Путь метрик сервисов платформы (ADR-0012).** events-collector-service, device-collector-service и device-service (все
+экземпляры) собирает Alloy: находит экземпляры через DNS Docker, опрашивает `/actuator/prometheus` каждые 5 с и передаёт
+метрики в Prometheus по remote write (Prometheus запущен с `--web.enable-remote-write-receiver`, Alloy стартует после него).
+Метки прежние: `job` — имя сервиса, `instance` — адрес экземпляра; запросы панелей не менялись. Экспортёры, Proxy,
+Keycloak, MinIO и компоненты наблюдаемости Prometheus по-прежнему опрашивает сам. Alloy остановлен — пропадают метрики
+сервисов, логи и трассы; новых переменных нет (`DEVICE_SERVICE_MANAGEMENT_PORT` и `ALLOY_PORT` уже были; первая теперь
+передаётся и Alloy).
 
 **Метрики device-collector-service** (`/actuator/prometheus`, job `device-collector-service`): сообщения —
 `devices_messages_received_total`, `devices_messages_processed_total` (метка `outcome`: применено, устаревшее),
@@ -793,8 +802,8 @@ Avro-классы приходят из `avros` и в отчёт не входя
 `shard`; ошибки — `devices_processing_errors_total`, `devices_shard_route_fail_total`; а также стандартные JVM,
 HikariCP (`sharding-proxy`) и лаг consumer group из kafka-exporter.
 
-**Метрики device-service** (job `device-service`, конфигурация — `infrastructure/config/prometheus/prometheus.yml`, дашборд «IoT Platform — device-service» — `infrastructure/config/grafana/dashboards/device-service.json`):
-Prometheus забирает management-порт 8081 внутри сети Compose (`DEVICE_SERVICE_MANAGEMENT_PORT`); порт на хост не публикуется,
+**Метрики device-service** (job `device-service`, сбор — `infrastructure/config/alloy/config.alloy`, дашборд «IoT Platform — device-service» — `infrastructure/config/grafana/dashboards/device-service.json`):
+Alloy забирает management-порт 8081 внутри сети Compose (`DEVICE_SERVICE_MANAGEMENT_PORT`, передаётся в Alloy через `sys.env`); порт на хост не публикуется,
 а основной порт не отдаёт `/actuator` (раздел 22.1). Метрики: `device_commands_*` (команды: принято, отклонено, время публикации в Kafka)
 и `device_cache_*` (исходы чтения, доля попаданий), HTTP-метрики Spring; в метках нет `deviceId`.
 
@@ -1281,7 +1290,7 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 | Переменные | Назначение | Где описано |
 |---|---|---|
 | `DEVICE_SERVICE_IMAGE_TAG`, `DEVICE_SERVICE_PORTS` | тег образа; диапазон портов хоста (два экземпляра) | `.env.example`; plan.md, «Переменные окружения» |
-| `DEVICE_SERVICE_MANAGEMENT_PORT` | management-порт (health, prometheus), не публикуется | `.env.example`; литерал в `infrastructure/config/prometheus/prometheus.yml` |
+| `DEVICE_SERVICE_MANAGEMENT_PORT` | management-порт (health, prometheus), не публикуется | `.env.example`; `infrastructure/config/alloy/config.alloy` (`sys.env`), healthcheck |
 | `DEVICE_COMMAND_SEND_TIMEOUT` | ожидание подтверждения Kafka при записи | `.env.example`; раздел 22.3 |
 | `SCHEMA_REGISTRY_HTTP_CONNECT_TIMEOUT_MS`, `SCHEMA_REGISTRY_HTTP_READ_TIMEOUT_MS`, `SCHEMA_REGISTRY_MAX_RETRIES` | клиент Schema Registry в device-service: соединение и чтение (мс), повторы (`1000`, `2000`, `0`) | `.env.example`; инвариант ниже |
 | `DEVICE_CACHE_TTL` | срок кэша карточки устройства в device-service | `.env.example`; раздел 19.3 |
@@ -1349,7 +1358,7 @@ curl -s -i -X DELETE "$API/dev-42" -H "Authorization: Bearer $TOKEN"
 | команда не видна в `GET` долго | `make logs S=device-collector-service`; `make dcs-quick-check` |
 | контейнер не `healthy` | `make logs S=device-service`; healthcheck — liveness на management-порту |
 
-Метрики: `device_commands_*` и `device_cache_*` (без `deviceId` в метках) — job `device-service` в Prometheus и дашборд «IoT Platform — device-service» (`infrastructure/config/grafana/dashboards/device-service.json`).
+Метрики: `device_commands_*` и `device_cache_*` (без `deviceId` в метках) — job `device-service` (собирает Alloy, ADR-0012) в Prometheus и дашборд «IoT Platform — device-service» (`infrastructure/config/grafana/dashboards/device-service.json`).
 
 Окружение платформы (C4, Postgres/Camunda/MinIO) описано в истории Git и в профиле `platform`.
 

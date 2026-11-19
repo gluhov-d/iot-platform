@@ -46,10 +46,10 @@ flowchart LR
         minio[("<b>MinIO</b><br/><i>Object Storage</i><br/>Бакеты iot-dlt, iot-attachments")]
         camunda["<b>Camunda</b><br/><i>BPM Engine</i><br/>Процесс выполнения команды: отправка,<br/>ожидание подтверждения, таймаут"]
         subgraph obs["Наблюдаемость"]
-            alloy["<b>Alloy</b><br/><i>Grafana Alloy</i><br/>Агент: читает логи контейнеров проекта<br/>через Docker API, принимает OTLP-трейсы"]
+            alloy["<b>Alloy</b><br/><i>Grafana Alloy</i><br/>Агент: читает логи контейнеров проекта<br/>через Docker API, принимает OTLP-трейсы,<br/>собирает метрики сервисов платформы"]
             loki[("<b>Loki</b><br/><i>Log storage</i><br/>Логи JSON с traceId; метки service, container")]
             tempo[("<b>Tempo</b><br/><i>Trace storage</i><br/>Трейсы")]
-            prometheus[("<b>Prometheus</b><br/><i>TSDB, pull</i><br/>Метрики приложений и экспортёров")]
+            prometheus[("<b>Prometheus</b><br/><i>TSDB, pull + remote write</i><br/>Метрики сервисов (от Alloy) и экспортёров")]
             pg_exporter["<b>postgres-exporter</b><br/><i>Prometheus exporter</i><br/>Метрики PostgreSQL платформы, шардов и<br/>реплик, отставание реплик"]
             kafka_exporter["<b>kafka-exporter</b><br/><i>Prometheus exporter</i><br/>Метрики Kafka на :9308"]
             grafana["<b>Grafana</b><br/><i>Dashboards</i><br/>Панели events-collector, device-collector,<br/>device-service, PostgreSQL"]
@@ -127,10 +127,11 @@ flowchart LR
     failed_processor -. "E3. Запись в dead_letters · HTTP/SQL" .-> clickhouse
     failed_processor -. "E4. Повторная публикация исправимых (журнал<br/>отсекает дубли) · Kafka" .-> topic_device
     camunda -. "E5. Таймаут ack → FAILED · External Task / REST" .-> command_service
-    %% M: метрики (Prometheus забирает сам, pull)
-    prometheus -. "M1. /actuator/prometheus · HTTP" .-> events_collector
-    prometheus -. "M1. /actuator/prometheus: devices_*, shard · HTTP" .-> device_collector
-    prometheus -. "M1. /actuator/prometheus: http_server_requests,<br/>device_commands_*, device_cache_* · HTTP" .-> device_service
+    %% M: метрики (сервисы платформы собирает Alloy и передаёт remote write; экспортёры Prometheus забирает сам, pull)
+    alloy -. "M1. /actuator/prometheus, все экземпляры (DNS Docker) · HTTP" .-> events_collector
+    alloy -. "M1. /actuator/prometheus: devices_*, shard · HTTP" .-> device_collector
+    alloy -. "M1. /actuator/prometheus (management-порт): http_server_requests,<br/>device_commands_*, device_cache_* · HTTP" .-> device_service
+    alloy -. "M2. Метрики сервисов · Prometheus remote write" .-> prometheus
     prometheus -. "M1. Скрейп /metrics · HTTP :9187" .-> pg_exporter
     pg_exporter -. "M2. Статистика pg_stat_* · SQL" .-> pg
     pg_exporter -. "M2. pg_stat_*, pg_stat_replication · SQL" .-> shard0

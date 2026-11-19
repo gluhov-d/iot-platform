@@ -1215,6 +1215,8 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
       - "--web.enable-lifecycle"
+      # Метрики сервисов платформы приходят от Alloy (ADR-0012)
+      - "--web.enable-remote-write-receiver"
     ports:
       - "${PROMETHEUS_PORT}:9090"
     volumes:
@@ -1292,9 +1294,13 @@ services:
         condition: service_healthy
       tempo:
         condition: service_healthy
+      prometheus:
+        condition: service_healthy
     environment:
       # Имя Compose-проекта: Alloy собирает логи только его контейнеров
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-iot-platform}
+      # Management-порт device-service для сбора метрик (sys.env в config.alloy)
+      DEVICE_SERVICE_MANAGEMENT_PORT: ${DEVICE_SERVICE_MANAGEMENT_PORT}
     command:
       - "run"
       - "--server.http.listen-addr=0.0.0.0:12345"

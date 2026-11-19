@@ -1,4 +1,5 @@
-// Сбор логов Docker-контейнеров -> Loki, приём OTLP-трейсов -> Tempo.
+// Сбор логов Docker-контейнеров -> Loki, метрики сервисов платформы -> Prometheus (remote write),
+// приём OTLP-трейсов -> Tempo.
 
 logging {
   level  = "warn"
@@ -96,5 +97,78 @@ otelcol.exporter.otlp "tempo" {
   client {
     endpoint = "tempo:4317"
     tls { insecure = true }
+  }
+}
+
+// --------------------------------------------------- метрики сервисов платформы
+// events-collector-service, device-collector-service, device-service: DNS Docker возвращает все экземпляры сервиса,
+// поэтому при --scale каждый скрейпится отдельно. Метки как при прямом сборе Prometheus: job - имя сервиса,
+// instance - адрес экземпляра; ряд up формирует сам Alloy. Экспортёры и сторонние компоненты опрашивает Prometheus
+discovery.dns "events_collector" {
+  names            = ["events-collector-service"]
+  type             = "A"
+  port             = 8080
+  refresh_interval = "15s"
+}
+
+discovery.dns "device_collector" {
+  names            = ["device-collector-service"]
+  type             = "A"
+  port             = 8080
+  refresh_interval = "15s"
+}
+
+// Management-порт device-service (без токена, на хост не публикуется): DEVICE_SERVICE_MANAGEMENT_PORT из .env
+discovery.dns "device_service" {
+  names            = ["device-service"]
+  type             = "A"
+  // sys.env отдаёт строку, порту нужно число
+  port             = encoding.from_json(sys.env("DEVICE_SERVICE_MANAGEMENT_PORT"))
+  refresh_interval = "15s"
+}
+
+prometheus.scrape "events_collector" {
+  targets         = discovery.dns.events_collector.targets
+  job_name        = "events-collector-service"
+  metrics_path    = "/actuator/prometheus"
+  scrape_interval = "5s"
+  scrape_timeout  = "5s"
+  forward_to      = [prometheus.relabel.outbox_candidate.receiver]
+}
+
+prometheus.scrape "device_collector" {
+  targets         = discovery.dns.device_collector.targets
+  job_name        = "device-collector-service"
+  metrics_path    = "/actuator/prometheus"
+  scrape_interval = "5s"
+  scrape_timeout  = "5s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.scrape "device_service" {
+  targets         = discovery.dns.device_service.targets
+  job_name        = "device-service"
+  metrics_path    = "/actuator/prometheus"
+  scrape_interval = "5s"
+  scrape_timeout  = "5s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
+}
+
+// Prometheus Java client 1.x запрещает имена с суффиксом _created (зарезервирован OpenMetrics), поэтому счётчик
+// outbox.candidate.created экспортируется как outbox_candidate_total. Возвращаем требуемое имя
+prometheus.relabel "outbox_candidate" {
+  rule {
+    source_labels = ["__name__"]
+    regex         = "outbox_candidate_total"
+    target_label  = "__name__"
+    replacement   = "outbox_candidate_created_total"
+  }
+
+  forward_to = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.remote_write "prometheus" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
   }
 }
