@@ -301,8 +301,8 @@ services:
       KAFKA_BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      KAFKA_FAILED_EVENTS_RETENTION_MS: ${KAFKA_FAILED_EVENTS_RETENTION_MS}
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
       KAFKA_TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
       KAFKA_DEVICES_RETENTION_MS: ${KAFKA_DEVICES_RETENTION_MS}
@@ -382,7 +382,11 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      FAILED_EVENTS_PUBLISH_TIMEOUT: ${FAILED_EVENTS_PUBLISH_TIMEOUT}
+      FAILED_EVENTS_MAX_BLOCK_MS: ${FAILED_EVENTS_MAX_BLOCK_MS}
+      FAILED_EVENTS_REQUEST_TIMEOUT_MS: ${FAILED_EVENTS_REQUEST_TIMEOUT_MS}
+      FAILED_EVENTS_DELIVERY_TIMEOUT_MS: ${FAILED_EVENTS_DELIVERY_TIMEOUT_MS}
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP}
       CLICKHOUSE_URL: "jdbc:clickhouse://clickhouse:8123"
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
@@ -694,7 +698,11 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      FAILED_EVENTS_PUBLISH_TIMEOUT: ${FAILED_EVENTS_PUBLISH_TIMEOUT}
+      FAILED_EVENTS_MAX_BLOCK_MS: ${FAILED_EVENTS_MAX_BLOCK_MS}
+      FAILED_EVENTS_REQUEST_TIMEOUT_MS: ${FAILED_EVENTS_REQUEST_TIMEOUT_MS}
+      FAILED_EVENTS_DELIVERY_TIMEOUT_MS: ${FAILED_EVENTS_DELIVERY_TIMEOUT_MS}
       # Та же группа, что читают shard-backup.sh и shard-restore.sh (offset копии и восстановления)
       DEVICE_COLLECTOR_CONSUMER_GROUP: ${DEVICE_COLLECTOR_CONSUMER_GROUP:-device-collector}
       DEVICES_MAX_ATTEMPTS: ${DEVICES_MAX_ATTEMPTS}
@@ -704,9 +712,6 @@ services:
       DEVICES_SHARD_CACHE_TTL: ${DEVICES_SHARD_CACHE_TTL}
       DEVICES_DB_POOL_SIZE: ${DEVICES_DB_POOL_SIZE}
       DEVICES_DB_CONNECTION_TIMEOUT_MS: ${DEVICES_DB_CONNECTION_TIMEOUT_MS}
-      DEVICES_DLT_MAX_BLOCK_MS: ${DEVICES_DLT_MAX_BLOCK_MS}
-      DEVICES_DLT_REQUEST_TIMEOUT_MS: ${DEVICES_DLT_REQUEST_TIMEOUT_MS}
-      DEVICES_DLT_DELIVERY_TIMEOUT_MS: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS}
       DEVICES_CONSUMER_METADATA_MAX_AGE_MS: ${DEVICES_CONSUMER_METADATA_MAX_AGE_MS}
       # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
       # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml);
@@ -967,12 +972,11 @@ services:
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
-  # MinIO — объектное хранилище (DLT + вложения)
+  # MinIO — объектное хранилище (failed-events, Mimir, Loki, Tempo, копии); базовый стенд, без профиля
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:${MINIO_VERSION}
+    image: ${MINIO_IMAGE}:${MINIO_VERSION}
     container_name: iot-minio
-    profiles: [platform]
     <<: *default-restart
     logging: *default-logging
     command: ["server", "/data", "--console-address", ":9001"]
@@ -994,31 +998,46 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Создание бакетов — одноразовая задача
+  # Инициализация MinIO — одноразовая задача: бакеты (failed-events с Object Lock), ILM, политики и учётки компонентов.
+  # Скрипт на sh образа MinIO (init/minio/init.sh), шаблоны - config/minio (те же файлы читает check.sh). Идемпотентна.
   # ---------------------------------------------------------------------------
   minio-init:
-    image: minio/minio:${MINIO_VERSION}
+    image: ${MINIO_IMAGE}:${MINIO_VERSION}
     container_name: iot-minio-init
-    profiles: [platform]
     restart: "no"
     logging: *default-logging
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      MINIO_BUCKETS: ${MINIO_BUCKETS}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
-        for b in $$(echo "$${MINIO_BUCKETS}" | tr ',' ' '); do
-          echo "==> creating bucket $$b"
-          mc mb --ignore-existing "local/$$b"
-        done
-        mc ls local
+      FAILED_EVENTS_BUCKET: ${FAILED_EVENTS_BUCKET}
+      MINIO_BUCKET_MIMIR: ${MINIO_BUCKET_MIMIR}
+      MINIO_BUCKET_LOKI: ${MINIO_BUCKET_LOKI}
+      MINIO_BUCKET_TEMPO: ${MINIO_BUCKET_TEMPO}
+      MINIO_BUCKET_BACKUPS: ${MINIO_BUCKET_BACKUPS}
+      MINIO_EXPIRE_FAILED_EVENTS_DAYS: ${MINIO_EXPIRE_FAILED_EVENTS_DAYS}
+      MINIO_EXPIRE_BACKUPS_DAYS: ${MINIO_EXPIRE_BACKUPS_DAYS}
+      MINIO_EXPIRE_MIMIR_DAYS: ${MINIO_EXPIRE_MIMIR_DAYS}
+      MINIO_EXPIRE_LOKI_DAYS: ${MINIO_EXPIRE_LOKI_DAYS}
+      MINIO_EXPIRE_TEMPO_DAYS: ${MINIO_EXPIRE_TEMPO_DAYS}
+      FAILED_EVENTS_S3_ACCESS_KEY: ${FAILED_EVENTS_S3_ACCESS_KEY}
+      FAILED_EVENTS_S3_SECRET_KEY: ${FAILED_EVENTS_S3_SECRET_KEY}
+      MIMIR_S3_ACCESS_KEY: ${MIMIR_S3_ACCESS_KEY}
+      MIMIR_S3_SECRET_KEY: ${MIMIR_S3_SECRET_KEY}
+      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
+      TEMPO_S3_ACCESS_KEY: ${TEMPO_S3_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${TEMPO_S3_SECRET_KEY}
+      BACKUP_POSTGRES_S3_ACCESS_KEY: ${BACKUP_POSTGRES_S3_ACCESS_KEY}
+      BACKUP_POSTGRES_S3_SECRET_KEY: ${BACKUP_POSTGRES_S3_SECRET_KEY}
+      BACKUP_CLICKHOUSE_S3_ACCESS_KEY: ${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}
+      BACKUP_CLICKHOUSE_S3_SECRET_KEY: ${BACKUP_CLICKHOUSE_S3_SECRET_KEY}
+    volumes:
+      - ./init/minio/init.sh:/opt/init/init.sh:ro
+      - ./config/minio:/opt/init/config:ro
+    entrypoint: ["/bin/sh", "/opt/init/init.sh"]
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------

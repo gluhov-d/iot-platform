@@ -35,7 +35,7 @@ WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli topics check check-local test integration-test coverage \
+        psql redis-cli clickhouse-cli minio-check topics check check-local test integration-test coverage \
         avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
@@ -190,6 +190,9 @@ redis-cli: ## Открыть redis-cli к текущему основному у
 	@m=$$($(COMPOSE) exec -T redis-sentinel-1 redis-cli -p 26379 sentinel get-master-addr-by-name $(call compose_env,REDIS_SENTINEL_MASTER) | sed -n 1p | tr -d '\r'); \
 	[ -n "$$m" ] || { echo "!!! Sentinel не знает основной узел"; exit 1; }; \
 	$(COMPOSE) exec redis redis-cli -h "$$m"
+
+minio-check: ## Проверить MinIO: права учёток по бакетам и префиксам, сроки ILM, Object Lock и условную запись в failed-events (config/minio/check.sh)
+	@COMPOSE_CMD="$(COMPOSE)" $(INFRA_DIR)/config/minio/check.sh
 
 clickhouse-cli: ## Открыть clickhouse-client
 	@$(COMPOSE) exec clickhouse sh -c 'exec clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD"'
