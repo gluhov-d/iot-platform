@@ -4,5 +4,9 @@ SCHEMA_REGISTRY_URL: http://localhost:8081
 DEVICES_DB_URL: jdbc:postgresql://localhost:3307/devices?connectTimeout=3&socketTimeout=15
 DEVICES_DB_USERNAME: devices_app
 APP_INSTANCE_ID: ide-local
+# Redis без Sentinel: профиль docker подключает Sentinel, здесь - адрес по умолчанию (localhost:6379)
+REDIS_TIMEOUT: 2s
+DEVICE_CACHE_FLOOR_TTL: 24h
+DEVICES_CONSUMER_METADATA_MAX_AGE_MS: 60000
 server:
   port: 8095

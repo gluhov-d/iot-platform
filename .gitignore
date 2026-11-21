@@ -41,6 +41,9 @@ out/
 ### Project ###
 diagrams/*.svg
 /.env
+# Копии и варианты .env (.env.bak, .env.bak2 и т.п.) содержат секреты; шаблон .env.example отслеживается
+/.env.*
+!/.env.example
 
 # Копии шардов (make shard-backup)
 /backups/

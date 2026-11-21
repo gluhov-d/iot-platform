@@ -6,20 +6,29 @@ import com.github.gluhov.iotplatform.devicecollector.domain.model.FailureReason;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessingResult;
 import com.github.gluhov.iotplatform.devicecollector.domain.port.out.DeviceMetrics;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.OffsetOutOfRangeException;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.slf4j.MDC;
+import org.springframework.boot.kafka.autoconfigure.DefaultKafkaConsumerFactoryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.config.ContainerCustomizer;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.ListenerUtils;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.util.backoff.BackOff;
@@ -36,7 +45,11 @@ import java.util.Map;
  *   <li>ошибка записи в PostgreSQL (шард или Proxy недоступны) и непредвиденная ошибка - app.processing.max-attempts
  *       попыток с растущей паузой, затем devices-dlt: сообщения остальных устройств раздела продолжают обрабатываться;</li>
  *   <li>Schema Registry недоступен - повторять без ограничения: это сбой не сообщения, а инфраструктуры,
- *       иначе в devices-dlt ушли бы все сообщения подряд.</li>
+ *       иначе в devices-dlt ушли бы все сообщения подряд;</li>
+ *   <li>смещение группы вне диапазона темы (сообщения удалены по сроку хранения до обработки) - обработчик
+ *       останавливается, health DOWN (DevicesConsumerOffsets, ADR-0011);</li>
+ *   <li>раздел без смещения у работающей группы (к теме добавили раздел) - читается с начала без остановки и перезапуска
+ *       (NoOffsetRecoveringConsumer, R18).</li>
  * </ul>
  * Offset отправленного в devices-dlt сообщения подтверждается только после успешной записи в devices-dlt;
  * не удалось записать - сообщение не подтверждено и будет обработано снова.
@@ -50,7 +63,7 @@ public class KafkaConfig {
     @Bean
     DefaultErrorHandler kafkaErrorHandler(ProducerFactory<?, ?> producerFactory, KafkaTemplate<?, ?> kafkaTemplate,
                                           KafkaProperties kafkaProperties, ProcessingProperties processing,
-                                          DeviceMetrics metrics) {
+                                          DeviceMetrics metrics, DevicesConsumerOffsets offsets) {
         Map<Class<?>, KafkaOperations<?, ?>> templates = new LinkedHashMap<>();
         // Сообщение не десериализовалось: в devices-dlt уходят исходные байты
         templates.put(byte[].class, new KafkaTemplate<>(producerFactory.copyWithConfigurationOverride(
@@ -62,7 +75,7 @@ public class KafkaConfig {
         DeadLetterPublishingRecoverer deadLetters = new DeadLetterPublishingRecoverer(templates,
                 (record, exception) -> new TopicPartition(dltTopic, record.partition()));
 
-        DefaultErrorHandler handler = new DefaultErrorHandler((record, exception) -> {
+        DefaultErrorHandler handler = new DevicesErrorHandler(offsets, (record, exception) -> {
             FailureReason reason = reasonOf(exception);
             // Не записалось в devices-dlt - исключение, сообщение будет обработано снова: метрики ниже не увеличены
             deadLetters.accept(record, exception);
@@ -89,10 +102,66 @@ public class KafkaConfig {
         return handler;
     }
 
+    /** R18: раздел без смещения читается с начала в потоке потребителя, без остановки обработчика. */
+    @Bean
+    DefaultKafkaConsumerFactoryCustomizer noOffsetRecovery() {
+        return factory -> addNoOffsetRecovery(factory);
+    }
+
+    private static <K, V> void addNoOffsetRecovery(DefaultKafkaConsumerFactory<K, V> factory) {
+        factory.addPostProcessor(NoOffsetRecoveringConsumer::wrap);
+    }
+
     /** Номер доставки в заголовке kafka_deliveryAttempt: повтор после ошибки не считается новым сообщением. */
     @Bean
     ContainerCustomizer<Object, Object, ConcurrentMessageListenerContainer<Object, Object>> deliveryAttemptHeader() {
         return container -> container.getContainerProperties().setDeliveryAttemptHeader(true);
+    }
+
+    /**
+     * Ошибки вне обработки сообщения: смещение группы вне диапазона темы (auto-offset-reset = none) останавливает
+     * обработчик, как CommonContainerStoppingErrorHandler: тихий переход на начало темы применил бы событие роутера
+     * после потерянного DELETE администратора. Остальное - как у DefaultErrorHandler.
+     */
+    static final class DevicesErrorHandler extends DefaultErrorHandler {
+        private static final long STOP_WAIT_MS = 10_000L;
+
+        private final DevicesConsumerOffsets offsets;
+        private final SimpleAsyncTaskExecutor stopper = new SimpleAsyncTaskExecutor("devices-listener-stop-");
+
+        DevicesErrorHandler(DevicesConsumerOffsets offsets, ConsumerRecordRecoverer recoverer, BackOff backOff) {
+            super(recoverer, backOff);
+            this.offsets = offsets;
+        }
+
+        @Override
+        public void handleOtherException(Exception thrownException, Consumer<?, ?> consumer,
+                                         MessageListenerContainer container, boolean batchListener) {
+            OffsetOutOfRangeException outOfRange = outOfRangeCause(thrownException);
+            if (outOfRange == null) {
+                super.handleOtherException(thrownException, consumer, container, batchListener);
+                return;
+            }
+            offsets.offsetOutOfRange(outOfRange.offsetOutOfRangePartitions());
+            // Остановка - из другого потока: stop() ждёт завершения потока обработчика, а это он и есть
+            stopper.execute(() -> container.stopAbnormally(() -> {
+            }));
+            try {
+                ListenerUtils.stoppableSleep(container, STOP_WAIT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw new KafkaException("devices listener stopped: committed offset out of range", thrownException);
+        }
+
+        private static OffsetOutOfRangeException outOfRangeCause(Throwable exception) {
+            for (Throwable e = exception; e != null; e = e.getCause() == e ? null : e.getCause()) {
+                if (e instanceof OffsetOutOfRangeException outOfRange) {
+                    return outOfRange;
+                }
+            }
+            return null;
+        }
     }
 
     // max-attempts попыток всего: первая и max-attempts - 1 повторов (паузы 1 с, 2 с, ...)

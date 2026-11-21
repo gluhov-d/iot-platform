@@ -1,0 +1,44 @@
+# Интеграционные тесты: адреса контейнеров и Keycloak приходят из @DynamicPropertySource (AbstractItTest).
+# Здесь - значения, важные для проверок безопасности: без допуска часов, тайм-ауты запроса ключей короткие.
+# Остальные переменные, которых нет в тестовом окружении (Redis, трассировка, срок кэша), заданы явно.
+spring:
+  data:
+    redis:
+      timeout: 2s
+  datasource:
+    hikari:
+      # Короткий тайм-аут пула: недоступность базы отвечает за секунды, а не за минуты по умолчанию Hikari
+      connection-timeout: 2000
+      initialization-fail-timeout: -1
+  kafka:
+    properties:
+      # Неотвечающий Schema Registry - 503 в срок send-timeout (тест ItSchemaRegistryDownTest)
+      schema.registry.http.connect.timeout.ms: 1000
+      schema.registry.http.read.timeout.ms: 500
+      schema.registry.max.retries: 0
+    producer:
+      properties:
+        # Недоступная Kafka должна отвечать 503 за секунды, а не за минуту (тест givenKafkaDown_whenPut_thenCommandNotAccepted)
+        max.block.ms: 2000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 15000
+app:
+  security:
+    clock-skew: 0s
+    jwk-connect-timeout: 2s
+    jwk-read-timeout: 2s
+  cache:
+    device-ttl: 10m
+    floor-ttl: 24h
+  commands:
+    devices-topic: devices
+    send-timeout: 2s
+management:
+  # Management-порт на случайном свободном порту (IT читают local.management.port)
+  server:
+    port: 0
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: http://localhost:4318/v1/traces

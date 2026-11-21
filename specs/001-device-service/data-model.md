@@ -32,7 +32,7 @@
 | `eventType` (обязательное с 1.1.0) | `CREATED` | `UPDATED` | `DELETED` |
 | `eventId` | новый UUID (= `commandId` ответа) | новый UUID | новый UUID |
 | `eventTimeMs`, `emittedAtMs` | время приёма запроса | время приёма | время приёма |
-| `device` | `DeviceSnapshot`: `deviceId` и поля администратора из запроса; `status` — из запроса; остальное `null` / пусто | то же | `null` |
+| `device` | `DeviceSnapshot`: `deviceId` и поля администратора из запроса; `status` — из запроса; `settings`, `attributes` — из запроса, поле не передано — пустая карта (`null` отклоняется проверкой тела, FR-011); остальное `null` / пусто | то же | `null` |
 
 ## Тема `devices`
 
@@ -80,6 +80,8 @@ END $$;
 - Надгробие (строка 5, устройства нет): `INSERT` с `status = 'DELETED'`, `seen_count = 1`, `first_seen_at`,
   `last_event_at`, `last_state_at`, `managed_at`, `deleted_at` = `eventAt`, `last_event_type = 'DELETED'`, `version = 1`.
 - `IGNORED` и `STALE`: меняются только `seen_count`, `first_seen_at`, `updated_at` (как `countStale` сейчас).
+- Строка 12: событие роутера `DELETE` без снимка для управляемого устройства (`managed_at` не пуст) — `IGNORED`: удаление
+  такого устройства выполняет только администратор командой `DELETE` (решение человека при `converge`).
 - В журнал `processed_device_events` команда пишется с `event_key = eventId`, `event_type` = `eventType`.
 
 Чтение device-service (база `devices_read`): одна строка по `device_id`; карточка есть, если
@@ -104,12 +106,18 @@ db-migrator. Права — только `USAGE` на схему и `SELECT` н�
 
 | Ключ | Содержимое | Срок жизни | Кто пишет |
 |---|---|---|---|
-| `device:v1:{deviceId}` (hash) | `body` — JSON `DeviceResponse`; `version` — `devices.version` прочитанной строки | `DEVICE_CACHE_TTL` (минуты) | device-service при промахе |
-| `device:v1:floor:{deviceId}` (string) | `floor` — наибольшая применённая версия, ниже которой кэшировать нельзя | `DEVICE_CACHE_FLOOR_TTL` (часы, больше `DEVICE_CACHE_TTL`) | device-collector-service после `COMMIT`; удаляет device-service, записав версию ≥ `floor` |
+| `device:cache:v1:{deviceId}` (hash) | `body` — JSON `DeviceResponse`; `version` — `devices.version` прочитанной строки | `DEVICE_CACHE_TTL` (минуты) | device-service при промахе |
+| `device:floor:v1:{deviceId}` (string) | `floor` — наибольшая применённая версия, ниже которой кэшировать нельзя | `DEVICE_CACHE_FLOOR_TTL` (часы, больше `DEVICE_CACHE_TTL`) | device-collector-service после `COMMIT`; удаляет device-service, записав версию ≥ `floor` |
 
 Порог вынесен из хеша, потому что в одном ключе он истекал вместе с ответом: при отставании реплики дольше
-`DEVICE_CACHE_TTL` старая версия снова попадала в кэш (ADR-0003). `{deviceId}` в обоих ключах — один hash tag,
-поэтому ключи лежат в одном слоте и доступны одному Lua-скрипту (сейчас Sentinel, не кластер).
+`DEVICE_CACHE_TTL` старая версия снова попадала в кэш (ADR-0003). `{deviceId}` — подстановка значения `deviceId`,
+фигурных скобок (hash tag) в ключе нет: Redis работает через Sentinel, не кластер, и оба ключа устройства просто
+передаются в один Lua-скрипт.
+
+Префиксы `device:cache:` и `device:floor:` не являются началом друг друга, поэтому ключ кэша одного устройства не
+совпадает с ключом порога другого ни при каком `deviceId`, допустимом по FR-004 (`:` в нём разрешено). При прежних
+`device:v1:` и `device:v1:floor:` ключ кэша `floor:dev-42` совпадал с ключом порога `dev-42` (ревью PR #5). Прежние
+ключи `device:v1:*` не читаются: ответы истекают через `DEVICE_CACHE_TTL`, пороги — через `DEVICE_CACHE_FLOOR_TTL`.
 
 - `put-if-fresh.lua` (device-service; KEYS: ключ кэша, ключ порога; ARGV: body, version, ttl): отказ (0), если
   `version < floor` или `version` меньше уже лежащей (TTL ключа кэша не продлевается); иначе `HSET body version`,
@@ -117,6 +125,6 @@ db-migrator. Права — только `USAGE` на схему и `SELECT` н�
 - `raise-floor.lua` (device-collector-service; KEYS: ключ кэша, ключ порога; ARGV: version, floorTtl):
   `floor = max(floor, version)`, `PEXPIRE` ключа порога на `DEVICE_CACHE_FLOOR_TTL`; если лежащая в кэше
   `version < floor` — `HDEL body version`. Срок ключа кэша не меняется.
-- Префикс `v1` — версия формата значения: новый формат ответа пишет под новым префиксом.
+- Префикс версии `v1` (после назначения ключа) — версия формата значения: новый формат ответа пишет под новым префиксом.
 - Отсутствие устройства и ошибки не кэшируются.
 - Ключи прежних сервисов (`outbox:lease`, `devices:published`, `devices:fingerprint`) не меняются.

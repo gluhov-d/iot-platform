@@ -75,8 +75,8 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
         List<OutboxRecord> pending = outboxRepository.findPending(policy.maxAttempts(), policy.batchSize());
         Map<PublishOutcome, Integer> outcomes = new EnumMap<>(PublishOutcome.class);
         // Устройства, у которых в этой пачке запись не опубликована: их следующие записи ждут следующей итерации,
-        // иначе более позднее событие ушло бы раньше (CREATED/UPDATED перепутались бы, в compacted-теме остался бы
-        // устаревший снимок)
+        // иначе более позднее событие ушло бы раньше (CREATED/UPDATED перепутались бы, и порядок сообщений ключа
+        // в теме devices не совпал бы с порядком событий)
         Set<String> blockedDevices = new HashSet<>();
         boolean leaseLost = false;
         for (int i = 0; i < pending.size(); i++) {
@@ -175,8 +175,8 @@ public class OutboxPublishingService implements PublishOutboxUseCase {
     //   устройство есть, у события есть снимок      -> UPDATED;
     //   снимок со статусом DELETED                   -> DELETED (в том числе для нового устройства);
     //   устройство есть, снимка нет (телеметрия)    -> SKIPPED: поток devices не раздувается;
-    //   снимок старше уже опубликованного снимка     -> SKIPPED: в compacted-теме devices последним по ключу
-    //                                                   остаётся самое позднее состояние устройства;
+    //   снимок старше уже опубликованного снимка     -> SKIPPED: в теме devices по ключу идут только снимки,
+    //                                                   каждый новее предыдущего;
     //   данные устройства те же, что в опубликованном -> SKIPPED: отпечаток (DeviceFingerprint) совпал с devices:fingerprint,
     //                                                   меняются только время активности и показания сенсоров.
     private PublishOutcome publishOrSkip(OutboxRecord record, LeaseGuard guard) {

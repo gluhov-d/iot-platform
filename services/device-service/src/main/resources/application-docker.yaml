@@ -1,0 +1,11 @@
+# Профиль контейнера (сервис в сети Compose). Redis через Sentinel (переменные REDIS_SENTINEL_MASTER,
+# REDIS_SENTINEL_NODES; значения - в .env.example)
+spring:
+  data:
+    redis:
+      # Redis через Sentinel: мастер переключается сам, сервис переподключается без перезапуска (FR-020)
+      sentinel:
+        master: ${REDIS_SENTINEL_MASTER}
+        nodes: ${REDIS_SENTINEL_NODES}
+server:
+  port: 8080

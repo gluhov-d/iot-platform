@@ -26,6 +26,8 @@ import java.util.Map;
 public class MetricsFacade implements DeviceMetrics {
     private final Counter received;
     private final Counter duplicate;
+    private final Counter cacheSuccess;
+    private final Counter cacheError;
     private final Map<ProcessingOutcome, Counter> processed = new EnumMap<>(ProcessingOutcome.class);
     private final Map<FailureReason, Counter> failed = new EnumMap<>(FailureReason.class);
     private final Map<FailureReason, Counter> dltPublished = new EnumMap<>(FailureReason.class);
@@ -41,7 +43,16 @@ public class MetricsFacade implements DeviceMetrics {
         duplicate = Counter.builder("devices.messages.duplicate")
                 .description("Repeated events skipped: already in processed_device_events")
                 .register(registry);
-        for (ProcessingOutcome outcome : new ProcessingOutcome[]{ProcessingOutcome.APPLIED, ProcessingOutcome.STALE}) {
+        cacheSuccess = Counter.builder("devices.cache.invalidations")
+                .description("Device cache floor raised after an applied change: success or error (Redis unavailable)")
+                .tag("result", "success")
+                .register(registry);
+        cacheError = Counter.builder("devices.cache.invalidations")
+                .description("Device cache floor raised after an applied change: success or error (Redis unavailable)")
+                .tag("result", "error")
+                .register(registry);
+        for (ProcessingOutcome outcome : new ProcessingOutcome[]{ProcessingOutcome.APPLIED, ProcessingOutcome.STALE,
+                ProcessingOutcome.IGNORED}) {
             processed.put(outcome, Counter.builder("devices.messages.processed")
                     .description("Messages processed: applied - state updated, stale - older event, only counted")
                     .tag("outcome", outcome.label())
@@ -119,5 +130,10 @@ public class MetricsFacade implements DeviceMetrics {
     @Override
     public void shardRouteFailed(String shard, StorageFailureReason reason) {
         shardRouteFail.withTags("shard", shard, "reason", reason.label()).increment();
+    }
+
+    @Override
+    public void cacheInvalidated(boolean success) {
+        (success ? cacheSuccess : cacheError).increment();
     }
 }

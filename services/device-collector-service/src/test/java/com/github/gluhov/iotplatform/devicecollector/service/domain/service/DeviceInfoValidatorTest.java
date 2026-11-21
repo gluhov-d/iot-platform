@@ -5,6 +5,7 @@ import com.github.gluhov.iotplatform.devicecollector.domain.model.ValidationPoli
 import com.github.gluhov.iotplatform.devicecollector.domain.service.DeviceInfoValidator;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.OperationType;
 import com.github.gluhov.iotplatform.events.avro.SensorSnapshot;
 import com.github.gluhov.iotplatform.events.avro.SensorStatus;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +23,7 @@ import java.util.stream.Stream;
 
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.T0;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.T0_MS;
+import static com.github.gluhov.iotplatform.devicecollector.data.TestData.command;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.info;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.legacy;
 import static com.github.gluhov.iotplatform.devicecollector.data.TestData.snapshot;
@@ -52,6 +54,43 @@ class DeviceInfoValidatorTest {
         assertThatThrownBy(() -> validator.validate(DEVICE, null))
                 .isInstanceOf(InvalidDeviceInfoException.class)
                 .hasMessageContaining("empty");
+    }
+
+    @Test
+    @DisplayName("Command UNKNOWN (symbol newer than this reader) is invalid: no safe way to apply it")
+    void givenUnknownOperation_whenValidate_thenRejected() {
+        DeviceInfo message = command(DEVICE, "cmd-1", OperationType.DELETE, T0).setOperation(OperationType.UNKNOWN).build();
+
+        assertThatThrownBy(() -> validator.validate(DEVICE, message))
+                .isInstanceOf(InvalidDeviceInfoException.class)
+                .hasMessageContaining("operation UNKNOWN");
+    }
+
+    @Test
+    @DisplayName("CREATE or UPDATE without device data is invalid")
+    void givenCreateOrUpdateWithoutDevice_whenValidate_thenRejected() {
+        assertThatThrownBy(() -> validator.validate(DEVICE, command(DEVICE, "cmd-1", OperationType.CREATE, T0)
+                .setDevice(null).build()))
+                .isInstanceOf(InvalidDeviceInfoException.class)
+                .hasMessageContaining("device is required for CREATE");
+        assertThatThrownBy(() -> validator.validate(DEVICE, command(DEVICE, "cmd-2", OperationType.UPDATE, T0)
+                .setDevice(null).build()))
+                .isInstanceOf(InvalidDeviceInfoException.class)
+                .hasMessageContaining("device is required for UPDATE");
+    }
+
+    @Test
+    @DisplayName("DELETE without device is valid: deletion needs only the id")
+    void givenDeleteWithoutDevice_whenValidate_thenAccepted() {
+        assertThatCode(() -> validator.validate(DEVICE, command(DEVICE, "cmd-1", OperationType.DELETE, T0).build()))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("UPDATE with admin snapshot (no device data) is valid")
+    void givenCommandWithSnapshot_whenValidate_thenAccepted() {
+        assertThatCode(() -> validator.validate(DEVICE, command(DEVICE, "cmd-1", OperationType.UPDATE, T0).build()))
+                .doesNotThrowAnyException();
     }
 
     static Stream<Arguments> invalidMessages() {

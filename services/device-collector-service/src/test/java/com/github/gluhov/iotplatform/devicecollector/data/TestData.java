@@ -5,6 +5,7 @@ import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.OperationType;
 import com.github.gluhov.iotplatform.events.avro.SensorSnapshot;
 import com.github.gluhov.iotplatform.events.avro.SensorStatus;
 
@@ -53,6 +54,44 @@ public final class TestData {
                         .setMeasuredAtMs(T0_MS)
                         .setStatus(SensorStatus.OK)
                         .build()));
+    }
+
+    /**
+     * Команда администратора версии 1.3.0: operation, тип события, соответствующий команде, и снимок с полями
+     * администратора. DELETE - без снимка. Данных устройства в команде нет.
+     */
+    public static DeviceInfo.Builder command(String deviceId, String eventId, OperationType operation, Instant at) {
+        DeviceUpsertEventType type = switch (operation) {
+            case CREATE -> DeviceUpsertEventType.CREATED;
+            case UPDATE -> DeviceUpsertEventType.UPDATED;
+            case DELETE -> DeviceUpsertEventType.DELETED;
+            case UNKNOWN -> throw new IllegalArgumentException("UNKNOWN - не команда");
+        };
+        DeviceInfo.Builder builder = DeviceInfo.newBuilder()
+                .setDeviceId(deviceId)
+                .setEventId(eventId)
+                .setEventType(type)
+                .setOperation(operation)
+                .setEventTimeMs(at.toEpochMilli())
+                .setEmittedAtMs(at.toEpochMilli() + 500);
+        return operation == OperationType.DELETE ? builder : builder.setDevice(adminSnapshot(deviceId).build());
+    }
+
+    /** Снимок команды: поля администратора из запроса, поля данных устройства пусты. */
+    public static DeviceSnapshot.Builder adminSnapshot(String deviceId) {
+        return DeviceSnapshot.newBuilder()
+                .setDeviceId(deviceId)
+                .setTenantId("tenant-1")
+                .setOwnerId("owner-1")
+                .setDeviceType("thermometer")
+                .setSerialNumber("SN-001")
+                .setManufacturer("Acme")
+                .setModel("T-1000")
+                .setName("Boiler room sensor")
+                .setStatus(DeviceStatus.ACTIVE)
+                .setSettings(Map.of("mode", "eco"))
+                .setAttributes(Map.of("floor", "3"))
+                .setSensors(List.of());
     }
 
     /** Событие версии 1.1.0: eventId, время события и снимок. */

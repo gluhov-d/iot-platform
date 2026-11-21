@@ -1,0 +1,42 @@
+# ShardingSphere-Proxy 5.5.3: логическая база devices_read поверх РЕПЛИК шардов (только чтение, ADR-0004).
+# Шаблон: ${ИМЯ} подставляет render-config.sh из окружения контейнера при старте.
+# Хеш-правило - то же, что в database-devices.yaml (|hashCode| % 2): имя узла replica_N соответствует shard_N.
+# Пользователь device_reader - роль на шардах и репликах (shard-replication-init, права SELECT - миграция V3).
+databaseName: devices_read
+
+dataSources:
+  replica_0:
+    url: jdbc:postgresql://postgres-shard-0-replica:5432/shard_0?stringtype=unspecified&options=-c%20statement_timeout%3D${SHARD_STATEMENT_TIMEOUT_MS}%20-c%20lock_timeout%3D${SHARD_LOCK_TIMEOUT_MS}
+    username: 'device_reader'
+    password: '${SHARD_READER_PASSWORD}'
+    # Реплика недоступна - по истечении срока ошибка «Connection is not available» (SQLState 08*), а не долгое ожидание
+    connectionTimeoutMilliseconds: ${SHARD_CONNECTION_TIMEOUT_MS}
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 10
+    minPoolSize: 1
+  replica_1:
+    url: jdbc:postgresql://postgres-shard-1-replica:5432/shard_1?stringtype=unspecified&options=-c%20statement_timeout%3D${SHARD_STATEMENT_TIMEOUT_MS}%20-c%20lock_timeout%3D${SHARD_LOCK_TIMEOUT_MS}
+    username: 'device_reader'
+    password: '${SHARD_READER_PASSWORD}'
+    connectionTimeoutMilliseconds: ${SHARD_CONNECTION_TIMEOUT_MS}
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 10
+    minPoolSize: 1
+
+rules:
+  - !SHARDING
+    tables:
+      # Таблица одна на реплике шарда; устройство читается с реплики того шарда, где оно записано
+      devices:
+        actualDataNodes: replica_0.devices,replica_1.devices
+        databaseStrategy:
+          standard:
+            shardingColumn: device_id
+            shardingAlgorithmName: device_id_hash
+    shardingAlgorithms:
+      device_id_hash:
+        type: INLINE
+        props:
+          algorithm-expression: replica_${(device_id.hashCode() % 2).abs()}

@@ -26,14 +26,22 @@ sequenceDiagram
     break тело или deviceId невалидны
         DS-->>C: 400 Problem Details (VALIDATION_FAILED, поля с ошибками)
     end
-    DS->>RD: HGET device:v1:dev-42 (есть ли устройство)
-    opt промах или Redis недоступен
-        DS->>RP: SELECT … WHERE device_id = 'dev-42'
+    Note over DS,RP: Есть ли устройство — по реплике (DeviceReadRepository), кэш Redis читается<br/>только если реплика недоступна
+    DS->>RP: SELECT … WHERE device_id = 'dev-42'
+    alt реплика ответила
         RP-->>DS: строка или пусто
+    else Proxy или реплика недоступны (ошибка, тайм-аут)
+        DS->>RD: HGET device:cache:v1:dev-42 body (порт DeviceCache.find)
+        RD-->>DS: карточка, пусто или ошибка Redis
+        break карточки в кэше нет или Redis тоже недоступен
+            DS-->>C: 503 Problem Details (READ_MODEL_UNAVAILABLE)
+        end
+        Note over DS,RD: Карточка в кэше — проверка пройдена как при ответе реплики.<br/>Счётчик device_command_precheck_cache_total{operation,result=hit|miss|error}
     end
-    break PUT / DELETE: устройства нет или удалено · POST: устройство уже есть
+    break PUT / DELETE: карточки нет или устройство удалено · POST: карточка есть
         DS-->>C: 404 Problem Details (DEVICE_NOT_FOUND)<br/>для POST — 409 Problem Details (DEVICE_ALREADY_EXISTS)
     end
+    Note over DS,RP: Карточка есть, если deleted_at IS NULL AND tenant_id IS NOT NULL.<br/>Реплика отстаёт — PUT сразу после POST получит 404
     Note over DS,K: Все проверки пройдены — только теперь публикуется команда.<br/>Проверка по модели чтения предварительная: реплика может отставать,<br/>окончательно решает владелец данных — device-collector-service
     DS->>K: DeviceInfo: deviceId, operation = UPDATE, eventType = UPDATED,<br/>eventId = UUID, eventTimeMs = now, device = поля администратора<br/>ключ dev-42, acks=all, заголовок traceparent
     alt Kafka подтвердила запись в пределах DEVICE_COMMAND_SEND_TIMEOUT
@@ -49,7 +57,7 @@ sequenceDiagram
     DC->>P: UPDATE devices: поля администратора, managed_at,<br/>version = version + 1 RETURNING version
     P-->>DC: version = 7
     DC->>P: COMMIT
-    DC->>RD: Lua raise-floor: floor = max(floor, 7) в device:v1:floor:dev-42,<br/>удалить body/version, если version < 7
+    DC->>RD: Lua raise-floor: floor = max(floor, 7) в device:floor:v1:dev-42,<br/>удалить body/version, если version < 7
     DC->>K: ack смещения
     P--)R: репликация WAL (асинхронно, задержка)
     Note over C,R: Потребитель перечитывает GET позже. Пока реплика не догнала version 7,<br/>device-service отдаёт данные реплики, но в кэш их не кладёт (см. ds-read-sequence)

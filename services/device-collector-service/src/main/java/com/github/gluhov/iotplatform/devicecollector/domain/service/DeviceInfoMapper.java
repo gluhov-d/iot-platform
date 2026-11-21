@@ -1,6 +1,7 @@
 package com.github.gluhov.iotplatform.devicecollector.domain.service;
 
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ChangeType;
+import com.github.gluhov.iotplatform.devicecollector.domain.model.CommandType;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceChange;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceState;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.MessagePosition;
@@ -26,8 +27,10 @@ public class DeviceInfoMapper {
         // Время события, а не публикации: повторная публикация того же события приходит с новым emittedAtMs
         Instant eventAt = info.getEventTimeMs() == null ? emittedAt : toInstant(info.getEventTimeMs());
         String eventKey = info.getEventId() == null ? LEGACY_KEY_PREFIX + info.getEmittedAtMs() : info.getEventId();
+        CommandType command = info.getOperation() == null ? null : CommandType.valueOf(info.getOperation().name());
         return new DeviceChange(info.getDeviceId(), eventKey, info.getEventId(),
-                ChangeType.valueOf(info.getEventType().name()), eventAt, emittedAt, toState(info.getDevice()), position);
+                ChangeType.valueOf(info.getEventType().name()), command, eventAt, emittedAt, toState(info.getDevice()),
+                position);
     }
 
     public static Instant toInstant(long epochMs) {

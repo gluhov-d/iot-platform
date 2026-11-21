@@ -89,11 +89,12 @@ after="${INFO_SCHEMA#*\"DeviceSnapshot\"}"
 SCHEMA="${before}${SNAPSHOT_SCHEMA}${after}"
 
 # $1 - deviceId: DeviceInfo CREATED со снимком в Avro JSON (значения union-полей - в обёртке с именем типа)
+# Консольный продюсер не подставляет значения по умолчанию: operation (схема 1.3.0) указан явно, null - как у события роутера
 send_device_info() {
   local id="$1" now
   now="$(( $(date +%s) * 1000 ))"
   local snapshot="{\"com.github.gluhov.iotplatform.events.avro.DeviceSnapshot\":{\"deviceId\":\"${id}\",\"tenantId\":\"check-tenant\",\"ownerId\":null,\"deviceType\":\"check-sensor\",\"serialNumber\":null,\"manufacturer\":null,\"model\":null,\"firmwareVersion\":{\"string\":\"1.0.0\"},\"name\":{\"string\":\"quick-check\"},\"osName\":{\"string\":\"Linux\"},\"osVersion\":{\"string\":\"6.1\"},\"status\":\"ACTIVE\",\"registeredAtMs\":null,\"lastSeenAtMs\":{\"long\":${now}},\"settings\":{\"mode\":\"check\"},\"sensors\":[],\"attributes\":{}}}"
-  printf '%s|%s\n' "${id}" "{\"deviceId\":\"${id}\",\"emittedAtMs\":${now},\"eventType\":\"CREATED\",\"eventId\":{\"string\":\"quick-check-${id}\"},\"eventTimeMs\":{\"long\":${now}},\"device\":${snapshot}}" \
+  printf '%s|%s\n' "${id}" "{\"deviceId\":\"${id}\",\"emittedAtMs\":${now},\"eventType\":\"CREATED\",\"eventId\":{\"string\":\"quick-check-${id}\"},\"eventTimeMs\":{\"long\":${now}},\"device\":${snapshot},\"operation\":null}" \
     | "${COMPOSE[@]}" exec -T schema-registry \
       kafka-avro-console-producer \
         --bootstrap-server kafka:9092 \

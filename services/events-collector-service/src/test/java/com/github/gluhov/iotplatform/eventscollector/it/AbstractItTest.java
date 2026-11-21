@@ -57,8 +57,10 @@ public abstract class AbstractItTest {
 
     private static void createTopics() {
         try {
+            // init-topics.sh требует KAFKA_DEVICES_RETENTION_MS (FR-022); значение - как в .env.example
             var result = kafka.execInContainer("bash", "-c",
-                    "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL + " /opt/init/init-topics.sh");
+                    "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL + " KAFKA_DEVICES_RETENTION_MS=2592000000"
+                            + " /opt/init/init-topics.sh");
             if (result.getExitCode() != 0) {
                 throw new IllegalStateException("init-topics.sh exited with code " + result.getExitCode()
                         + ":\n" + result.getStdout() + result.getStderr());

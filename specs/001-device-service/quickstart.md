@@ -43,7 +43,7 @@ API=http://localhost:${PORT}/api/v1/devices
 |---|---|---|
 | Команды в теме | `make topics` и чтение `devices` (как в `check-local.sh`) | три сообщения с ключом `qs-1`: `CREATE`, `UPDATE`, `DELETE` |
 | Чтение только из реплик | `SELECT count(*) FROM pg_stat_activity WHERE usename = 'device_reader'` на каждом основном узле и реплике | основные узлы — 0, реплики — больше 0 |
-| Кэш | `make redis-cli`, затем `HGETALL device:v1:qs-1` сразу после строки 6 | `body`, `version`, срок жизни не больше `DEVICE_CACHE_TTL` |
+| Кэш | `make redis-cli`, затем `HGETALL device:cache:v1:qs-1` сразу после строки 6 | `body`, `version`, срок жизни не больше `DEVICE_CACHE_TTL` |
 | Отказ Redis | остановить контейнер основного узла Redis, повторить GET существующего устройства | `200`; Sentinel назначил новый основной узел |
 | Трасса | `make up PROFILES=observability`, PUT, поиск трассы запроса в Tempo (сервис `device-service`) | спаны device-service, отправки в `devices`, device-collector-service, запроса к базе |
 

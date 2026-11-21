@@ -77,7 +77,8 @@ flowchart LR
     errors -- "DeviceEvent (Avro) или исходные байты ·<br/>kafka_dlt-* · затем commit offset" --> eventsDlt
     devices --> downstream
 
-    prom -- "/actuator/prometheus" --> svc
+    alloy -- "/actuator/prometheus, все экземпляры" --> svc
+    alloy -- "remote write" --> prom
     svc -- "stdout JSON-логи" --> alloy
     svc -- "OTLP HTTP :4320" --> alloy
     alloy --> loki

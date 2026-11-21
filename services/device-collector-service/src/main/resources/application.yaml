@@ -4,6 +4,12 @@ spring:
   application:
     name: device-collector-service
 
+  data:
+    redis:
+      # Redis общий для платформы: сброс кэша устройства. Адрес - в профиле docker (Sentinel) или application-local
+      timeout: ${REDIS_TIMEOUT}
+      password: ${REDIS_PASSWORD:}
+
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     properties:
@@ -11,7 +17,11 @@ spring:
     consumer:
       # Своя группа: тему devices читает только этот сервис
       group-id: ${DEVICE_COLLECTOR_CONSUMER_GROUP:device-collector}
-      auto-offset-reset: earliest
+      # Без тихого сброса (ADR-0011): раздел без смещения читается с начала (DevicesConsumerOffsets), а смещение вне
+      # диапазона темы - сообщения удалены по сроку хранения до обработки - останавливает обработчик, health DOWN.
+      # С earliest потребитель молча перешёл бы на самое раннее сохранённое сообщение и применил бы событие роутера
+      # после потерянного DELETE администратора
+      auto-offset-reset: none
       # Offset подтверждается вручную: после COMMIT в PostgreSQL или после записи в devices-dlt
       enable-auto-commit: false
       # Строго по одному сообщению за poll
@@ -21,6 +31,8 @@ spring:
       properties:
         spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
         spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # Раздел, добавленный к теме у работающей группы, потребитель замечает при обновлении метаданных (R16, ADR-0011)
+        metadata.max.age.ms: ${DEVICES_CONSUMER_METADATA_MAX_AGE_MS}
         # SpecificRecord (сгенерированный DeviceInfo), а не GenericRecord
         specific.avro.reader: true
         # Читаем только DeviceInfo: запись другого типа (даже с настоящим schemaId из Schema Registry) не десериализуется
@@ -63,6 +75,10 @@ spring:
 app:
   # Пусто или не задано -> hostname контейнера
   instance-id: ${APP_INSTANCE_ID:${HOSTNAME:local}}
+  cache:
+    # Срок жизни порога версии (ключ device:floor:v1:{deviceId}): тот же, что у device-service.
+    # Сам кэш (device:cache:v1:{deviceId}) этот сервис не продлевает - только убирает из него устаревший ответ
+    floor-ttl: ${DEVICE_CACHE_FLOOR_TTL}
   kafka:
     devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
     dlt-topic: ${KAFKA_DEVICES_DLT_TOPIC:devices-dlt}

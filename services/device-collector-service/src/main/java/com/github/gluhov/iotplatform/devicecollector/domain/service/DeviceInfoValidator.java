@@ -5,6 +5,7 @@ import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceChange;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ValidationPolicy;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
+import com.github.gluhov.iotplatform.events.avro.OperationType;
 import com.github.gluhov.iotplatform.events.avro.SensorSnapshot;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -42,6 +43,14 @@ public class DeviceInfoValidator {
         requireTime(info.getEmittedAtMs(), "emittedAtMs");
         if (info.getEventTimeMs() != null) {
             requireTime(info.getEventTimeMs(), "eventTimeMs");
+        }
+        // UNKNOWN - символ новее схемы сервиса: команду неизвестного вида применять нельзя
+        if (info.getOperation() == OperationType.UNKNOWN) {
+            throw new InvalidDeviceInfoException("operation UNKNOWN: command is newer than this service's schema");
+        }
+        // Создание и изменение без данных устройства не к чему применить; удаление обходится без снимка
+        if (info.getOperation() != null && info.getOperation() != OperationType.DELETE && info.getDevice() == null) {
+            throw new InvalidDeviceInfoException("device is required for " + info.getOperation());
         }
         if (info.getDevice() != null) {
             validateSnapshot(deviceId, info.getDevice());

@@ -13,3 +13,4 @@
 | [0009](0009-api-first-client-library.md) | API First и клиентская библиотека |
 | [0010](0010-devices-topic-compaction-lag.md) | Сжатие темы devices и команды администратора (заменено ADR-0011) |
 | [0011](0011-devices-topic-retention.md) | Тема devices хранит сообщения вместо сжатия |
+| [0012](0012-service-metrics-via-alloy.md) | Метрики сервисов платформы собирает Alloy |

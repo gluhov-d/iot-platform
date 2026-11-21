@@ -17,6 +17,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
@@ -72,8 +73,12 @@ public abstract class AbstractItTest {
     private static final String SHARD_USER = "devices";
     // Пароли с кавычками, #, \, & и пробелом: render-config.sh должен подставить их в YAML Proxy без искажений
     private static final String SHARD_PASSWORD="it-shard p'a\"s#s\\&1";
-    private static final String PROXY_USER = "devices_app";
-    private static final String PROXY_PASSWORD="it-proxy p'a\"s#s\\&2";
+    protected static final String PROXY_USER = "devices_app";
+    protected static final String PROXY_PASSWORD="it-proxy p'a\"s#s\\&2";
+    // Учётная запись чтения через Proxy (база devices_read) и роль device_reader на репликах
+    private static final String READ_PROXY_USER = "devices_read_app";
+    private static final String READ_PROXY_PASSWORD = "it-read-proxy-pw";
+    private static final String READER_PASSWORD = "it-reader-pw";
 
     protected static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.2.0")
             .withNetwork(NETWORK)
@@ -92,6 +97,18 @@ public abstract class AbstractItTest {
             .waitingFor(Wait.forHttp("/subjects").forStatusCode(200).withStartupTimeout(Duration.ofMinutes(2)));
     protected static final GenericContainer<?> SHARD_0 = shard(0);
     protected static final GenericContainer<?> SHARD_1 = shard(1);
+    // Реплики шардов: Proxy загружает логическую базу devices_read только при наличии обеих реплик (ADR-0004).
+    // Здесь - отдельные базы со схемой и ролью device_reader без репликации: DCS на реплики не ходит
+    protected static final GenericContainer<?> REPLICA_0 = replica(0);
+    protected static final GenericContainer<?> REPLICA_1 = replica(1);
+    // Redis общий для платформы: кэш устройства (device:cache:v1:{deviceId}) - сброс после APPLIED. На стенде - через Sentinel
+    // Недоступность Redis и Proxy в тестах - пауза контейнера (docker pause): порт и адрес не меняются, пулы
+    // соединений продолжают работать после снятия паузы. Остановка и запуск дали бы другой порт на хосте
+    protected static final GenericContainer<?> REDIS = new GenericContainer<>("redis:8.6.7-alpine")
+            .withNetwork(NETWORK)
+            .withNetworkAliases("redis")
+            .withExposedPorts(6379)
+            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofMinutes(1)));
     protected static final GenericContainer<?> PROXY = new GenericContainer<>("apache/shardingsphere-proxy:5.5.3")
             .withNetwork(NETWORK)
             .withNetworkAliases("shardingsphere-proxy")
@@ -105,6 +122,9 @@ public abstract class AbstractItTest {
             .withEnv("SHARD_CONNECTION_TIMEOUT_MS", "3000")
             .withEnv("SHARDING_PROXY_USER", PROXY_USER)
             .withEnv("SHARDING_PROXY_PASSWORD", PROXY_PASSWORD)
+            .withEnv("DEVICES_READ_DB_USER", READ_PROXY_USER)
+            .withEnv("DEVICES_READ_DB_PASSWORD", READ_PROXY_PASSWORD)
+            .withEnv("SHARD_READER_PASSWORD", READER_PASSWORD)
             .withCopyFileToContainer(MountableFile.forHostPath(REPO_ROOT.resolve("infrastructure/config/shardingsphere")),
                     "/opt/init/conf")
             .withCopyFileToContainer(MountableFile.forHostPath(
@@ -114,11 +134,15 @@ public abstract class AbstractItTest {
                     .withStartupTimeout(Duration.ofMinutes(3)));
 
     static {
-        Startables.deepStart(KAFKA, SCHEMA_REGISTRY, SHARD_0, SHARD_1).join();
+        Startables.deepStart(KAFKA, SCHEMA_REGISTRY, SHARD_0, SHARD_1, REPLICA_0, REPLICA_1, REDIS).join();
         createTopics();
         registerDltSchemas();
         // Как на стенде: схема на шардах до старта Proxy - Proxy читает метаданные таблиц при старте
         DbMigrator.migrateAll(List.of(target(0, SHARD_0), target(1, SHARD_1)));
+        // Роль чтения создаётся до миграции: V3 выдаёт ей права на devices (как на репликах стенда)
+        createReaderRole(REPLICA_0, 0);
+        createReaderRole(REPLICA_1, 1);
+        DbMigrator.migrateAll(List.of(target(0, REPLICA_0), target(1, REPLICA_1)));
         PROXY.start();
     }
 
@@ -133,11 +157,45 @@ public abstract class AbstractItTest {
         registry.add("SCHEMA_REGISTRY_URL", AbstractItTest::schemaRegistryUrl);
         // auto.register.schemas остаётся false, как на стенде: схему devices-dlt-value регистрирует registerDltSchemas()
         // (на стенде - задача schema-register), а не продюсер сервиса
-        registry.add("DEVICES_DB_URL", () -> "jdbc:postgresql://%s:%d/devices?connectTimeout=3&socketTimeout=15"
-                .formatted(PROXY.getHost(), PROXY.getMappedPort(3307)));
+        registry.add("DEVICES_DB_URL", () -> proxyUrl());
         registry.add("DEVICES_DB_USERNAME", () -> PROXY_USER);
         registry.add("DEVICES_DB_PASSWORD", () -> PROXY_PASSWORD);
         registry.add("DEVICE_COLLECTOR_CONSUMER_GROUP", () -> GROUP);
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
+
+    protected static String proxyUrl() {
+        return "jdbc:postgresql://%s:%d/devices?connectTimeout=3&socketTimeout=15"
+                .formatted(PROXY.getHost(), PROXY.getMappedPort(3307));
+    }
+
+    /** Заморозить контейнер (docker pause): соединения к нему зависают, адрес сохраняется. */
+    protected static void pauseShard(GenericContainer<?> container) {
+        DockerClientFactory.instance().client().pauseContainerCmd(container.getContainerId()).exec();
+    }
+
+    /** Снять паузу, если контейнер заморожен. */
+    protected static void unpauseShard(GenericContainer<?> container) {
+        String id = container.getContainerId();
+        if (Boolean.TRUE.equals(DockerClientFactory.instance().client().inspectContainerCmd(id).exec()
+                .getState().getPaused())) {
+            DockerClientFactory.instance().client().unpauseContainerCmd(id).exec();
+        }
+    }
+
+    /**
+     * Proxy могли заморозить в тесте другого класса (контейнеры общие на JVM): снять паузу и дождаться, пока
+     * Proxy отвечает на запрос к базе devices.
+     */
+    protected static void ensureProxyReady() {
+        unpauseShard(PROXY);
+        await().atMost(Duration.ofMinutes(3)).pollInterval(Duration.ofSeconds(2)).ignoreExceptions().untilAsserted(() -> {
+            try (var connection = java.sql.DriverManager.getConnection(proxyUrl(), PROXY_USER, PROXY_PASSWORD);
+                 var statement = connection.createStatement()) {
+                statement.execute("SELECT 1");
+            }
+        });
     }
 
     // ------------------------------------------------------------------ Kafka
@@ -225,6 +283,16 @@ public abstract class AbstractItTest {
         }
     }
 
+    /** Настройка темы, как её видит брокер (для проверок cleanup.policy и retention.ms - FR-022, ADR-0011). */
+    protected static String topicConfig(String topic, String name) {
+        try (Admin admin = Admin.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
+            ConfigResource resource = new ConfigResource(ConfigResource.Type.TOPIC, topic);
+            return admin.describeConfigs(List.of(resource)).all().get().get(resource).get(name).value();
+        } catch (Exception e) {
+            throw new IllegalStateException("Не удалось прочитать настройки темы " + topic, e);
+        }
+    }
+
     protected static String header(ConsumerRecord<?, ?> record, String name) {
         Header header = record.headers().lastHeader(name);
         return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
@@ -242,7 +310,9 @@ public abstract class AbstractItTest {
 
     private static void createTopics() {
         try {
-            var result = KAFKA.execInContainer("bash", "-c", "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL + " /opt/init/init-topics.sh");
+            // Значение - как в .env.example (FR-022): тема devices создаётся с retention.ms и без сжатия
+            var result = KAFKA.execInContainer("bash", "-c", "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL
+                    + " KAFKA_DEVICES_RETENTION_MS=2592000000 /opt/init/init-topics.sh");
             if (result.getExitCode() != 0) {
                 throw new IllegalStateException("init-topics.sh exited with code " + result.getExitCode()
                         + ":\n" + result.getStdout() + result.getStderr());
@@ -264,6 +334,32 @@ public abstract class AbstractItTest {
                 .withEnv("POSTGRES_PASSWORD", SHARD_PASSWORD)
                 .waitingFor(Wait.forLogMessage(".*database system is ready to accept connections.*", 2)
                         .withStartupTimeout(Duration.ofMinutes(1)));
+    }
+
+    private static GenericContainer<?> replica(int index) {
+        return new GenericContainer<>("postgres:18.6-alpine")
+                .withNetwork(NETWORK)
+                .withNetworkAliases("postgres-shard-" + index + "-replica")
+                .withExposedPorts(5432)
+                .withEnv("POSTGRES_DB", "shard_" + index)
+                .withEnv("POSTGRES_USER", SHARD_USER)
+                .withEnv("POSTGRES_PASSWORD", SHARD_PASSWORD)
+                .waitingFor(Wait.forLogMessage(".*database system is ready to accept connections.*", 2)
+                        .withStartupTimeout(Duration.ofMinutes(1)));
+    }
+
+    /** Роль device_reader (LOGIN) на реплике - как shard-replication-init на стенде. */
+    private static void createReaderRole(GenericContainer<?> replica, int index) {
+        try {
+            var result = replica.execInContainer("psql", "-U", SHARD_USER, "-d", "shard_" + index,
+                    "-v", "ON_ERROR_STOP=1", "-c",
+                    "CREATE ROLE device_reader WITH LOGIN PASSWORD '" + READER_PASSWORD + "'");
+            if (result.getExitCode() != 0) {
+                throw new IllegalStateException("CREATE ROLE device_reader failed: " + result.getStderr());
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to create device_reader on replica " + index, e);
+        }
     }
 
     private static ShardTarget target(int index, GenericContainer<?> shard) {

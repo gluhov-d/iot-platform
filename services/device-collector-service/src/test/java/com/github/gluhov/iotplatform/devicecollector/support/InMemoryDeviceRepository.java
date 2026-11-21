@@ -7,6 +7,7 @@ import com.github.gluhov.iotplatform.devicecollector.domain.model.DeviceView;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessedEvent;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StorageFailureReason;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StoredDevice;
+import com.github.gluhov.iotplatform.devicecollector.domain.model.WrittenDevice;
 import com.github.gluhov.iotplatform.devicecollector.domain.port.out.DeviceRepository;
 import com.github.gluhov.iotplatform.devicecollector.domain.port.out.TransactionRunner;
 
@@ -73,8 +74,8 @@ public final class InMemoryDeviceRepository implements DeviceRepository, Transac
         failIfRequested();
         Row row = devices.get(deviceId);
         return row == null ? Optional.empty()
-                : Optional.of(new StoredDevice(shardOf(deviceId), row.status, row.lastEventAt, row.lastStateAt,
-                row.lastSeenAt, row.deletedAt));
+                : Optional.of(new StoredDevice(shardOf(deviceId), row.version, row.status, row.lastEventAt, row.lastStateAt,
+                row.lastSeenAt, row.deletedAt, row.deletedBy, row.managedAt));
     }
 
     @Override
@@ -84,12 +85,13 @@ public final class InMemoryDeviceRepository implements DeviceRepository, Transac
     }
 
     @Override
-    public String insert(DeviceRecord record) {
+    public WrittenDevice insert(DeviceRecord record) {
         failIfRequested();
         if (devices.containsKey(record.deviceId())) {
             throw new StorageAccessException(StorageFailureReason.OTHER, "duplicate key devices_pkey", null);
         }
         Row row = new Row();
+        row.version = 1;
         row.seenCount = 1;
         row.firstSeenAt = record.eventAt();
         row.lastEventAt = record.eventAt();
@@ -99,47 +101,100 @@ public final class InMemoryDeviceRepository implements DeviceRepository, Transac
         row.status = record.status();
         row.lastSeenAt = record.lastSeenAt();
         row.deletedAt = record.deletedAt();
+        row.deletedBy = record.deletedBy();
+        row.managedAt = record.managedAt();
         row.lastStateAt = record.stateAt();
         devices.put(record.deviceId(), row);
-        return shardOf(record.deviceId());
+        return written(record.deviceId(), row);
     }
 
     @Override
-    public String updateWithState(DeviceRecord record) {
+    public WrittenDevice updateWithState(DeviceRecord record) {
         failIfRequested();
         Row row = existing(record.deviceId());
         row.state = record.state();
         row.status = record.status();
         row.lastSeenAt = record.lastSeenAt();
         row.deletedAt = record.deletedAt();
+        row.deletedBy = record.deletedBy();
         row.lastStateAt = record.stateAt();
+        row.version++;
         countEvent(row, record);
-        return shardOf(record.deviceId());
+        return written(record.deviceId(), row);
     }
 
     @Override
-    public String updateWithoutState(DeviceRecord record) {
+    public WrittenDevice updateWithoutState(DeviceRecord record) {
         failIfRequested();
         Row row = existing(record.deviceId());
         row.status = record.status();
         row.lastSeenAt = record.lastSeenAt();
         row.deletedAt = record.deletedAt();
+        row.deletedBy = record.deletedBy();
         if (record.stateAt() != null) {
             row.lastStateAt = record.stateAt();
         }
+        row.version++;
         countEvent(row, record);
-        return shardOf(record.deviceId());
+        return written(record.deviceId(), row);
     }
 
     @Override
-    public String countStale(String deviceId, Instant eventAt) {
+    public WrittenDevice updateDeviceData(DeviceRecord record) {
+        failIfRequested();
+        Row row = existing(record.deviceId());
+        DeviceState incoming = record.state();
+        if (incoming != null) {
+            // Поля администратора - как есть, данные устройства - из снимка роутера
+            DeviceState s = row.state;
+            row.state = new DeviceState(s.deviceId(), s.tenantId(), s.ownerId(), s.deviceType(), s.serialNumber(),
+                    s.manufacturer(), s.model(), incoming.firmwareVersion(), s.name(), incoming.osName(),
+                    incoming.osVersion(), row.status, incoming.registeredAt(), record.lastSeenAt(), s.settings(),
+                    s.attributes(), incoming.sensors());
+            row.lastStateAt = record.stateAt();
+        }
+        row.lastSeenAt = record.lastSeenAt();
+        row.version++;
+        countEvent(row, record);
+        return written(record.deviceId(), row);
+    }
+
+    @Override
+    public WrittenDevice updateAdmin(DeviceRecord record) {
+        failIfRequested();
+        Row row = existing(record.deviceId());
+        DeviceState incoming = record.state();
+        if (incoming != null) {
+            // Поля администратора из снимка команды; данные устройства не трогаем
+            DeviceState s = row.state;
+            DeviceState base = s != null ? s : incoming;
+            row.state = new DeviceState(base.deviceId(), incoming.tenantId(), incoming.ownerId(), incoming.deviceType(),
+                    incoming.serialNumber(), incoming.manufacturer(), incoming.model(), base.firmwareVersion(),
+                    incoming.name(), base.osName(), base.osVersion(), record.status(), base.registeredAt(),
+                    base.lastSeenAt(), incoming.settings(), incoming.attributes(), base.sensors());
+        }
+        row.status = record.status();
+        row.deletedAt = record.deletedAt();
+        row.deletedBy = record.deletedBy();
+        row.managedAt = record.managedAt();
+        row.version++;
+        countEvent(row, record);
+        return written(record.deviceId(), row);
+    }
+
+    @Override
+    public WrittenDevice countStale(String deviceId, Instant eventAt) {
         failIfRequested();
         Row row = existing(deviceId);
         row.seenCount++;
         if (eventAt.isBefore(row.firstSeenAt)) {
             row.firstSeenAt = eventAt;
         }
-        return shardOf(deviceId);
+        return written(deviceId, row);
+    }
+
+    private static WrittenDevice written(String deviceId, Row row) {
+        return new WrittenDevice(shardOf(deviceId), row.version);
     }
 
     @Override
@@ -198,6 +253,9 @@ public final class InMemoryDeviceRepository implements DeviceRepository, Transac
     public static final class Row {
         public DeviceState state;
         public String status;
+        public long version;
+        public String deletedBy;
+        public Instant managedAt;
         public long seenCount;
         public Instant firstSeenAt;
         public Instant lastEventAt;
@@ -211,6 +269,9 @@ public final class InMemoryDeviceRepository implements DeviceRepository, Transac
             Row copy = new Row();
             copy.state = state;
             copy.status = status;
+            copy.version = version;
+            copy.deletedBy = deletedBy;
+            copy.managedAt = managedAt;
             copy.seenCount = seenCount;
             copy.firstSeenAt = firstSeenAt;
             copy.lastEventAt = lastEventAt;

@@ -43,6 +43,21 @@
       "type": ["null", "DeviceSnapshot"],
       "default": null,
       "doc": "Полная модель устройства; null - сообщение версии 1.0.0 или событие без снимка."
+    },
+    {
+      "name": "operation",
+      "type": [
+        "null",
+        {
+          "type": "enum",
+          "name": "OperationType",
+          "doc": "Команда владельцу данных. UNKNOWN - символ новее схемы читателя.",
+          "symbols": ["CREATE", "UPDATE", "DELETE", "UNKNOWN"],
+          "default": "UNKNOWN"
+        }
+      ],
+      "default": null,
+      "doc": "null - поле не заполнено: сообщение прежней версии или событие роутера, применяется по eventType."
     }
   ]
 }

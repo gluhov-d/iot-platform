@@ -11,7 +11,7 @@ description = "events-collector-service"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-схем (артефакт avros в Nexus); Avro приходит вместе с ними транзитивно
-val avrosVersion = "1.2.0"
+val avrosVersion = "1.3.0"
 
 java {
     toolchain {
@@ -128,7 +128,7 @@ tasks.jacocoTestCoverageVerification {
             limit {
                 counter = "LINE"
                 value = "COVEREDRATIO"
-                minimum = "0.65".toBigDecimal()
+                minimum = "0.70".toBigDecimal()
             }
         }
     }

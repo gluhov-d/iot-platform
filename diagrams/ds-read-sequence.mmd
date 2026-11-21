@@ -13,7 +13,7 @@ sequenceDiagram
     break токен не принят
         DS-->>C: 401 / 403 Problem Details — обработка запроса закончена
     end
-    DS->>RD: HGET device:v1:dev-42 body
+    DS->>RD: HGET device:cache:v1:dev-42 body
     alt попадание: поле body есть
         RD-->>DS: body (готовый JSON DeviceResponse)
         DS-->>C: 200 OK DeviceResponse
@@ -32,7 +32,7 @@ sequenceDiagram
             R-->>DS: строка (version = 6, реплика может отставать)
             DS-->>C: 200 OK DeviceResponse (данные реплики)
             opt Redis доступен
-                DS->>RD: Lua put-if-fresh: записать body и version, только если version ≥ floor<br/>(ключ device:v1:floor:dev-42) и не ниже уже закэшированной version,<br/>затем PEXPIRE device:v1:dev-42 DEVICE_CACHE_TTL и DEL ключа floor
+                DS->>RD: Lua put-if-fresh: записать body и version, только если version ≥ floor<br/>(ключ device:floor:v1:dev-42) и не ниже уже закэшированной version,<br/>затем PEXPIRE device:cache:v1:dev-42 DEVICE_CACHE_TTL и DEL ключа floor
                 alt запись принята (1)
                     Note over DS: метрика кэша: result=miss, порог floor снят
                 else отказ (0): version < floor или < закэшированной

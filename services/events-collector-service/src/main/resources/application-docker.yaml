@@ -1,3 +1,12 @@
 server:
   port: 8080
   shutdown: graceful
+
+spring:
+  data:
+    redis:
+      # Lettuce находит текущий основной узел через Sentinel (ADR-0008). Если заданы и host/port, и sentinel,
+      # побеждает Sentinel, поэтому sentinel задан только в профиле docker; базовый файл - один узел
+      sentinel:
+        master: ${REDIS_SENTINEL_MASTER}
+        nodes: ${REDIS_SENTINEL_NODES}

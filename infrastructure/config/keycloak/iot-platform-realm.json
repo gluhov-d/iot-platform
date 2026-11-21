@@ -1,0 +1,92 @@
+{
+  "realm": "iot-platform",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "roles": {
+    "client": {
+      "device-service": [
+        { "name": "devices.read" },
+        { "name": "devices.write" }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "device-service",
+      "name": "Device service (resource server)",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "device-service-consumer",
+      "name": "Сервис-потребитель device-service (роли чтения и записи)",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "${DEVICE_SERVICE_CONSUMER_SECRET}",
+      "protocolMappers": [
+        {
+          "name": "device-service-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "device-service",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "device-service-reader",
+      "name": "Сервис только для чтения device-service",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "${DEVICE_SERVICE_READER_SECRET}",
+      "protocolMappers": [
+        {
+          "name": "device-service-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "device-service",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-device-service-consumer",
+      "enabled": true,
+      "serviceAccountClientId": "device-service-consumer",
+      "clientRoles": {
+        "device-service": [ "devices.read", "devices.write" ]
+      }
+    },
+    {
+      "username": "service-account-device-service-reader",
+      "enabled": true,
+      "serviceAccountClientId": "device-service-reader",
+      "clientRoles": {
+        "device-service": [ "devices.read" ]
+      }
+    }
+  ]
+}

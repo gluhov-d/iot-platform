@@ -16,6 +16,8 @@ COPY avros/build.gradle.kts avros/
 COPY services/events-collector-service/build.gradle.kts services/events-collector-service/
 COPY services/db-migrator/build.gradle.kts services/db-migrator/
 COPY services/device-collector-service/build.gradle.kts services/device-collector-service/
+COPY services/device-service-client/build.gradle.kts services/device-service-client/
+COPY services/device-service/build.gradle.kts services/device-service/
 COPY services/device-collector-service services/device-collector-service
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon :services:device-collector-service:bootJar -x test -PnexusUrl="${NEXUS_URL}" \

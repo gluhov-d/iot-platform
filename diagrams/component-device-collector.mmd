@@ -42,7 +42,7 @@ flowchart LR
 
     subgraph redisha["Redis (общий для платформы)"]
         rsentinel["Redis Sentinel ×3 → адрес master<br/>кворум 2 (ADR-0008); операций с данными не выполняет"]
-        rmaster[("platform-redis master<br/>кэш device:v1:{deviceId}: body, version<br/>порог device:v1:floor:{deviceId}")]
+        rmaster[("platform-redis master<br/>кэш device:cache:v1:{deviceId}: body, version<br/>порог device:floor:v1:{deviceId}")]
     end
     migrator["db-migrator<br/>Flyway · одноразовый<br/>до старта Proxy и сервиса"]
 
@@ -69,7 +69,8 @@ flowchart LR
     invalidator -- "Lua raise-floor: порог версии, удаление устаревшего ответа" --> rmaster
     rsentinel -. "наблюдение, failover" .-> rmaster
 
-    prom -- "/actuator/prometheus" --> svc
+    alloy -- "/actuator/prometheus, все экземпляры" --> svc
+    alloy -- "remote write" --> prom
     prom -- "метрики Proxy (агент)" --> proxy
     svc -- "логи stdout JSON · трейсы OTLP" --> alloy
     alloy --> loki
