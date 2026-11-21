@@ -18,6 +18,7 @@ COPY services/device-collector-service/build.gradle.kts services/device-collecto
 COPY services/db-migrator/build.gradle.kts services/db-migrator/
 COPY services/device-service-client/build.gradle.kts services/device-service-client/
 COPY services/device-service/build.gradle.kts services/device-service/
+COPY services/failed-events-processor/build.gradle.kts services/failed-events-processor/
 COPY avros avros
 # Сборка при создании образа. Кеш /root/.gradle (дистрибутив Gradle, зависимости) общий с образами сервисов;
 # после сборки он копируется в образ - зависимости сборки в образе

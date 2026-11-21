@@ -16,3 +16,5 @@ findProject(":services:device-collector-service")?.name = "device-collector-serv
 include("services:device-service-client")
 // Точка входа CRUD и чтения устройств: команды - в Kafka, чтение - из модели чтения
 include("services:device-service")
+// Обработка ошибок и архив: failed-events → объекты в MinIO (specs/002-failed-events)
+include("services:failed-events-processor")

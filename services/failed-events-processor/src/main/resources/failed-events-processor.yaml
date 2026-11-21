@@ -1,0 +1,54 @@
+# Общие настройки процессора. Все значения - из переменных окружения, значений по умолчанию нет.
+# Значения для запуска из IDE - в failed-events-processor-docker.yaml для контейнера, для IDE - переменные окружения (.env.example).
+spring:
+  application:
+    name: failed-events-processor
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    properties:
+      schema.registry.url: ${SCHEMA_REGISTRY_URL}
+    consumer:
+      group-id: ${FAILED_EVENTS_CONSUMER_GROUP}
+      # Смещение подтверждается вручную: только после записи объекта (или 412 - дубликат)
+      enable-auto-commit: false
+      # Строго по одному сообщению за poll
+      max-poll-records: 1
+      auto-offset-reset: earliest
+      # Ошибка разбора ключа и значения - в заголовках записи (исходные байты - в unreadable)
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
+        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # SpecificRecord (FailedEvent из avros), а не GenericRecord
+        specific.avro.reader: true
+        # Тайм-аут опроса: больше, чем повторы записи в архив (R6)
+        max.poll.interval.ms: ${FAILED_EVENTS_MAX_POLL_INTERVAL_MS}
+    listener:
+      ack-mode: manual_immediate
+      observation-enabled: true
+
+management:
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_ENDPOINT}
+
+failed-events:
+  bucket: ${FAILED_EVENTS_BUCKET}
+  s3:
+    endpoint: ${FAILED_EVENTS_S3_ENDPOINT}
+    region: ${FAILED_EVENTS_S3_REGION}
+    access-key: ${FAILED_EVENTS_S3_ACCESS_KEY}
+    secret-key: ${FAILED_EVENTS_S3_SECRET_KEY}
+    connect-timeout: ${FAILED_EVENTS_S3_CONNECT_TIMEOUT}
+    api-call-timeout: ${FAILED_EVENTS_S3_API_CALL_TIMEOUT}
+    api-call-attempt-timeout: ${FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT}
+  retry:
+    initial-interval: ${FAILED_EVENTS_RETRY_INITIAL_INTERVAL}
+    max-interval: ${FAILED_EVENTS_RETRY_MAX_INTERVAL}
+    multiplier: ${FAILED_EVENTS_RETRY_MULTIPLIER}
+
+server:
+  port: 8080
+  shutdown: graceful
