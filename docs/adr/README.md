@@ -14,3 +14,10 @@
 | [0010](0010-devices-topic-compaction-lag.md) | Сжатие темы devices и команды администратора (заменено ADR-0011) |
 | [0011](0011-devices-topic-retention.md) | Тема devices хранит сообщения вместо сжатия |
 | [0012](0012-service-metrics-via-alloy.md) | Метрики сервисов платформы собирает Alloy |
+| [0013](0013-failed-events-topic-and-contract.md) | Единая тема failed-events и контракт FailedEvent |
+| [0014](0014-failed-object-key-and-idempotent-write.md) | Ключ объекта в MinIO и идемпотентная запись |
+| [0015](0015-minio-image-buckets-access.md) | Образ MinIO, бакеты и учётки |
+| [0016](0016-mimir-and-object-storage-for-telemetry.md) | Mimir вместо Prometheus; Loki и Tempo хранят данные в MinIO |
+| [0017](0017-database-backups-to-minio.md) | Копии PostgreSQL и ClickHouse в MinIO контейнером backup-runner |
+| [0018](0018-failed-events-processor-failure-modes.md) | Поведение failed-events-processor при сбоях |
+| [0019](0019-optional-return-and-object-lock.md) | Необязательная часть: возврат объекта в топик и Object Lock |
