@@ -9,6 +9,8 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -16,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
 import org.springframework.core.io.ClassPathResource;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -87,6 +90,59 @@ class ConsumerDeserializationTest {
 
         assertThatThrownBy(() -> deserializer.deserialize(TOPIC, foreign))
                 .isInstanceOf(SerializationException.class);
+    }
+
+    @Test
+    @DisplayName("Key that is not strict UTF-8: DeserializationException-ready error, original bytes kept in x-raw-key")
+    void givenInvalidUtf8Key_whenDeserialize_thenErrorAndRawKeyHeader() {
+        RawKeepingDeserializer key = rawDeserializer(true);
+        byte[] bytes = {(byte) 0xFF, (byte) 0xFE, 0x41};
+        Headers headers = new RecordHeaders();
+
+        assertThatThrownBy(() -> key.deserialize(TOPIC, headers, bytes))
+                .isInstanceOf(SerializationException.class);
+        assertThat(headers.lastHeader(RawKeepingDeserializer.RAW_KEY_HEADER).value()).isEqualTo(bytes);
+    }
+
+    @Test
+    @DisplayName("Valid UTF-8 key: read as a string, raw bytes kept in x-raw-key")
+    void givenValidUtf8Key_whenDeserialize_thenStringAndRawKeyHeader() {
+        RawKeepingDeserializer key = rawDeserializer(true);
+        byte[] bytes = "dev-1".getBytes(StandardCharsets.UTF_8);
+        Headers headers = new RecordHeaders();
+
+        assertThat(key.deserialize(TOPIC, headers, bytes)).isEqualTo("dev-1");
+        assertThat(headers.lastHeader(RawKeepingDeserializer.RAW_KEY_HEADER).value()).isEqualTo(bytes);
+    }
+
+    @Test
+    @DisplayName("Garbage value: error from the Avro deserializer, original bytes kept in x-raw-value")
+    void givenGarbageValue_whenDeserialize_thenErrorAndRawValueHeader() {
+        RawKeepingDeserializer value = rawDeserializer(false);
+        byte[] bytes = {1, 2, 3, 0x7F};
+        Headers headers = new RecordHeaders();
+
+        assertThatThrownBy(() -> value.deserialize(TOPIC, headers, bytes))
+                .isInstanceOf(SerializationException.class);
+        assertThat(headers.lastHeader(RawKeepingDeserializer.RAW_VALUE_HEADER).value()).isEqualTo(bytes);
+    }
+
+    @Test
+    @DisplayName("Valid DeviceInfo: read as before, raw bytes kept in x-raw-value without a copy of the array")
+    void givenValidValue_whenDeserialize_thenDeviceInfoAndSameArrayInHeader() {
+        RawKeepingDeserializer value = rawDeserializer(false);
+        byte[] bytes = serializer.serialize(TOPIC, info("dev-1", "evt-1", DeviceUpsertEventType.CREATED, T0).build());
+        Headers headers = new RecordHeaders();
+
+        assertThat(value.deserialize(TOPIC, headers, bytes)).isInstanceOf(DeviceInfo.class);
+        assertThat(headers.lastHeader(RawKeepingDeserializer.RAW_VALUE_HEADER).value()).isSameAs(bytes);
+    }
+
+    // Обёртка с делегатом из application.yaml: строгий UTF-8 для ключа, KafkaAvroDeserializer для значения
+    private static RawKeepingDeserializer rawDeserializer(boolean isKey) {
+        RawKeepingDeserializer deserializer = new RawKeepingDeserializer();
+        deserializer.configure(consumerConfig(), isKey);
+        return deserializer;
     }
 
     // Свойства потребителя ровно как в application.yaml (spring.kafka.consumer.properties), адрес реестра - тестовый

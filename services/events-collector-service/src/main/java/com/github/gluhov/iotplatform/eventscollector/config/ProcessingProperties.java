@@ -7,7 +7,7 @@ import java.time.Duration;
 
 /**
  * Повторы при ошибке записи входного события (ClickHouse): всего maxAttempts попыток, пауза между ними
- * растёт в retryMultiplier раз от retryInterval; после последней попытки сообщение уходит в events-dlt.
+ * растёт в retryMultiplier раз от retryInterval; после последней попытки сообщение уходит в failed-events.
  *
  * @param maxAttempts     число попыток обработки одного сообщения, включая первую (не меньше 1)
  * @param retryInterval   пауза перед второй попыткой

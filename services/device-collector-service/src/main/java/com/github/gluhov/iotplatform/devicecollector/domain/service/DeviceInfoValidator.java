@@ -16,7 +16,7 @@ import java.util.Set;
 
 /**
  * Проверка обязательных полей DeviceInfo. Ошибка - InvalidDeviceInfoException: сообщение сразу уходит
- * в devices-dlt, повтор не поможет.
+ * в failed-events, повтор не поможет.
  */
 @Component
 @RequiredArgsConstructor

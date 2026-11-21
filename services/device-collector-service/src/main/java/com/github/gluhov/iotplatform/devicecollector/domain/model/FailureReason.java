@@ -5,15 +5,15 @@ import com.github.gluhov.iotplatform.devicecollector.domain.exception.InvalidDev
 
 import java.util.Locale;
 
-/** Почему сообщение не обработано - метка reason в devices_messages_failed_total и devices_dlt_published_total. */
+/** Почему сообщение не обработано - метка reason в devices_messages_failed_total и devices_processing_errors_total. */
 public enum FailureReason {
-    /** Сообщение невалидно: сразу в devices-dlt. */
+    /** Сообщение невалидно: сразу в failed-events. */
     INVALID,
-    /** Устройство не записано в PostgreSQL: повторы, затем devices-dlt. */
+    /** Устройство не записано в PostgreSQL: повторы, затем failed-events. */
     STORAGE,
-    /** Сообщение не десериализуется (не Avro, схемы нет в Schema Registry): сразу в devices-dlt. */
+    /** Сообщение не десериализуется (не Avro, схемы нет в Schema Registry): сразу в failed-events. */
     DESERIALIZATION,
-    /** Непредвиденная ошибка обработки: повторы, затем devices-dlt. */
+    /** Непредвиденная ошибка обработки: повторы, затем failed-events. */
     ERROR;
 
     public String label() {

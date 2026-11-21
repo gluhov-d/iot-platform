@@ -255,7 +255,7 @@ class DeviceRegistryServiceTest {
         assertThat(store.journal(DEVICE)).isEmpty();
         assertThat(resolvedShards).containsExactly(DEVICE);
         assertThat(counter("devices.processing.errors", "reason", "storage")).isEqualTo(1);
-        // Сообщение завершается ошибкой только в devices-dlt (KafkaConfig), не на попытке
+        // Сообщение завершается ошибкой только в failed-events (KafkaConfig), не на попытке
         assertThat(counter("devices.messages.failed", "reason", "storage")).isZero();
         assertThat(counter("devices.shard.route.fail", "shard", SHARD, "reason", "connection")).isEqualTo(1);
         assertThat(registry.get("devices.db.write").tags("shard", SHARD, "result", "error").timer().count()).isEqualTo(1);
@@ -312,7 +312,7 @@ class DeviceRegistryServiceTest {
             MessagePosition delivery = new MessagePosition("devices", 1, 43L, attempt);
             assertThatThrownBy(() -> service.process(DEVICE, failing, delivery)).isInstanceOf(DeviceNotStoredException.class);
         }
-        // После последней попытки обработчик ошибок (KafkaConfig) отправляет сообщение в devices-dlt
+        // После последней попытки обработчик ошибок (KafkaConfig) отправляет сообщение в failed-events
         metrics.failed(FailureReason.STORAGE);
 
         double processed = registry.find("devices.messages.processed").counters().stream().mapToDouble(c -> c.count()).sum();

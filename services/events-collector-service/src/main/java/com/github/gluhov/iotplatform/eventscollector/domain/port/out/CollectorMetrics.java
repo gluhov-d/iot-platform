@@ -15,4 +15,7 @@ public interface CollectorMetrics {
     void publishSkipped();
 
     void pendingCount(long value);
+
+    /** Сообщение записано в failed-events; коды - строки ErrorCode и ErrorType. */
+    void failedEventPublished(String errorCode, String errorType);
 }

@@ -34,7 +34,7 @@ class KafkaErrorClassifierTest {
     }
 
     @Test
-    @DisplayName("Message is not Avro or schema not found then poison pill, moved to DLT")
+    @DisplayName("Message is not Avro or schema not found then poison pill, moved to failed-events")
     void givenBrokenMessage_whenClassify_thenPoison() {
         assertThat(KafkaErrorClassifier.isPoisonPill(deserialization(new IllegalArgumentException("Unknown magic byte!"))))
                 .isTrue();

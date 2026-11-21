@@ -2,9 +2,11 @@ package com.github.gluhov.iotplatform.devicecollector.it;
 
 import com.github.gluhov.iotplatform.dbmigrator.DbMigrator;
 import com.github.gluhov.iotplatform.dbmigrator.ShardTarget;
-import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import com.github.gluhov.iotplatform.events.avro.FailedEvent;
+import com.github.gluhov.iotplatform.failedeventsprocessor.FailedEventsProcessorApplication;
 import io.confluent.kafka.schemaregistry.avro.AvroSchema;
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
+import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -19,22 +21,32 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.MinIOContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.lifecycle.Startables;
+import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -64,9 +76,12 @@ import static org.awaitility.Awaitility.await;
 public abstract class AbstractItTest {
     protected static final Path REPO_ROOT = Path.of("../..").toAbsolutePath().normalize();
     protected static final String DEVICES = "devices";
-    protected static final String DLT = "devices-dlt";
+    protected static final String FAILED = "failed-events";
     protected static final String GROUP = "device-collector-it";
     protected static final Duration WAIT = Duration.ofSeconds(60);
+    protected static final String BUCKET = "failed-events";
+    /** Группа процессора во втором контексте (R23): своя, не совпадает с группой сборщика. */
+    protected static final String PROCESSOR_GROUP = "failed-events-processor-dcs-it";
 
     private static final Network NETWORK = Network.newNetwork();
     private static final String KAFKA_INTERNAL = "kafka:19092";
@@ -101,6 +116,11 @@ public abstract class AbstractItTest {
     // Здесь - отдельные базы со схемой и ролью device_reader без репликации: DCS на реплики не ходит
     protected static final GenericContainer<?> REPLICA_0 = replica(0);
     protected static final GenericContainer<?> REPLICA_1 = replica(1);
+    // Хранилище архива ошибок: образ MinIO из реестра стенда (как в процессоре; модуль Testcontainers проверяет имя образа)
+    protected static final MinIOContainer MINIO = new MinIOContainer(
+            DockerImageName.parse("pgsty/minio:RELEASE.2026-08-04T00-00-00Z").asCompatibleSubstituteFor("minio/minio"));
+    protected static S3Client s3;
+    protected static ConfigurableApplicationContext failedEventsProcessor;
     // Redis общий для платформы: кэш устройства (device:cache:v1:{deviceId}) - сброс после APPLIED. На стенде - через Sentinel
     // Недоступность Redis и Proxy в тестах - пауза контейнера (docker pause): порт и адрес не меняются, пулы
     // соединений продолжают работать после снятия паузы. Остановка и запуск дали бы другой порт на хосте
@@ -134,9 +154,18 @@ public abstract class AbstractItTest {
                     .withStartupTimeout(Duration.ofMinutes(3)));
 
     static {
-        Startables.deepStart(KAFKA, SCHEMA_REGISTRY, SHARD_0, SHARD_1, REPLICA_0, REPLICA_1, REDIS).join();
+        Startables.deepStart(KAFKA, SCHEMA_REGISTRY, SHARD_0, SHARD_1, REPLICA_0, REPLICA_1, REDIS, MINIO).join();
         createTopics();
-        registerDltSchemas();
+        registerFailedEventsSchema();
+        s3 = S3Client.builder()
+                .endpointOverride(URI.create(MINIO.getS3URL()))
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(MINIO.getUserName(), MINIO.getPassword())))
+                .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build())
+                .build();
+        // Бакет как на стенде: Object Lock включает версии (FR-008)
+        s3.createBucket(CreateBucketRequest.builder().bucket(BUCKET).objectLockEnabledForBucket(true).build());
         // Как на стенде: схема на шардах до старта Proxy - Proxy читает метаданные таблиц при старте
         DbMigrator.migrateAll(List.of(target(0, SHARD_0), target(1, SHARD_1)));
         // Роль чтения создаётся до миграции: V3 выдаёт ей права на devices (как на репликах стенда)
@@ -144,6 +173,11 @@ public abstract class AbstractItTest {
         createReaderRole(REPLICA_1, 1);
         DbMigrator.migrateAll(List.of(target(0, REPLICA_0), target(1, REPLICA_1)));
         PROXY.start();
+        // Процессор failed-events - вторым контекстом в этой JVM (R23): записывает объекты в бакет failed-events
+        failedEventsProcessor = new SpringApplicationBuilder(FailedEventsProcessorApplication.class)
+                .web(WebApplicationType.NONE)
+                .properties(failedEventsProcessorProperties())
+                .run();
     }
 
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
@@ -155,7 +189,7 @@ public abstract class AbstractItTest {
     static void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("KAFKA_BOOTSTRAP_SERVERS", KAFKA::getBootstrapServers);
         registry.add("SCHEMA_REGISTRY_URL", AbstractItTest::schemaRegistryUrl);
-        // auto.register.schemas остаётся false, как на стенде: схему devices-dlt-value регистрирует registerDltSchemas()
+        // auto.register.schemas остаётся false, как на стенде: схему failed-events-value регистрирует registerFailedEventsSchema()
         // (на стенде - задача schema-register), а не продюсер сервиса
         registry.add("DEVICES_DB_URL", () -> proxyUrl());
         registry.add("DEVICES_DB_USERNAME", () -> PROXY_USER);
@@ -163,6 +197,35 @@ public abstract class AbstractItTest {
         registry.add("DEVICE_COLLECTOR_CONSUMER_GROUP", () -> GROUP);
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
+
+    /**
+     * Свойства процессора для второго контекста (R23): переменные из failed-events-processor.yaml по их именам.
+     * spring.config.name - как у процессора, но свойством контекста (setDefaultProperties), а не System.setProperty:
+     * глобальное свойство JVM повлияло бы на контекст сборщика.
+     */
+    protected static Map<String, Object> failedEventsProcessorProperties() {
+        return Map.ofEntries(
+                Map.entry("spring.config.name", "failed-events-processor"),
+                // На classpath сборщика есть JDBC: у процессора своей базы нет, автоконфигурация DataSource упала бы
+                Map.entry("spring.autoconfigure.exclude", "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration"),
+                Map.entry("KAFKA_BOOTSTRAP_SERVERS", KAFKA.getBootstrapServers()),
+                Map.entry("SCHEMA_REGISTRY_URL", schemaRegistryUrl()),
+                Map.entry("KAFKA_FAILED_EVENTS_TOPIC", FAILED),
+                Map.entry("FAILED_EVENTS_CONSUMER_GROUP", PROCESSOR_GROUP),
+                Map.entry("FAILED_EVENTS_MAX_POLL_INTERVAL_MS", "30000"),
+                Map.entry("FAILED_EVENTS_RETRY_INITIAL_INTERVAL", "500ms"),
+                Map.entry("FAILED_EVENTS_RETRY_MAX_INTERVAL", "10s"),
+                Map.entry("FAILED_EVENTS_RETRY_MULTIPLIER", "2"),
+                Map.entry("FAILED_EVENTS_S3_ENDPOINT", MINIO.getS3URL()),
+                Map.entry("FAILED_EVENTS_S3_REGION", "us-east-1"),
+                Map.entry("FAILED_EVENTS_S3_ACCESS_KEY", MINIO.getUserName()),
+                Map.entry("FAILED_EVENTS_S3_SECRET_KEY", MINIO.getPassword()),
+                Map.entry("FAILED_EVENTS_S3_CONNECT_TIMEOUT", "2s"),
+                Map.entry("FAILED_EVENTS_S3_API_CALL_TIMEOUT", "8s"),
+                Map.entry("FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT", "4s"),
+                Map.entry("FAILED_EVENTS_BUCKET", BUCKET),
+                Map.entry("MANAGEMENT_OTLP_ENDPOINT", "http://localhost:4318/v1/traces"));
     }
 
     protected static String proxyUrl() {
@@ -199,12 +262,12 @@ public abstract class AbstractItTest {
     }
 
     // ------------------------------------------------------------------ Kafka
-    // Как задача schema-register на стенде: в Schema Registry заранее лежит только схема devices-dlt-value (DeviceInfo)
-    private static void registerDltSchemas() {
+    // Как задача schema-register на стенде: в Schema Registry заранее лежит только схема failed-events-value (FailedEvent)
+    private static void registerFailedEventsSchema() {
         try (var client = new CachedSchemaRegistryClient(schemaRegistryUrl(), 10)) {
-            client.register(DLT + "-value", new AvroSchema(DeviceInfo.getClassSchema()));
+            client.register(FAILED + "-value", new AvroSchema(FailedEvent.getClassSchema()));
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to register the schema of " + DLT + "-value", e);
+            throw new IllegalStateException("Failed to register the schema of " + FAILED + "-value", e);
         }
     }
 
@@ -240,7 +303,7 @@ public abstract class AbstractItTest {
         }
     }
 
-    /** Ждёт, пока сервис подтвердит offset сообщения: обработано (COMMIT в PostgreSQL) или записано в devices-dlt. */
+    /** Ждёт, пока сервис подтвердит offset сообщения: обработано (COMMIT в PostgreSQL) или записано в failed-events. */
     protected static void awaitCommitted(RecordMetadata message) {
         TopicPartition partition = new TopicPartition(message.topic(), message.partition());
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset(partition)).isGreaterThan(message.offset()));
@@ -254,33 +317,47 @@ public abstract class AbstractItTest {
         }
     }
 
-    /** Запись devices-dlt для исходного сообщения; ждёт её появления до WAIT (запись в DLT - после повторов). */
-    protected static Optional<ConsumerRecord<String, byte[]>> deadLetter(RecordMetadata original) {
+    /**
+     * Запись failed-events для исходного сообщения (ключ <topic>-<partition>-<offset>); ждёт её появления до WAIT
+     * (запись - после повторов). Значение - FailedEvent, прочитанный через Schema Registry.
+     */
+    protected static Optional<FailedEvent> failedEvent(RecordMetadata original) {
         return await().atMost(WAIT).pollInterval(Duration.ofMillis(500))
-                .until(() -> findDeadLetter(original), Optional::isPresent);
+                .until(() -> findFailedEvent(original), Optional::isPresent);
     }
 
-    private static Optional<ConsumerRecord<String, byte[]>> findDeadLetter(RecordMetadata original) {
-        try (var consumer = new KafkaConsumer<String, byte[]>(Map.of(
+    private static Optional<FailedEvent> findFailedEvent(RecordMetadata original) {
+        String sourceKey = original.topic() + "-" + original.partition() + "-" + original.offset();
+        try (var consumer = new KafkaConsumer<String, FailedEvent>(Map.of(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class))) {
-            List<TopicPartition> partitions = consumer.partitionsFor(DLT).stream()
-                    .map(info -> new TopicPartition(DLT, info.partition()))
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class,
+                "schema.registry.url", schemaRegistryUrl(),
+                "specific.avro.reader", true))) {
+            List<TopicPartition> partitions = consumer.partitionsFor(FAILED).stream()
+                    .map(info -> new TopicPartition(FAILED, info.partition()))
                     .toList();
             consumer.assign(partitions);
             consumer.seekToBeginning(partitions);
-            List<ConsumerRecord<String, byte[]>> all = new ArrayList<>();
+            List<ConsumerRecord<String, FailedEvent>> all = new ArrayList<>();
             // Читаем до конца разделов: число poll не зависит от скорости машины
             Map<TopicPartition, Long> end = consumer.endOffsets(partitions);
             while (partitions.stream().anyMatch(p -> consumer.position(p) < end.get(p))) {
                 consumer.poll(Duration.ofMillis(500)).forEach(all::add);
             }
             return all.stream()
-                    .filter(r -> longHeader(r, "kafka_dlt-original-offset") == original.offset()
-                            && intHeader(r, "kafka_dlt-original-partition") == original.partition())
+                    .filter(r -> sourceKey.equals(r.key()))
+                    .map(ConsumerRecord::value)
                     .findFirst();
         }
+    }
+
+    /** Байты из ByteBuffer записи FailedEvent (key, value, headers) без лишних байт буфера. */
+    protected static byte[] bytesOf(ByteBuffer buffer) {
+        ByteBuffer copy = buffer.duplicate();
+        byte[] bytes = new byte[copy.remaining()];
+        copy.get(bytes);
+        return bytes;
     }
 
     /** Настройка темы, как её видит брокер (для проверок cleanup.policy и retention.ms - FR-022, ADR-0011). */
@@ -298,21 +375,14 @@ public abstract class AbstractItTest {
         return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 
-    private static long longHeader(ConsumerRecord<?, ?> record, String name) {
-        Header header = record.headers().lastHeader(name);
-        return header == null ? -1 : ByteBuffer.wrap(header.value()).getLong();
-    }
-
-    private static int intHeader(ConsumerRecord<?, ?> record, String name) {
-        Header header = record.headers().lastHeader(name);
-        return header == null ? -1 : ByteBuffer.wrap(header.value()).getInt();
-    }
-
     private static void createTopics() {
         try {
             // Значение - как в .env.example (FR-022): тема devices создаётся с retention.ms и без сжатия
+            // Тема failed-events - со значениями .env.example (имя и срок хранения): скрипт требует их без значений по умолчанию
             var result = KAFKA.execInContainer("bash", "-c", "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL
-                    + " KAFKA_DEVICES_RETENTION_MS=2592000000 /opt/init/init-topics.sh");
+                    + " KAFKA_DEVICES_RETENTION_MS=2592000000"
+                    + " KAFKA_FAILED_EVENTS_TOPIC=" + FAILED
+                    + " KAFKA_FAILED_EVENTS_RETENTION_MS=1209600000 /opt/init/init-topics.sh");
             if (result.getExitCode() != 0) {
                 throw new IllegalStateException("init-topics.sh exited with code " + result.getExitCode()
                         + ":\n" + result.getStdout() + result.getStderr());

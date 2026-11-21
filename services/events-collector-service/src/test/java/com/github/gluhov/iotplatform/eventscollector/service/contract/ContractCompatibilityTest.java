@@ -5,6 +5,9 @@ import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceSnapshot;
 import com.github.gluhov.iotplatform.events.avro.DeviceStatus;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
+import com.github.gluhov.iotplatform.events.avro.FailedEvent;
 import com.github.gluhov.iotplatform.events.avro.OperationType;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -22,7 +25,10 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.*;
@@ -179,6 +185,65 @@ class ContractCompatibilityTest {
         assertThat(read.get("deviceId").toString()).isEqualTo(DEVICE_ID);
         assertThat(read.get("eventId").toString()).isEqualTo(EVENT_ID);
         assertThat(read.getSchema().getField("operation")).isNull();
+    }
+
+    @Test
+    @DisplayName("FailedEvent 1.4.0 written and read back with the same fields")
+    void givenFailedEvent_whenWriteAndRead_thenSameFields() throws IOException {
+        FailedEvent sent = failedEvent(ErrorCode.STORAGE_UNAVAILABLE);
+
+        FailedEvent read = new SpecificDatumReader<FailedEvent>(FailedEvent.getClassSchema())
+                .read(null, decoder(writeSpecific(sent, FailedEvent.getClassSchema())));
+
+        assertThat(read).isEqualTo(sent);
+    }
+
+    @Test
+    @DisplayName("errorCode written by a newer version (unknown symbol) is read as UNKNOWN, other fields kept")
+    void givenUnknownErrorCode_whenRead_thenUnknownAndFieldsKept() throws IOException {
+        FailedEvent sample = failedEvent(ErrorCode.PROCESSING_FAILED);
+        Schema newer = withEnumSymbol(FailedEvent.getClassSchema(), "FUTURE_CODE");
+        GenericRecord written = new GenericData.Record(newer);
+        for (Schema.Field field : newer.getFields()) {
+            Object value = field.name().equals("errorCode")
+                    ? new GenericData.EnumSymbol(field.schema(), "FUTURE_CODE") : sample.get(field.pos());
+            written.put(field.name(), value instanceof Instant instant ? instant.toEpochMilli() : value);
+        }
+
+        FailedEvent read = new SpecificDatumReader<FailedEvent>(newer, FailedEvent.getClassSchema())
+                .read(null, decoder(writeGeneric(written)));
+
+        assertThat(read.getErrorCode()).isEqualTo(ErrorCode.UNKNOWN);
+        assertThat(read.getErrorType()).isEqualTo(sample.getErrorType());
+        assertThat(read.getSourceOffset()).isEqualTo(sample.getSourceOffset());
+        assertThat(read.getDescription()).isEqualTo(sample.getDescription());
+    }
+
+    private static FailedEvent failedEvent(ErrorCode code) {
+        return FailedEvent.newBuilder()
+                .setSourceService("events-collector-service")
+                .setSourceTopic("events")
+                .setSourcePartition(2)
+                .setSourceOffset(1042L)
+                .setSourceTimestamp(Instant.ofEpochMilli(1_763_720_130_123L))
+                .setFailedAt(Instant.ofEpochMilli(1_763_720_131_480L))
+                .setErrorCode(code)
+                .setErrorType(ErrorType.TRANSIENT)
+                .setDescription("java.lang.IllegalStateException: clickhouse is down")
+                .setTraceId("0af7651916cd43dd8448eb211c80319c")
+                .setKey(ByteBuffer.wrap(new byte[]{1, 2}))
+                .setValue(ByteBuffer.wrap(new byte[]{3, 4, 5}))
+                .setHeaders(Map.of("traceparent", ByteBuffer.wrap(new byte[]{6})))
+                .setAttempts(3)
+                .setDeviceId(DEVICE_ID)
+                .build();
+    }
+
+    // Та же схема с одним дополнительным символом в конце списка ErrorCode (как у более новой версии записи)
+    private static Schema withEnumSymbol(Schema schema, String symbol) {
+        String extended = schema.toString().replace("\"PROCESSING_FAILED\"]", "\"PROCESSING_FAILED\",\"" + symbol + "\"]");
+        assertThat(extended).contains(symbol);
+        return new Schema.Parser().parse(extended);
     }
 
     private static Schema withoutFields(Schema schema, Set<String> names) {

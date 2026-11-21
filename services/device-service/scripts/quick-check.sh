@@ -131,7 +131,7 @@ code="$(api "${BASE1}" POST /api/v1/devices "${TOKEN}" \
   "{\"deviceId\":\"${DEVICE_ID}\",\"tenantId\":\"check-tenant\",\"deviceType\":\"check-sensor\",\"status\":\"ACTIVE\",\"name\":\"quick-check-v1\"}")"
 [[ "${code}" == 202 ]] || fail "POST: HTTP ${code}, expected 202"
 wait_get "${BASE2}" 200 "quick-check-v1" "${TIMEOUT}" \
-  || fail "device not readable within ${TIMEOUT}s (last HTTP ${LAST_CODE}); see docker compose logs device-collector-service and topic devices-dlt"
+  || fail "device not readable within ${TIMEOUT}s (last HTTP ${LAST_CODE}); see docker compose logs device-collector-service"
 ok "202, then 200 with name quick-check-v1"
 
 next "Repeated POST gives 409 DEVICE_ALREADY_EXISTS"

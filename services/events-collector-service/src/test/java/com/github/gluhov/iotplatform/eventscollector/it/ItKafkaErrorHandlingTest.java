@@ -2,13 +2,16 @@ package com.github.gluhov.iotplatform.eventscollector.it;
 
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
+import com.github.gluhov.iotplatform.events.avro.FailedEvent;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.DeviceEventRepository;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -16,10 +19,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -36,8 +37,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 
-import static com.github.gluhov.iotplatform.eventscollector.config.KafkaTestContainerConfig.KAFKA_INTERNAL;
 import static com.github.gluhov.iotplatform.eventscollector.config.SchemaRegistryTestContainerConfig.schemaRegistryUrl;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.EVENT_TYPE;
 import static com.github.gluhov.iotplatform.eventscollector.data.TestData.unique;
@@ -50,20 +51,20 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 // Ошибки приема на отдельной теме с одним разделом и своей consumer group: проверяется committed offset
-// после ошибки и следующего корректного сообщения - ни одно сообщение не должно быть молча пропущено
+// после ошибки и следующего корректного сообщения - ни одно сообщение не должно быть молча пропущено.
+// Записи failed-events проверяются без MinIO и без процессора (он поднимается во второй волне).
 @TestPropertySource(properties = {
         "app.kafka.events-topic=" + ItKafkaErrorHandlingTest.TOPIC,
-        "app.kafka.dlt-topic=" + ItKafkaErrorHandlingTest.DLT,
         "app.processing.max-attempts=" + ItKafkaErrorHandlingTest.MAX_ATTEMPTS,
         "app.processing.retry-interval=100ms",
         "spring.kafka.consumer.group-id=" + ItKafkaErrorHandlingTest.GROUP,
-        "spring.kafka.consumer.properties[spring.deserializer.value.delegate.class]="
+        "spring.kafka.consumer.properties[raw.value.delegate.class]="
             + "com.github.gluhov.iotplatform.eventscollector.it.FlakySchemaRegistryDeserializer"
 })
 class ItKafkaErrorHandlingTest extends AbstractItTest {
     static final String TOPIC = "events-errors-it";
+    static final String FAILED_TOPIC = "failed-events";
     static final String GROUP = "events-collector-errors-it";
-    static final String DLT = "events-errors-dlt-it";
     static final int MAX_ATTEMPTS = 3;
     private static final TopicPartition PARTITION = new TopicPartition(TOPIC, 0);
     private static final Duration WAIT = Duration.ofSeconds(30);
@@ -75,14 +76,17 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
     @MockitoSpyBean
     private DeviceEventRepository eventRepository;
 
-    // Тема и ее DLT создаются тем же init-topics.sh, что и на стенде, но с одним разделом и своими именами
+    // Тема ошибок - с одним разделом и своим именем; failed-events создаётся, если init-topics.sh её не создал
     static {
-        try {
-            var result = kafka.execInContainer("bash", "-c", "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL
-                    + " KAFKA_EVENTS_TOPIC=" + TOPIC + " KAFKA_EVENTS_DLT_TOPIC=" + DLT
-                    + " KAFKA_TOPIC_PARTITIONS=1 KAFKA_DEVICES_RETENTION_MS=2592000000 /opt/init/init-topics.sh");
-            if (result.getExitCode() != 0) {
-                throw new IllegalStateException(result.getStdout() + result.getStderr());
+        try (Admin admin = Admin.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers()))) {
+            for (NewTopic topic : List.of(new NewTopic(TOPIC, 1, (short) 1), new NewTopic(FAILED_TOPIC, 1, (short) 1))) {
+                try {
+                    admin.createTopics(List.of(topic)).all().get();
+                } catch (ExecutionException e) {
+                    if (!(e.getCause() instanceof TopicExistsException)) {
+                        throw e;
+                    }
+                }
             }
         } catch (Exception e) {
             throw new IllegalStateException("Failed to create error-handling topics", e);
@@ -103,12 +107,12 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
         assertThat(FlakySchemaRegistryDeserializer.FAILURES.get()).as("failure was injected").isZero();
         assertThat(storedEvents(firstEvent)).as("first event retried and stored").isEqualTo(1);
         assertThat(storedEvents(secondEvent)).isEqualTo(1);
-        assertThat(deadLetter(first.offset())).as("transient error is not a dead letter").isEmpty();
+        assertThat(failedEvent(first.offset())).as("transient error is not a failed event").isEmpty();
     }
 
     @Test
-    @DisplayName("Valid Avro of another type (DeviceInfo) with a registered schema then moved to DLT with original bytes, offset committed, next event stored")
-    void givenAnotherAvroType_whenConsume_thenMovedToDltAsIsAndOffsetCommitted() throws Exception {
+    @DisplayName("Valid Avro of another type (DeviceInfo) then failed-events with original bytes, offset committed, next event stored")
+    void givenAnotherAvroType_whenConsume_thenFailedEventAsIsAndOffsetCommitted() throws Exception {
         String nextEvent = unique("evt");
         byte[] foreign;
         try (var serializer = new KafkaAvroSerializer()) {
@@ -122,34 +126,39 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
 
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isEqualTo(next.offset() + 1));
         assertThat(storedEvents(nextEvent)).isEqualTo(1);
-        ConsumerRecord<String, byte[]> dead = deadLetter(alien.offset()).orElseThrow();
-        assertThat(dead.value()).as("original bytes, not a re-serialized record").isEqualTo(foreign);
-        assertThat(header(dead, "kafka_dlt-exception-fqcn")).endsWith("DeserializationException");
+        FailedEvent failed = failedEvent(alien.offset()).orElseThrow();
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.DESERIALIZATION_FAILED);
+        assertThat(failed.getErrorType()).isEqualTo(ErrorType.PERMANENT);
+        assertThat(bytes(failed.getValue())).as("original bytes, not a re-serialized record").isEqualTo(foreign);
+        assertThat(failed.getHeaders().keySet()).as("no Spring or raw-byte helper headers")
+                .noneMatch(name -> name.startsWith("spring") || name.startsWith("kafka_") || name.startsWith("x-raw"));
     }
 
     @Test
-    @DisplayName("Message is not Avro then moved to DLT with original bytes before its offset is committed")
-    void givenUndeserializableMessage_whenConsume_thenMovedToDltAndOffsetCommitted() throws Exception {
+    @DisplayName("Message is not Avro then failed-events with original key and value before its offset is committed")
+    void givenUndeserializableMessage_whenConsume_thenFailedEventAndOffsetCommitted() throws Exception {
         byte[] garbage = "not-an-avro-message".getBytes(StandardCharsets.UTF_8);
         String nextEvent = unique("evt");
 
         RecordMetadata poison = sendRaw(garbage);
 
-        // Offset "ядовитого" сообщения подтвержден сам, после записи в DLT, а не перекрыт следующим сообщением
+        // Offset "ядовитого" сообщения подтвержден сам, после записи в failed-events, а не перекрыт следующим сообщением
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isEqualTo(poison.offset() + 1));
-        ConsumerRecord<String, byte[]> dead = deadLetter(poison.offset()).orElseThrow();
+        FailedEvent failed = failedEvent(poison.offset()).orElseThrow();
 
         RecordMetadata next = sendEvent(nextEvent);
 
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isEqualTo(next.offset() + 1));
         assertThat(storedEvents(nextEvent)).isEqualTo(1);
-        assertThat(dead.value()).as("original bytes kept").isEqualTo(garbage);
-        assertThat(header(dead, "kafka_dlt-original-topic")).isEqualTo(TOPIC);
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.DESERIALIZATION_FAILED);
+        assertThat(failed.getSourceTopic()).isEqualTo(TOPIC);
+        assertThat(bytes(failed.getValue())).as("original bytes kept").isEqualTo(garbage);
+        assertThat(bytes(failed.getKey())).as("original key kept").isEqualTo("dev-errors".getBytes(StandardCharsets.UTF_8));
     }
 
     @Test
-    @DisplayName("Event fails validation then moved to DLT as Avro before its offset is committed")
-    void givenInvalidEvent_whenConsume_thenMovedToDltAndOffsetCommitted() throws Exception {
+    @DisplayName("Event fails validation then failed-events as Avro before its offset is committed")
+    void givenInvalidEvent_whenConsume_thenFailedEventAndOffsetCommitted() throws Exception {
         String nextEvent = unique("evt");
 
         RecordMetadata invalid = sendEvent("   ");
@@ -157,17 +166,21 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
 
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isEqualTo(next.offset() + 1));
         assertThat(storedEvents(nextEvent)).isEqualTo(1);
-        ConsumerRecord<String, byte[]> dead = deadLetter(invalid.offset()).orElseThrow();
+        FailedEvent failed = failedEvent(invalid.offset()).orElseThrow();
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(failed.getErrorType()).isEqualTo(ErrorType.PERMANENT);
+        assertThat(failed.getAttempts()).isEqualTo(1);
+        assertThat(failed.getDeviceId()).isEqualTo("dev-errors");
         try (var avro = new KafkaAvroDeserializer()) {
             avro.configure(Map.of("schema.registry.url", schemaRegistryUrl(), "specific.avro.reader", true), false);
-            DeviceEvent parked = (DeviceEvent) avro.deserialize(DLT, dead.value());
+            DeviceEvent parked = (DeviceEvent) avro.deserialize(TOPIC, bytes(failed.getValue()));
             assertThat(parked.getEventId()).isEqualTo("   ");
         }
     }
 
     @Test
-    @DisplayName("ClickHouse write fails on every attempt then after max-attempts moved to DLT, offset committed, next event stored")
-    void givenStorageFailure_whenConsume_thenRetriedMaxAttemptsThenMovedToDlt() throws Exception {
+    @DisplayName("ClickHouse write fails on every attempt then after max-attempts failed-events, offset committed, next event stored")
+    void givenStorageFailure_whenConsume_thenRetriedMaxAttemptsThenFailedEvent() throws Exception {
         String failing = unique("evt");
         String nextEvent = unique("evt");
         doThrow(new IllegalStateException("clickhouse is down"))
@@ -176,16 +189,19 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
         RecordMetadata failed = sendEvent(failing);
         RecordMetadata next = sendEvent(nextEvent);
 
-        // Offset неудачного сообщения подтвержден после DLT, и раздел пошел дальше: следующее событие записано
+        // Offset неудачного сообщения подтвержден после failed-events, и раздел пошел дальше: следующее событие записано
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isEqualTo(next.offset() + 1));
         verify(eventRepository, times(MAX_ATTEMPTS)).insert(argThat(record -> record != null && failing.equals(record.eventId())));
         assertThat(storedEvents(failing)).as("failed event is not stored").isZero();
         assertThat(storedEvents(nextEvent)).isEqualTo(1);
-        ConsumerRecord<String, byte[]> dead = deadLetter(failed.offset()).orElseThrow();
-        assertThat(header(dead, "kafka_dlt-exception-cause-fqcn")).contains("EventPersistenceException");
+        FailedEvent event = failedEvent(failed.offset()).orElseThrow();
+        assertThat(event.getErrorCode()).isEqualTo(ErrorCode.STORAGE_UNAVAILABLE);
+        assertThat(event.getErrorType()).isEqualTo(ErrorType.TRANSIENT);
+        assertThat(event.getAttempts()).isEqualTo(MAX_ATTEMPTS);
+        assertThat(event.getDescription()).contains("IllegalStateException: clickhouse is down");
         try (var avro = new KafkaAvroDeserializer()) {
             avro.configure(Map.of("schema.registry.url", schemaRegistryUrl(), "specific.avro.reader", true), false);
-            assertThat(((DeviceEvent) avro.deserialize(DLT, dead.value())).getEventId()).isEqualTo(failing);
+            assertThat(((DeviceEvent) avro.deserialize(TOPIC, bytes(event.getValue()))).getEventId()).isEqualTo(failing);
         }
     }
 
@@ -228,30 +244,33 @@ class ItKafkaErrorHandlingTest extends AbstractItTest {
                 .param("id", eventId).query(Long.class).single();
     }
 
-    // Запись DLT, отложенная из исходного offset темы (заголовок kafka_dlt-original-offset)
-    private Optional<ConsumerRecord<String, byte[]>> deadLetter(long offset) {
-        try (var consumer = new KafkaConsumer<String, byte[]>(Map.of(
+    // Запись failed-events для исходного offset темы TOPIC (ключ записи - TOPIC-partition-offset)
+    private Optional<FailedEvent> failedEvent(long sourceOffset) {
+        try (var consumer = new KafkaConsumer<String, Object>(Map.of(
                 ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers(),
-                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class))) {
-            TopicPartition dlt = new TopicPartition(DLT, 0);
-            consumer.assign(List.of(dlt));
-            consumer.seekToBeginning(List.of(dlt));
-            long end = consumer.endOffsets(List.of(dlt)).get(dlt);
-            List<ConsumerRecord<String, byte[]>> records = new ArrayList<>();
-            while (consumer.position(dlt) < end) {
-                consumer.poll(Duration.ofMillis(500)).forEach(records::add);
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, org.apache.kafka.common.serialization.StringDeserializer.class,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class,
+                "schema.registry.url", schemaRegistryUrl(),
+                "specific.avro.reader", true))) {
+            List<TopicPartition> partitions = consumer.partitionsFor(FAILED_TOPIC).stream()
+                    .map(info -> new TopicPartition(FAILED_TOPIC, info.partition())).toList();
+            consumer.assign(partitions);
+            consumer.seekToBeginning(partitions);
+            Map<TopicPartition, Long> end = consumer.endOffsets(partitions);
+            List<FailedEvent> events = new ArrayList<>();
+            while (partitions.stream().anyMatch(partition -> consumer.position(partition) < end.get(partition))) {
+                consumer.poll(Duration.ofMillis(500)).forEach(record -> events.add((FailedEvent) record.value()));
             }
-            return records.stream()
-                    .filter(record -> ByteBuffer.wrap(record.headers().lastHeader("kafka_dlt-original-offset").value())
-                            .getLong() == offset)
+            return events.stream()
+                    .filter(event -> TOPIC.equals(event.getSourceTopic()) && event.getSourceOffset() == sourceOffset)
                     .findFirst();
-
         }
     }
 
-    private static String header(ConsumerRecord<?, ?> record, String name) {
-        Header header = record.headers().lastHeader(name);
-        return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
+    private static byte[] bytes(ByteBuffer buffer) {
+        ByteBuffer copy = buffer.duplicate();
+        byte[] result = new byte[copy.remaining()];
+        copy.get(result);
+        return result;
     }
 }

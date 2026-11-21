@@ -207,12 +207,12 @@ class ItConsumerOffsetsTest extends AbstractItTest {
         }
     }
 
-    // Раздел добавляется и к devices-dlt (номер раздела исходного сообщения сохраняется); возвращает прежнее число разделов
+    // Раздел добавляется только к devices: failed-events - общая тема, процессор (второй контекст) назначается на разделы
+    // при старте, а новые узнаёт по обновлению метаданных; раздел здесь не нужен. Возвращает прежнее число разделов
     private static int addPartition() throws Exception {
         try (Admin admin = admin()) {
             int partitions = admin.describeTopics(List.of(DEVICES)).allTopicNames().get().get(DEVICES).partitions().size();
-            admin.createPartitions(Map.of(DEVICES, NewPartitions.increaseTo(partitions + 1),
-                    DLT, NewPartitions.increaseTo(partitions + 1))).all().get();
+            admin.createPartitions(Map.of(DEVICES, NewPartitions.increaseTo(partitions + 1))).all().get();
             await().atMost(WAIT).untilAsserted(() -> assertThat(admin.describeTopics(List.of(DEVICES))
                     .allTopicNames().get().get(DEVICES).partitions()).hasSize(partitions + 1));
             return partitions;

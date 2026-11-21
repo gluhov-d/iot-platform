@@ -142,7 +142,7 @@ for n in "${SHARDS[@]}"; do
 
   next "${id}: stored on shard_${n} (waiting for the service to process the message)"
   wait_for 1 rows_on_shard "${n}" "${id}" \
-    || fail "device is not on shard_${n} within ${TIMEOUT}s (on shard_${other}: $(rows_on_shard "${other}" "${id}" || echo '?')); see docker compose logs device-collector-service and topic devices-dlt"
+    || fail "device is not on shard_${n} within ${TIMEOUT}s (on shard_${other}: $(rows_on_shard "${other}" "${id}" || echo '?')); see docker compose logs device-collector-service and topic failed-events"
   ok "shard_${n}: 1 row"
 
   next "${id}: absent on shard_${other}"

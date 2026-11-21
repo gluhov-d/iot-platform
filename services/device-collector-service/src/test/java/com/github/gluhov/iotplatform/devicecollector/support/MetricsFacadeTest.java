@@ -3,6 +3,8 @@ package com.github.gluhov.iotplatform.devicecollector.support;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.FailureReason;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessingOutcome;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StorageFailureReason;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -29,7 +31,8 @@ class MetricsFacadeTest {
                 .contains("devices_messages_failed_total{reason=\"storage\"} 0.0")
                 .contains("devices_processing_errors_total{reason=\"storage\"} 0.0")
                 .contains("devices_shard_route_fail_total{reason=\"connection\",shard=\"unknown\"} 0.0")
-                .contains("devices_dlt_published_total{reason=\"invalid\"} 0.0");
+                .contains("failed_events_published_total{error_code=\"VALIDATION_FAILED\",error_type=\"PERMANENT\"} 0.0")
+                .contains("failed_events_published_total{error_code=\"STORAGE_UNAVAILABLE\",error_type=\"TRANSIENT\"} 0.0");
     }
 
     @Test
@@ -41,7 +44,7 @@ class MetricsFacadeTest {
         metrics.processed(ProcessingOutcome.DUPLICATE);
         metrics.failed(FailureReason.STORAGE);
         metrics.processingError(FailureReason.STORAGE);
-        metrics.dltPublished(FailureReason.STORAGE);
+        metrics.failedEventPublished(ErrorCode.STORAGE_UNAVAILABLE, ErrorType.TRANSIENT);
         metrics.processingTime("applied", Duration.ofMillis(12));
         metrics.dbWrite("shard_1", true, Duration.ofMillis(5));
         metrics.dbWrite("unknown", false, Duration.ofMillis(3000));
@@ -55,7 +58,7 @@ class MetricsFacadeTest {
                 .contains("devices_messages_duplicate_total 1.0")
                 .contains("devices_messages_failed_total{reason=\"storage\"} 1.0")
                 .contains("devices_processing_errors_total{reason=\"storage\"} 1.0")
-                .contains("devices_dlt_published_total{reason=\"storage\"} 1.0")
+                .contains("failed_events_published_total{error_code=\"STORAGE_UNAVAILABLE\",error_type=\"TRANSIENT\"} 1.0")
                 .contains("devices_processing_seconds_count{outcome=\"applied\"} 1")
                 .contains("devices_db_write_seconds_count{result=\"success\",shard=\"shard_1\"} 1")
                 .contains("devices_db_write_seconds_count{result=\"error\",shard=\"unknown\"} 1")

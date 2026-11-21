@@ -49,19 +49,19 @@
 
 ## Phase 2 (P2): Стенд — тема, MinIO, переменные
 
-- [ ] T005 Все новые переменные из plan.md («Переменные окружения») в `.env.example` (без секретов: пароли — `change_me_*`),
+- [X] T005 Все новые переменные из plan.md («Переменные окружения») в `.env.example` (без секретов: пароли — `change_me_*`),
   удалить `KAFKA_EVENTS_DLT_TOPIC`, `KAFKA_DEVICES_DLT_TOPIC`, `DEVICES_DLT_*`, `MINIO_BUCKETS`, `PROMETHEUS_*` — `.env.example` (FR-003, FR-014, FR-022)
-- [ ] T006 Тема `failed-events`: создание (3 раздела, `cleanup.policy=delete`, `retention.ms`, без `retention.bytes`) и удаление
+- [X] T006 Тема `failed-events`: создание (3 раздела, `cleanup.policy=delete`, `retention.ms`, без `retention.bytes`) и удаление
   прежних `events-dlt`, `devices-dlt` (`--delete --if-exists`); `KAFKA_FAILED_EVENTS_*` в `kafka-init`, DLT-переменные убрать из
   `avros-publish`, `schema-register`, `kafka-init` — `INF/init/kafka/init-topics.sh`, `INF/docker-compose.yaml` (FR-003).
   Проверка на своём стенде (не стенд владельца): `make topics` показывает `failed-events` и не показывает DLT; повторный запуск `kafka-init` — код 0.
   **Необратимо на стенде владельца** (удаляет DLT-темы вместе с данными): агент проверяет только на своём проекте compose
-- [ ] T007 Образ MinIO `pgsty/minio:${MINIO_VERSION}` в базовом стенде (профиль `platform` убрать), `MINIO_PROMETHEUS_AUTH_TYPE: public`,
+- [X] T007 Образ MinIO `pgsty/minio:${MINIO_VERSION}` в базовом стенде (профиль `platform` убрать), `MINIO_PROMETHEUS_AUTH_TYPE: public`,
   том `minio-data`, healthcheck `mc ready local`, порты из `.env.example` — `INF/docker-compose.yaml` (FR-014; R10)
-- [ ] T008 Скрипт проверки прав и сроков: каждая учётка — свой бакет `200`, чужой бакет и чужой префикс — `403`; `mc ilm rule ls`
+- [X] T008 Скрипт проверки прав и сроков: каждая учётка — свой бакет `200`, чужой бакет и чужой префикс — `403`; `mc ilm rule ls`
   по каждому бакету; условная запись `If-None-Match: *` на `failed-events` (с lock и версиями) — второй `PUT` `412`, версия одна; бакет `failed-events` без lock → init с кодом ≠ 0 и текстом причины;
   `make minio-check` — `INF/config/minio/check.sh` (100755), `Makefile` (FR-015, FR-016, FR-008, SC-005)
-- [ ] T009 Init MinIO на чистом `sh` в образе MinIO (нет `grep`, `sed`, `awk`; R10): бакеты (`failed-events` — с `--with-lock`, версии
+- [X] T009 Init MinIO на чистом `sh` в образе MinIO (нет `grep`, `sed`, `awk`; R10): бакеты (`failed-events` — с `--with-lock`, версии
   включены), пользователи и политики, ILM через `mc ilm import`; идемпотентен; бакеты не очищает — `INF/init/minio/init.sh` (100755),
   `INF/config/minio/policies/{failed-events-processor,mimir,loki,tempo,backup-postgres,backup-clickhouse}.json`,
   `INF/config/minio/ilm/{failed-events,backups,mimir-blocks,loki-chunks,tempo-traces}.json` (FR-014, FR-015, FR-016; R11; R12 — см. research.md). Бакет `failed-events` уже существует без lock: init завершается с кодом ≠ 0 и текстом причины (проверка — T008).
@@ -74,30 +74,30 @@
 
 Эталон — проверенные решения research.md R1–R4; образец сервиса — `DCS`. Unit-задачи — после T004; IT-задачи (T013, T012) — после P5 (процессор вторым контекстом).
 
-- [ ] T010 [P] Тест: `ECST/adapter/out/kafka/FailedEventRecovererTest.java` — для каждой строки таблицы «исключение → код» (data-model.md)
+- [X] T010 [P] Тест: `ECST/adapter/out/kafka/FailedEventRecovererTest.java` — для каждой строки таблицы «исключение → код» (data-model.md)
   поля `FailedEvent` (`errorCode`, `errorType`, `attempts`, `sourceService`, координаты, `sourceTimestamp`, `deviceId`, `description` ≤ 2000); `traceId` без `traceparent` и без спана — `null`;
   `givenPublishFails_whenRecover_thenExceptionAndNoCommit`; байты `key`/`value` побайтно равны исходным (FR-002, FR-004, FR-005; R1, R3)
-- [ ] T011 [P] Тест: `ECST/config/ConsumerDeserializationTest.java` — ключ не строгий UTF-8 (`FF FE 41`) → `DESERIALIZATION_FAILED`
+- [X] T011 [P] Тест: `ECST/config/ConsumerDeserializationTest.java` — ключ не строгий UTF-8 (`FF FE 41`) → `DESERIALIZATION_FAILED`
   с исходными байтами; сырой массив сохранён обёрткой до разбора (FR-005; R1, R2)
-- [ ] T012 (R23) Проверка до IT сборщиков (после P5, T040): процессор поднимается вторым Spring-контекстом в IT сборщика — `testImplementation(project(":services:failed-events-processor"))`, `SpringApplicationBuilder` с `setDefaultProperties`; конфигурация `failed-events-processor.yaml` читается, бины сборщика и процессора не конфликтуют. Зонды: `ECST/it/ItSecondContextProbeTest.java`, `DCST/it/ItSecondContextProbeTest.java` — контекст поднимается, в нём есть `FailedEventListener`. Не подтвердилось — остановиться; запасной вариант — сквозной тест на стенде (`e2eTest`) на macOS-хосте, решение человека (FR-023, R23)
-- [ ] T013 Тесты DLT удалить или переписать на `failed-events`: `ECST/config/KafkaConfigTest.java`, `ECST/service/config/KafkaErrorClassifierTest.java`,
+- [X] T012 (R23) Проверка до IT сборщиков (после P5, T040): процессор поднимается вторым Spring-контекстом в IT сборщика — `testImplementation(project(":services:failed-events-processor"))`, `SpringApplicationBuilder` с `setDefaultProperties`; конфигурация `failed-events-processor.yaml` читается, бины сборщика и процессора не конфликтуют. Зонды: `ECST/it/ItSecondContextProbeTest.java`, `DCST/it/ItSecondContextProbeTest.java` — контекст поднимается, в нём есть `FailedEventListener`. Не подтвердилось — остановиться; запасной вариант — сквозной тест на стенде (`e2eTest`) на macOS-хосте, решение человека (FR-023, R23)
+- [X] T013 Тесты DLT удалить или переписать на `failed-events`: `ECST/config/KafkaConfigTest.java`, `ECST/service/config/KafkaErrorClassifierTest.java`,
   `ECST/service/adapter/out/kafka/KafkaDeviceInfoProducerTest.java` (конструктор `KafkaProperties`), `ECST/it/ItKafkaErrorHandlingTest.java`
   (темы `events-errors-it`, subject `failed-events-value`; сценарии: невалидное, хранилище недоступно после N попыток, нечитаемые байты, другой тип
   Avro, Schema Registry временно недоступен без FailedEvent; до объекта в MinIO — процессор вторым контекстом, после P5 и проверки R23), `ECST/it/AbstractItTest.java` (subjects `*-dlt-value`) (FR-004, FR-023)
-- [ ] T014 Контракт: `ECST/service/contract/ContractCompatibilityTest.java` — запись `FailedEvent` версии 1.4.0 читается, неизвестный `errorCode` → `UNKNOWN` (FR-001; R9)
-- [ ] T015 Зависимость `avrosVersion = "1.4.0"` — `ECS/build.gradle.kts` (FR-001)
-- [ ] T016 Сырые байты до разбора: `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` (ключ) — `ECSJ/config/RawKeepingDeserializer.java`,
+- [X] T014 Контракт: `ECST/service/contract/ContractCompatibilityTest.java` — запись `FailedEvent` версии 1.4.0 читается, неизвестный `errorCode` → `UNKNOWN` (FR-001; R9)
+- [X] T015 Зависимость `avrosVersion = "1.4.0"` — `ECS/build.gradle.kts` (FR-001)
+- [X] T016 Сырые байты до разбора: `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` (ключ) — `ECSJ/config/RawKeepingDeserializer.java`,
   `ECSJ/config/StrictUtf8StringDeserializer.java`, `ECS/src/main/resources/application.yaml`; сырые байты — в заголовках `x-raw-key`, `x-raw-value`, из `headers` `FailedEvent` исключаются (FR-005; R1, R2)
-- [ ] T017 `FailedEventRecoverer` (`ConsumerRecordRecoverer`): синхронный `send().get(FAILED_EVENTS_PUBLISH_TIMEOUT)`, ключ сообщения
+- [X] T017 `FailedEventRecoverer` (`ConsumerRecordRecoverer`): синхронный `send().get(FAILED_EVENTS_PUBLISH_TIMEOUT)`, ключ сообщения
   `<topic>-<partition>-<offset>`, `traceId` из текущего спана, иначе `traceparent`; метрика `failed.events.published{error_code,error_type}` —
   `ECSJ/adapter/out/kafka/FailedEventRecoverer.java`, `ECSJ/support/MetricsFacade.java` (FR-004, FR-005, FR-006; R3, R4)
-- [ ] T018 `KafkaConfig`: `DeadLetterPublishingRecoverer` и шаблоны DLT заменены на `FailedEventRecoverer`; классификация и повторы как
+- [X] T018 `KafkaConfig`: `DeadLetterPublishingRecoverer` и шаблоны DLT заменены на `FailedEventRecoverer`; классификация и повторы как
   прежде (`storageBackOff` = `maxAttempts − 1` повторов); `setCommitRecovered(true)`; лог `status=FAILED_EVENT` вместо `REJECTED` —
   `ECSJ/config/KafkaConfig.java`, `ECSJ/config/KafkaProperties.java` (`failedEventsTopic`, без `@DefaultValue` — AGENTS.md), `ECSJ/config/KafkaErrorClassifier.java`,
   `ECSJ/config/ProcessingProperties.java` (Javadoc) (FR-004, FR-006)
-- [ ] T019 Конфигурация: `failed-events-topic: ${KAFKA_FAILED_EVENTS_TOPIC}`, тайм-ауты продюсера ошибок `FAILED_EVENTS_*` —
+- [X] T019 Конфигурация: `failed-events-topic: ${KAFKA_FAILED_EVENTS_TOPIC}`, тайм-ауты продюсера ошибок `FAILED_EVENTS_*` —
   `ECS/src/main/resources/application.yaml`, `application-docker.yaml` (если есть) (FR-003, FR-004)
-- [ ] T020 Подсказка о DLT: `ECS/scripts/check-local.sh` (комментарий о теме `devices`), документация в Javadoc — `ECS/scripts/check-local.sh` (FR-003)
+- [X] T020 Подсказка о DLT: `ECS/scripts/check-local.sh` (комментарий о теме `devices`), документация в Javadoc — `ECS/scripts/check-local.sh` (FR-003)
 
 **Checkpoint**: `./gradlew :services:events-collector-service:test :services:events-collector-service:integrationTest :services:events-collector-service:check`
 проходят; `git grep -i -E 'dlt|dead.?letter' -- services/events-collector-service` пуст.
@@ -106,27 +106,27 @@
 
 Эталон — P3 (тот же механизм), смещения и `DevicesErrorHandler` не меняются. После T004; IT-задача T023 — после P5.
 
-- [ ] T021 [P] Тест: `DCST/adapter/out/kafka/FailedEventRecovererTest.java` — как T010 (включая `traceId == null` без трассы); плюс `UNKNOWN` и `CREATE`/`UPDATE` без данных устройства →
+- [X] T021 [P] Тест: `DCST/adapter/out/kafka/FailedEventRecovererTest.java` — как T010 (включая `traceId == null` без трассы); плюс `UNKNOWN` и `CREATE`/`UPDATE` без данных устройства →
   `VALIDATION_FAILED`/`PERMANENT`; ошибка хранилища `shard` → `STORAGE_UNAVAILABLE`/`TRANSIENT` (FR-002, FR-004, FR-005; R1, R3)
-- [ ] T022 [P] Тест: ключ не строгий UTF-8 и мусор в значении — `DCST/config/ConsumerDeserializationTest.java` (новый, по образцу ECS) (FR-005; R1, R2)
-- [ ] T023 Тесты DLT переписать на `failed-events`: `DCST/config/KafkaConfigTest.java`, `DCST/support/MetricsFacadeTest.java` (метрика
+- [X] T022 [P] Тест: ключ не строгий UTF-8 и мусор в значении — `DCST/config/ConsumerDeserializationTest.java` (новый, по образцу ECS) (FR-005; R1, R2)
+- [X] T023 Тесты DLT переписать на `failed-events`: `DCST/config/KafkaConfigTest.java`, `DCST/support/MetricsFacadeTest.java` (метрика
   `failed_events_published_total`), `DCST/it/ItDeviceCollectorTest.java` (до объекта в MinIO — процессор вторым контекстом, после P5; невалидное, нечитаемое, другой Avro, шард недоступен — после N попыток
   `STORAGE_UNAVAILABLE`), `DCST/it/ItDeviceOperationsTest.java` (`UNKNOWN` → `VALIDATION_FAILED`), `DCST/it/ItConsumerOffsetsTest.java`
   (раздел `failed-events` вместо `devices-dlt`), `DCST/it/AbstractItTest.java` (FR-004, FR-023)
-- [ ] T024 Зависимость `avrosVersion = "1.4.0"` — `DCS/build.gradle.kts` (FR-001)
-- [ ] T025 `RawKeepingDeserializer`, `StrictUtf8StringDeserializer` — `DCSJ/config/RawKeepingDeserializer.java`, `DCSJ/config/StrictUtf8StringDeserializer.java`,
+- [X] T024 Зависимость `avrosVersion = "1.4.0"` — `DCS/build.gradle.kts` (FR-001)
+- [X] T025 `RawKeepingDeserializer`, `StrictUtf8StringDeserializer` — `DCSJ/config/RawKeepingDeserializer.java`, `DCSJ/config/StrictUtf8StringDeserializer.java`,
   `DCS/src/main/resources/application.yaml` (FR-005; R1, R2)
-- [ ] T026 `FailedEventRecoverer` по образцу T017; метрика `failed.events.published{error_code,error_type}` вместо `devices.dlt.published{reason}` —
+- [X] T026 `FailedEventRecoverer` по образцу T017; метрика `failed.events.published{error_code,error_type}` вместо `devices.dlt.published{reason}` —
   `DCSJ/adapter/out/kafka/FailedEventRecoverer.java`, `DCSJ/domain/port/out/DeviceMetrics.java`, `DCSJ/support/MetricsFacade.java` (FR-004, FR-006; R3, R4)
-- [ ] T027 `KafkaConfig`: `deadLetters` и шаблоны заменены на `FailedEventRecoverer`; `DevicesErrorHandler`, `NoOffsetRecoveringConsumer`,
+- [X] T027 `KafkaConfig`: `deadLetters` и шаблоны заменены на `FailedEventRecoverer`; `DevicesErrorHandler`, `NoOffsetRecoveringConsumer`,
   `DevicesConsumerOffsets` без изменений поведения; лог `status=FAILED_EVENT` вместо `DLT` — `DCSJ/config/KafkaConfig.java`,
   `DCSJ/config/KafkaProperties.java`, `DCSJ/config/KafkaErrorClassifier.java`, `DCSJ/config/ProcessingProperties.java`,
   `DCSJ/domain/model/FailureReason.java` (метки `reason` остаются, Javadoc обновить) (FR-004, FR-006)
-- [ ] T028 Конфигурация: `failed-events-topic`, тайм-ауты `FAILED_EVENTS_*` вместо `DEVICES_DLT_*` — `DCS/src/main/resources/application.yaml` (FR-003, FR-004)
-- [ ] T029 Комментарии и Javadoc с «devices-dlt» — `DCSJ/adapter/in/kafka/DeviceInfoListener.java`, `DCSJ/domain/service/DeviceInfoValidator.java`,
+- [X] T028 Конфигурация: `failed-events-topic`, тайм-ауты `FAILED_EVENTS_*` вместо `DEVICES_DLT_*` — `DCS/src/main/resources/application.yaml` (FR-003, FR-004)
+- [X] T029 Комментарии и Javadoc с «devices-dlt» — `DCSJ/adapter/in/kafka/DeviceInfoListener.java`, `DCSJ/domain/service/DeviceInfoValidator.java`,
   `DCSJ/domain/service/DeviceRegistryService.java`, `DCSJ/domain/exception/DeviceNotStoredException.java`,
   `DCSJ/domain/exception/InvalidDeviceInfoException.java` (FR-003)
-- [ ] T030 Скрипты: подсказки «topic devices-dlt» — `DCS/scripts/quick-check.sh`, `services/device-service/scripts/quick-check.sh` (FR-003)
+- [X] T030 Скрипты: подсказки «topic devices-dlt» — `DCS/scripts/quick-check.sh`, `services/device-service/scripts/quick-check.sh` (FR-003)
 
 **Checkpoint**: `./gradlew :services:device-collector-service:test :services:device-collector-service:integrationTest :services:device-collector-service:check`
 проходят; `git grep -i -E 'dlt|dead.?letter' -- services/device-collector-service services/device-service` пуст; `git grep -n -i 'failed' -- services/device-service` пусто (FR-006).
@@ -135,40 +135,40 @@
 
 Образец структуры и сборки — `DCS`; код прототипа — как требования (research.md R5–R8), не копировать. После T004.
 
-- [ ] T031 Сборка: Java 25, Spring Boot 4.0.3, `spring-boot-starter-kafka`, `kafka-avro-serializer` 8.2.4, AWS SDK for Java v2 `s3` (версию — явно, одну, BOM
+- [X] T031 Сборка: Java 25, Spring Boot 4.0.3, `spring-boot-starter-kafka`, `kafka-avro-serializer` 8.2.4, AWS SDK for Java v2 `s3` (версию — явно, одну, BOM
   `software.amazon.awssdk:bom`), `micrometer-registry-prometheus`, `opentelemetry`, ArchUnit, Testcontainers (`kafka`, `testcontainers-minio` 2.0.3,
   Schema Registry), JaCoCo 0.8.14 ≥ 0,70 по строкам, задача `integrationTest` (`It*Test`), avros 1.4.0 — как у `DCS` — `FEP/build.gradle.kts` (FR-022, FR-023)
-- [ ] T032 Подпроект: `include(":services:failed-events-processor")`; `COPY services/failed-events-processor/build.gradle.kts services/failed-events-processor/`
+- [X] T032 Подпроект: `include(":services:failed-events-processor")`; `COPY services/failed-events-processor/build.gradle.kts services/failed-events-processor/`
   во все Dockerfile других подпроектов (`grep -L` пуст; после T031 — нужен `build.gradle.kts` процессора) — `settings.gradle.kts`, `AV/Dockerfile`, `ECS/Dockerfile`, `DCS/Dockerfile`,
   `services/db-migrator/Dockerfile`, `services/device-service/Dockerfile` (FR-022)
-- [ ] T033 [P] Правила слоёв: домен не зависит от Kafka, S3 SDK, Spring Kafka; `@KafkaListener` только в `adapter.in.kafka` — `FEPT/architecture/ArchitectureTest.java` (FR-022)
-- [ ] T034 [P] Тест ключа: `givenFailedEvent_whenKey_thenFromSourceCoordinatesAndSourceTimestampUtc`, `…WhenTwoPublicationsOfSameSource_thenSameKey`,
+- [X] T033 [P] Правила слоёв: домен не зависит от Kafka, S3 SDK, Spring Kafka; `@KafkaListener` только в `adapter.in.kafka` — `FEPT/architecture/ArchitectureTest.java` (FR-022)
+- [X] T034 [P] Тест ключа: `givenFailedEvent_whenKey_thenFromSourceCoordinatesAndSourceTimestampUtc`, `…WhenTwoPublicationsOfSameSource_thenSameKey`,
   `…WhenNoDeviceId…`, символы в `sourceTopic` — `FEPT/domain/model/ArchiveKeyTest.java` (FR-007, FR-008)
-- [ ] T035 [P] Тест JSON-документа: все поля `FailedEvent` присутствуют, `base64(value)` и `base64(key)` равны байтам, `null` у `traceId`/`key`/`value`, заголовки,
+- [X] T035 [P] Тест JSON-документа: все поля `FailedEvent` присутствуют, `base64(value)` и `base64(key)` равны байтам, `null` у `traceId`/`key`/`value`, заголовки,
   метаданные объекта — `FEPT/domain/service/ArchiveServiceTest.java` (FR-007; R5)
-- [ ] T036 Контракт: запись `FailedEvent` 1.4.0 читается процессором; неизвестный `errorCode` → `UNKNOWN`, в объекте `UNKNOWN` и исходное число — `FEPT/contract/FailedEventContractTest.java` (FR-001; R9)
-- [ ] T037 IT (Kafka, Schema Registry, MinIO — `pgsty/minio` через `asCompatibleSubstituteFor`; R19): объект создан, JSON полон, байты побайтно (FR-007); повторная доставка и две
+- [X] T036 Контракт: запись `FailedEvent` 1.4.0 читается процессором; неизвестный `errorCode` → `UNKNOWN`, в объекте `UNKNOWN` и исходное число — `FEPT/contract/FailedEventContractTest.java` (FR-001; R9)
+- [X] T037 IT (Kafka, Schema Registry, MinIO — `pgsty/minio` через `asCompatibleSubstituteFor`; R19): объект создан, JSON полон, байты побайтно (FR-007); повторная доставка и две
   записи с одним исходным сообщением → один объект, одна версия (FR-008); нечитаемые байты → `unreadable/…` (FR-010) — `FEPT/it/ItFailedEventsProcessorTest.java`,
   `FEPT/it/AbstractItTest.java`, `FEPT/it/MinioTestContainerConfig.java` (FR-007, FR-008, FR-010, FR-023, SC-002)
-- [ ] T038 IT недоступности: MinIO на `docker pause` дольше `max.poll.interval.ms` — смещение не движется, группа `Stable`, после снятия паузы объект появился и смещение
+- [X] T038 IT недоступности: MinIO на `docker pause` дольше `max.poll.interval.ms` — смещение не движется, группа `Stable`, после снятия паузы объект появился и смещение
   продвинулось (SC-003); перезапуск процессора над непустым бакетом — объекты на месте; Schema Registry на паузе — `unreadable` не создаётся — `FEPT/it/ItFailedEventsOutageTest.java` (FR-009, FR-010; R6, R7)
-- [ ] T039 IT трассы: запись с `traceparent` — объект содержит тот же `traceId`, спан `s3.put-object` — потомок спана слушателя — `FEPT/it/ItFailedEventsTraceTest.java` (FR-011; R8)
-- [ ] T040 [P] Точка входа и конфигурация только из переменных окружения (plan.md), JSON-логи с `traceId`/`spanId`, `max.poll.interval.ms`,
+- [X] T039 IT трассы: запись с `traceparent` — объект содержит тот же `traceId`, спан `s3.put-object` — потомок спана слушателя — `FEPT/it/ItFailedEventsTraceTest.java` (FR-011; R8)
+- [X] T040 [P] Точка входа и конфигурация только из переменных окружения (plan.md), JSON-логи с `traceId`/`spanId`, `max.poll.interval.ms`,
   `enable-auto-commit: false`, `ack-mode: manual_immediate`, `max-poll-records: 1`, `auto-offset-reset: earliest` —
   `FEPJ/FailedEventsProcessorApplication.java`, `FEP/src/main/resources/failed-events-processor.yaml`, `failed-events-processor-docker.yaml`, `logback-spring.xml` (FR-022, FR-009); `application.yaml` не создаётся (R23). `main` задаёт `spring.config.name=failed-events-processor`. Тайм-ауты S3 и интервалы повторов — только переменные `FAILED_EVENTS_S3_*`, `FAILED_EVENTS_RETRY_*`, `FAILED_EVENTS_MAX_POLL_INTERVAL_MS`; в файле конфигурации только ссылки на них
-- [ ] T041 [P] Dockerfile в два этапа (JDK 25 → JRE 25, слои Spring Boot, непривилегированный пользователь) по образцу `DCS/Dockerfile` — `FEP/Dockerfile` (FR-022)
-- [ ] T042 Домен: `FailedRecord`, `ArchiveKey`, порт `FailedEventArchive`, `ArchiveService` (ключ + JSON + метаданные), без Spring Kafka и SDK —
+- [X] T041 [P] Dockerfile в два этапа (JDK 25 → JRE 25, слои Spring Boot, непривилегированный пользователь) по образцу `DCS/Dockerfile` — `FEP/Dockerfile` (FR-022)
+- [X] T042 Домен: `FailedRecord`, `ArchiveKey`, порт `FailedEventArchive`, `ArchiveService` (ключ + JSON + метаданные), без Spring Kafka и SDK —
   `FEPJ/domain/{model,port,service}` (FR-007)
-- [ ] T043 [P] Тест адаптера S3: `PutObject` с `If-None-Match: *`, `412` → `DUPLICATE`, тайм-ауты `apiCallTimeout`/`apiCallAttemptTimeout` заданы, метаданные
+- [X] T043 [P] Тест адаптера S3: `PutObject` с `If-None-Match: *`, `412` → `DUPLICATE`, тайм-ауты `apiCallTimeout`/`apiCallAttemptTimeout` заданы, метаданные
   `x-amz-meta-*`, спан `s3.put-object` с тегом `bucket` — `FEPT/adapter/out/s3/S3FailedEventArchiveTest.java` (FR-008, FR-009, FR-011; R5, R6, R8)
-- [ ] T044 Адаптер S3: `S3FailedEventArchive`, `S3Config` (клиент с тайм-аутами, ключи из `FAILED_EVENTS_S3_*`, path-style) —
+- [X] T044 Адаптер S3: `S3FailedEventArchive`, `S3Config` (клиент с тайм-аутами, ключи из `FAILED_EVENTS_S3_*`, path-style) —
   `FEPJ/adapter/out/s3/S3FailedEventArchive.java`, `FEPJ/config/S3Config.java` (FR-007…FR-009, FR-011)
-- [ ] T045 [P] Тест слушателя и обработчика ошибок: смещение подтверждается только после записи; MinIO недоступен — повторы с `ContainerPausingBackOffHandler`,
+- [X] T045 [P] Тест слушателя и обработчика ошибок: смещение подтверждается только после записи; MinIO недоступен — повторы с `ContainerPausingBackOffHandler`,
   бесконечный `ExponentialBackOff` (интервалы — `FAILED_EVENTS_RETRY_*`); временная ошибка Schema Registry — повторы без `unreadable`; мусор/404 схемы — `unreadable` и смещение —
   `FEPT/adapter/in/kafka/FailedEventListenerTest.java`, `FEPT/config/KafkaConfigTest.java` (FR-009, FR-010; R6, R7)
-- [ ] T046 Слушатель и конфигурация: `FailedEventListener` (`@KafkaListener`, `FailedEvent`), `UnreadableRecorder`, `KafkaConfig` — `FEPJ/adapter/in/kafka/FailedEventListener.java`,
+- [X] T046 Слушатель и конфигурация: `FailedEventListener` (`@KafkaListener`, `FailedEvent`), `UnreadableRecorder`, `KafkaConfig` — `FEPJ/adapter/in/kafka/FailedEventListener.java`,
   `FEPJ/config/KafkaConfig.java`, `FEPJ/domain/service/UnreadableRecorder.java` (FR-009, FR-010, FR-011)
-- [ ] T047 [P] Метрики: `failed.events.archived{source_service,error_code,outcome=created|duplicate|unreadable}`, `failed.events.archive.errors{reason}`;
+- [X] T047 [P] Метрики: `failed.events.archived{source_service,error_code,outcome=created|duplicate|unreadable}`, `failed.events.archive.errors{reason}`;
   таймер наблюдения `s3.put-object` — `FEPJ/support/MetricsFacade.java`, `FEPT/support/MetricsFacadeTest.java` (FR-011, FR-019)
 - [ ] T048 [Mac] Скрипт стенда `make fep-quick-check` (по образцу `DCS/scripts/quick-check.sh`): невалидное событие в `events` с заданным `traceparent`, невалидное сообщение в `devices`,
   байты-мусор в `events` → три объекта в `failed-events` (`mc`), `traceId` в JSON, `base64(value)` равно отправленному — `FEP/scripts/quick-check.sh` (100755) (FR-007, FR-011, FR-023)

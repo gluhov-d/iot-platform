@@ -79,7 +79,7 @@ public class DeviceRegistryService implements ProcessDeviceInfoUseCase {
             return result;
         } catch (RuntimeException e) {
             FailureReason reason = FailureReason.of(e);
-            // Попытка; сообщение завершается ошибкой (failed) только при отправке в devices-dlt - KafkaConfig
+            // Попытка; сообщение завершается ошибкой (failed) только при отправке в failed-events - KafkaConfig
             metrics.processingError(reason);
             outcome = reason.label();
             throw e;

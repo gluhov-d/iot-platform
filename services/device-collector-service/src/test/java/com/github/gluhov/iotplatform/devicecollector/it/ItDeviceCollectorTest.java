@@ -3,6 +3,9 @@ package com.github.gluhov.iotplatform.devicecollector.it;
 import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
+import com.github.gluhov.iotplatform.events.avro.FailedEvent;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -123,8 +126,8 @@ class ItDeviceCollectorTest extends AbstractItTest {
 
     @Test
     @Order(5)
-    @DisplayName("4. Validation error: message moved to devices-dlt, the next message of the partition is processed")
-    void givenInvalidMessage_whenConsumed_thenDeadLetteredAndNextProcessed() throws Exception {
+    @DisplayName("4. Validation error: message goes to failed-events, the next message of the partition is processed")
+    void givenInvalidMessage_whenConsumed_thenPublishedAndNextProcessed() throws Exception {
         String id = deviceOnShard(0);
 
         RecordMetadata invalid = send("another-key", info(id, "evt-1", DeviceUpsertEventType.CREATED, T).build(), 0);
@@ -133,34 +136,43 @@ class ItDeviceCollectorTest extends AbstractItTest {
         awaitCommitted(next);
         assertThat(assertOnlyOnExpectedShard(id)).isZero();
         assertThat(onShard(0, "SELECT last_event_id FROM devices WHERE device_id = '" + id + "'")).isEqualTo("evt-2");
-        ConsumerRecord<String, byte[]> dead = deadLetter(invalid).orElseThrow();
-        assertThat(dead.partition()).isEqualTo(invalid.partition());
-        assertThat(header(dead, "kafka_dlt-original-topic")).isEqualTo(DEVICES);
-        assertThat(header(dead, "kafka_dlt-exception-cause-fqcn")).endsWith("InvalidDeviceInfoException");
+        FailedEvent failed = failedEvent(invalid).orElseThrow();
+        assertThat(failed.getSourceService()).isEqualTo("device-collector-service");
+        assertThat(failed.getSourceTopic()).isEqualTo(DEVICES);
+        assertThat(failed.getSourcePartition()).isEqualTo(invalid.partition());
+        assertThat(failed.getSourceOffset()).isEqualTo(invalid.offset());
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(failed.getErrorType()).isEqualTo(ErrorType.PERMANENT);
+        assertThat(failed.getAttempts()).isEqualTo(1);
+        assertThat(failed.getDescription()).contains("InvalidDeviceInfoException");
+        assertThat(failed.getDeviceId()).isEqualTo(id);
         try (var avro = new KafkaAvroDeserializer()) {
             avro.configure(Map.of("schema.registry.url", schemaRegistryUrl(), "specific.avro.reader", true), false);
-            DeviceInfo parked = (DeviceInfo) avro.deserialize(DLT, dead.value());
+            DeviceInfo parked = (DeviceInfo) avro.deserialize(DEVICES, bytesOf(failed.getValue()));
             assertThat(parked.getDeviceId()).isEqualTo(id);
         }
     }
 
     @Test
     @Order(6)
-    @DisplayName("Not Avro: moved to devices-dlt with the original bytes")
-    void givenUndeserializableMessage_whenConsumed_thenDeadLetteredAsIs() throws Exception {
+    @DisplayName("Not Avro: published to failed-events with the original bytes")
+    void givenUndeserializableMessage_whenConsumed_thenPublishedAsIs() throws Exception {
         byte[] garbage = "not-an-avro-message".getBytes(StandardCharsets.UTF_8);
 
         RecordMetadata poison = sendRaw("garbage", garbage, 1);
 
         awaitCommitted(poison);
-        ConsumerRecord<String, byte[]> dead = deadLetter(poison).orElseThrow();
-        assertThat(dead.value()).isEqualTo(garbage);
+        FailedEvent failed = failedEvent(poison).orElseThrow();
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.DESERIALIZATION_FAILED);
+        assertThat(failed.getErrorType()).isEqualTo(ErrorType.PERMANENT);
+        assertThat(bytesOf(failed.getValue())).isEqualTo(garbage);
+        assertThat(bytesOf(failed.getKey())).isEqualTo("garbage".getBytes(StandardCharsets.UTF_8));
     }
 
     @Test
     @Order(7)
-    @DisplayName("Valid Avro of another type (DeviceEvent) with a registered schema: moved to devices-dlt with the original bytes, the next message is processed")
-    void givenAnotherAvroType_whenConsumed_thenDeadLetteredAsIsAndNextProcessed() throws Exception {
+    @DisplayName("Valid Avro of another type (DeviceEvent) with a registered schema: published to failed-events with the original bytes, the next message is processed")
+    void givenAnotherAvroType_whenConsumed_thenPublishedAsIsAndNextProcessed() throws Exception {
         String id = deviceOnShard(0);
         byte[] foreign = avroBytes("events", DeviceEvent.newBuilder()
                 .setEventId("evt-foreign").setDeviceId(id).setTimestampMs(T.toEpochMilli()).setEventType("TEMPERATURE").build());
@@ -169,9 +181,9 @@ class ItDeviceCollectorTest extends AbstractItTest {
         RecordMetadata next = send(id, info(id, "evt-after-foreign", DeviceUpsertEventType.CREATED, T).build(), 0);
 
         awaitCommitted(next);
-        ConsumerRecord<String, byte[]> dead = deadLetter(alien).orElseThrow();
-        assertThat(dead.value()).as("original bytes, not a re-serialized record").isEqualTo(foreign);
-        assertThat(header(dead, "kafka_dlt-exception-fqcn")).endsWith("DeserializationException");
+        FailedEvent failed = failedEvent(alien).orElseThrow();
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.DESERIALIZATION_FAILED);
+        assertThat(bytesOf(failed.getValue())).as("original bytes, not a re-serialized record").isEqualTo(foreign);
         assertThat(onShard(0, "SELECT last_event_id FROM devices WHERE device_id = '" + id + "'")).isEqualTo("evt-after-foreign");
     }
 
@@ -198,7 +210,7 @@ class ItDeviceCollectorTest extends AbstractItTest {
 
     @Test
     @Order(9)
-    @DisplayName("5. One shard down: its message fails and goes to devices-dlt after retries, the other shard keeps working")
+    @DisplayName("5. One shard down: its message fails and goes to failed-events after retries, the other shard keeps working")
     void givenShardDown_whenConsumed_thenOtherShardProcessed() throws Exception {
         String onDownShard = deviceOnShard(1);
         String onLiveShard = deviceOnShard(0);
@@ -219,10 +231,12 @@ class ItDeviceCollectorTest extends AbstractItTest {
                     .isEqualTo("1");
             awaitCommitted(behind);
             assertThat(onShard(0, "SELECT count(*) FROM devices WHERE device_id = '" + onLiveShard + "'")).isEqualTo("1");
-            ConsumerRecord<String, byte[]> dead = deadLetter(failed).orElseThrow();
-            assertThat(header(dead, "kafka_dlt-exception-cause-fqcn")).endsWith("DeviceNotStoredException");
-            assertThat(header(dead, "kafka_dlt-exception-stacktrace")).contains("(shard shard_1, connection)");
-            // Ровно max-attempts попыток, затем devices-dlt; сообщение получено и завершилось ошибкой один раз
+            FailedEvent event = failedEvent(failed).orElseThrow();
+            assertThat(event.getErrorCode()).isEqualTo(ErrorCode.STORAGE_UNAVAILABLE);
+            assertThat(event.getErrorType()).isEqualTo(ErrorType.TRANSIENT);
+            assertThat(event.getDeviceId()).isEqualTo(onDownShard);
+            // Ровно max-attempts попыток, затем failed-events; сообщение получено и завершилось ошибкой один раз
+            assertThat(event.getAttempts()).isEqualTo(3);
             assertThat(metric("devices_processing_errors_total", "reason=\"storage\"") - errorsBefore).isEqualTo(3);
             assertThat(metric("devices_messages_failed_total", "reason=\"storage\"") - failedBefore).isEqualTo(1);
             assertThat(metric("devices_messages_received_total", "") - receivedBefore).isEqualTo(3);
@@ -259,12 +273,12 @@ class ItDeviceCollectorTest extends AbstractItTest {
                 "devices_messages_processed_total",
                 "devices_messages_duplicate_total",
                 "devices_messages_failed_total",
-                "devices_dlt_published_total",
+                "failed_events_published_total",
                 "devices_db_write_seconds_bucket",
                 "devices_processing_seconds_bucket",
                 "devices_shard_route_fail_total");
         assertThat(scrape.body()).containsPattern("devices_messages_duplicate_total\\{[^}]*\\} [1-9]");
-        assertThat(scrape.body()).containsPattern("devices_dlt_published_total\\{[^}]*reason=\"invalid\"[^}]*\\} [1-9]");
+        assertThat(scrape.body()).containsPattern("failed_events_published_total\\{[^}]*error_code=\"VALIDATION_FAILED\"[^}]*\\} [1-9]");
         assertThat(get("/actuator/health").body()).contains("\"status\":\"UP\"");
         // Все отправленные сообщения обработаны: каждое получено один раз и имеет ровно один исход
         double received = metric("devices_messages_received_total", "");

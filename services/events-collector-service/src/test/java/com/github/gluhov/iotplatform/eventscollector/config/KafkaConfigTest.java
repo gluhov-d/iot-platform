@@ -2,9 +2,14 @@ package com.github.gluhov.iotplatform.eventscollector.config;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.FailedEvent;
+import com.github.gluhov.iotplatform.eventscollector.adapter.out.kafka.FailedEventRecoverer;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.EventPersistenceException;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.InvalidEventException;
+import com.github.gluhov.iotplatform.eventscollector.domain.port.out.CollectorMetrics;
 import com.github.gluhov.iotplatform.eventscollector.support.LogCapture;
+import io.micrometer.tracing.Tracer;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -15,8 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.ListenerExecutionFailedException;
@@ -43,16 +47,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Политика ошибок приёма: что уходит в events-dlt сразу, что после повторов, что не уходит никогда,
- * и что offset подтверждается только после записи в events-dlt. Обработчик ошибок - тот же бин, что в сервисе,
- * Kafka заменена моками: записи в events-dlt видны через KafkaTemplate, commit и seek - через Consumer.
+ * Политика ошибок приёма: что уходит в failed-events сразу, что после повторов, что не уходит никогда,
+ * и что offset подтверждается только после записи в failed-events. Обработчик ошибок - тот же бин, что в сервисе,
+ * Kafka заменена моками: записи в failed-events видны через KafkaOperations, commit и seek - через Consumer.
  */
 class KafkaConfigTest {
-    private static final String DLT = "events-dlt";
+    private static final String FAILED_EVENTS = "failed-events";
     private static final TopicPartition PARTITION = new TopicPartition("events", 2);
 
     @SuppressWarnings("unchecked")
-    private final KafkaTemplate<Object, Object> template = mock(KafkaTemplate.class);
+    private final KafkaOperations<String, Object> template = mock(KafkaOperations.class);
     @SuppressWarnings("unchecked")
     private final Consumer<Object, Object> consumer = mock(Consumer.class);
     private final MessageListenerContainer container = mock(MessageListenerContainer.class);
@@ -60,42 +64,42 @@ class KafkaConfigTest {
     private DefaultErrorHandler handler;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
-        ProducerFactory<Object, Object> producerFactory = mock(ProducerFactory.class);
-        when(producerFactory.copyWithConfigurationOverride(anyMap())).thenReturn(mock(ProducerFactory.class));
         when(template.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.completedFuture(null));
         ContainerProperties properties = new ContainerProperties("events");
         properties.setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         when(container.getContainerProperties()).thenReturn(properties);
-        handler = new KafkaConfig().kafkaErrorHandler(producerFactory, template,
-                new KafkaProperties("events", "devices", DLT, Duration.ofSeconds(20)),
+        FailedEventRecoverer recoverer = new FailedEventRecoverer(template, mock(Tracer.class), mock(CollectorMetrics.class),
+                FAILED_EVENTS, "events-collector-service", Duration.ofSeconds(15));
+        handler = new KafkaConfig().kafkaErrorHandler(recoverer,
+                new KafkaProperties("events", "devices", FAILED_EVENTS, Duration.ofSeconds(20)),
                 new ProcessingProperties(3, Duration.ofMillis(1), 2.0));
     }
 
     @Test
-    @DisplayName("Invalid event: moved to events-dlt at once (same partition), then its offset is committed")
-    void givenInvalidEvent_whenHandled_thenDeadLetteredWithoutRetries() {
+    @DisplayName("Invalid event: moved to failed-events at once (same partition), then its offset is committed")
+    void givenInvalidEvent_whenHandled_thenFailedEventWithoutRetries() {
         InvalidEventException invalid = new InvalidEventException("eventId is blank");
         try (LogCapture logs = LogCapture.of(KafkaConfig.class)) {
             handle(new ListenerExecutionFailedException("listener failed", invalid));
 
-            ILoggingEvent event = logs.single(Level.ERROR, "Message moved to events-dlt (invalid): " + invalid);
-            assertThat(event.getMDCPropertyMap()).containsEntry("status", "REJECTED").containsEntry("reason", "invalid")
+            ILoggingEvent event = logs.single(Level.ERROR, "Message moved to failed-events (invalid): " + invalid);
+            assertThat(event.getMDCPropertyMap()).containsEntry("status", "FAILED_EVENT").containsEntry("reason", "invalid")
                     .containsEntry("offset", "10").containsEntry("partition", "2")
                     .containsEntry("errorClass", InvalidEventException.class.getName());
         }
-        ProducerRecord<Object, Object> dead = sentToDlt();
-        assertThat(dead.partition()).isEqualTo(2);
-        assertThat(dead.key()).isEqualTo("dev-1");
-        assertThat(dead.value()).isEqualTo(record.value());
+        ProducerRecord<String, Object> failed = sentToFailedEvents();
+        assertThat(failed.key()).isEqualTo("events-2-10");
+        FailedEvent event = (FailedEvent) failed.value();
+        assertThat(event.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(event.getDeviceId()).isEqualTo("dev-1");
         verify(consumer).commitSync(Map.of(PARTITION, new OffsetAndMetadata(11L)), null);
         verify(consumer, never()).seek(any(), any(Long.class));
     }
 
     @Test
-    @DisplayName("ClickHouse error: retried (seek back) until max-attempts, then events-dlt and commit")
-    void givenStorageFailure_whenHandled_thenRetriedThenDeadLettered() {
+    @DisplayName("ClickHouse error: retried (seek back) until max-attempts, then failed-events and commit")
+    void givenStorageFailure_whenHandled_thenRetriedThenFailedEvent() {
         Exception failure = new ListenerExecutionFailedException("listener failed",
                 new EventPersistenceException("insert device_events failed", new IllegalStateException("clickhouse is down")));
 
@@ -107,17 +111,18 @@ class KafkaConfigTest {
 
         try (LogCapture logs = LogCapture.of(KafkaConfig.class)) {
             handle(failure);
-            ILoggingEvent event = logs.single(Level.ERROR, "Message moved to events-dlt (storage): java.lang.IllegalStateException: clickhouse is down");
+            ILoggingEvent event = logs.single(Level.ERROR, "Message moved to failed-events (storage): java.lang.IllegalStateException: clickhouse is down");
             assertThat(event.getMDCPropertyMap()).containsEntry("reason", "storage");
         }
-        assertThat(sentToDlt().topic()).isEqualTo(DLT);
+        FailedEvent event = (FailedEvent) sentToFailedEvents().value();
+        assertThat(event.getErrorCode()).isEqualTo(ErrorCode.STORAGE_UNAVAILABLE);
         verify(consumer).commitSync(Map.of(PARTITION, new OffsetAndMetadata(11L)), null);
     }
 
     @Test
-    @DisplayName("events-dlt unavailable: offset is not committed, the message will be processed again")
-    void givenDeadLetterPublishFailure_whenHandled_thenNotCommitted() {
-        when(template.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.failedFuture(new IllegalStateException("dlt down")));
+    @DisplayName("failed-events unavailable: offset is not committed, the message will be processed again")
+    void givenFailedEventsPublishFailure_whenHandled_thenNotCommitted() {
+        when(template.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.failedFuture(new IllegalStateException("failed-events down")));
 
         // Восстановление не удалось: обработчик возвращает consumer на offset сообщения (исключение - деталь Spring)
         catchThrowable(() -> handle(new ListenerExecutionFailedException("listener failed",
@@ -127,20 +132,21 @@ class KafkaConfigTest {
     }
 
     @Test
-    @DisplayName("Not deserializable: moved to events-dlt at once, no retries, offset committed")
-    void givenPoisonPill_whenHandled_thenDeadLetteredWithoutRetries() {
-        // Исходные байты в events-dlt (отдельный шаблон byte[]) проверяет интеграционный тест на настоящей Kafka
+    @DisplayName("Not deserializable: moved to failed-events at once, no retries, offset committed")
+    void givenPoisonPill_whenHandled_thenFailedEventWithoutRetries() {
+        // Исходные байты в failed-events проверяет FailedEventRecovererTest и интеграционный тест на настоящей Kafka
         handle(new DeserializationException("not avro", new byte[]{1, 2, 3}, false,
                 new SerializationException("Unknown magic byte!")));
 
-        assertThat(sentToDlt().partition()).isEqualTo(2);
+        FailedEvent event = (FailedEvent) sentToFailedEvents().value();
+        assertThat(event.getErrorCode()).isEqualTo(ErrorCode.DESERIALIZATION_FAILED);
         verify(consumer, never()).seek(any(), any(Long.class));
         verify(consumer).commitSync(Map.of(PARTITION, new OffsetAndMetadata(11L)), null);
     }
 
     @Test
-    @DisplayName("Schema Registry unavailable: retried without limit, never a dead letter")
-    void givenTransientDeserializationFailure_whenHandled_thenRetriedWithoutDeadLetter() {
+    @DisplayName("Schema Registry unavailable: retried without limit, never a failed event")
+    void givenTransientDeserializationFailure_whenHandled_thenRetriedWithoutFailedEvent() {
         Exception failure = new DeserializationException("schema registry timeout", new byte[]{0, 0, 0, 0, 1}, false,
                 new SerializationException("Error retrieving Avro schema", new SocketTimeoutException("Read timed out")));
 
@@ -164,7 +170,7 @@ class KafkaConfigTest {
     }
 
     @Test
-    @DisplayName("One attempt in settings: no retries, straight to events-dlt")
+    @DisplayName("One attempt in settings: no retries, straight to failed-events")
     void givenOneAttempt_whenBackOff_thenStopAtOnce() {
         BackOffExecution execution = KafkaConfig.storageBackOff(
                 new ProcessingProperties(1, Duration.ofSeconds(1), 2.0)).start();
@@ -209,10 +215,10 @@ class KafkaConfigTest {
     }
 
     @SuppressWarnings("unchecked")
-    private ProducerRecord<Object, Object> sentToDlt() {
-        ArgumentCaptor<ProducerRecord<Object, Object>> sent = ArgumentCaptor.forClass(ProducerRecord.class);
+    private ProducerRecord<String, Object> sentToFailedEvents() {
+        ArgumentCaptor<ProducerRecord<String, Object>> sent = ArgumentCaptor.forClass(ProducerRecord.class);
         verify(template).send(sent.capture());
-        assertThat(sent.getValue().topic()).isEqualTo(DLT);
+        assertThat(sent.getValue().topic()).isEqualTo(FAILED_EVENTS);
         return sent.getValue();
     }
 }
