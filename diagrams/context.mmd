@@ -10,7 +10,7 @@ flowchart LR
     device -- "Телеметрия и команды · MQTT/HTTP" --> iot_platform
     engineer -- "Просмотр метрик и логов · HTTP (dashboards)" --> grafana
     iot_platform -- "Запрос токена / проверка JWT · OIDC" --> keycloak
-    iot_platform -- "Экспорт метрик и логов · Prometheus, Loki" --> grafana
+    iot_platform -- "Экспорт метрик и логов · Mimir, Loki" --> grafana
 
     classDef person fill:#08427b,stroke:#052e56,color:#fff
     classDef system fill:#1168bd,stroke:#0b4884,color:#fff

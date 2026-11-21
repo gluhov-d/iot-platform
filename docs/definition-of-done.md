@@ -10,6 +10,7 @@
 - [Приём событий (events-collector-service)](#приём-событий-events-collector-service)
 - [Реестр устройств (device-collector-service, avros)](#реестр-устройств-device-collector-service-avros)
 - [Управление устройствами (device-service)](#управление-устройствами-device-service)
+- [Обработка ошибок и архив (failed-events-processor, MinIO)](#обработка-ошибок-и-архив-failed-events-processor-minio)
 
 ---
 
@@ -182,7 +183,7 @@ device-collector-service, проект avros и изменения в приём
 
 ## Изменения в приёме событий
 
-Пункты секции «Приём событий» выше уже исправлены под эти изменения: avros, `events-dlt`, отпечаток.
+Пункты секции «Приём событий» выше исправляются вместе с кодом (задача T074, P8): avros, `events-dlt`, отпечаток.
 
 
 - [ ] `DeviceEvent` расширен блоком данных устройства: минимум имя, операционная система и её версия, версия
@@ -364,3 +365,27 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
   дашборд «IoT Platform — device-service» (`infrastructure/config/grafana/dashboards/device-service.json`), метрики
   `device_commands_*`, `device_cache_*` без `deviceId` в метках («Наблюдаемость», README раздел 16).
 - Чтение: `GET` — из Redis и реплик через `devices_read` (ADR-0004; «Данные в PostgreSQL» и «База данных» — раздел 20.3).
+
+---
+
+# Обработка ошибок и архив (failed-events-processor, MinIO)
+
+Критерии приёмки этой части — в [specs/002-failed-events/spec.md](../specs/002-failed-events/spec.md): разделы «Requirements»
+(у каждого требования — проверка), «Success Criteria» (SC-001…SC-005) и «Критерии приёмки (Definition of Done)». Дизайн готовится
+через Spec Kit, и критерии входят в spec.md; здесь они не повторяются, чтобы не было двух версий.
+
+Что эта часть меняет в уже сделанном (пункты секций выше правятся на месте вместе с кодом, задача T074):
+
+- avros 1.4.0: запись `FailedEvent`, subject `failed-events-value`; сервисы-потребители подключают `avrosVersion = "1.4.0"` («Проект avros»).
+- Темы `events-dlt` и `devices-dlt`, переменные `KAFKA_*_DLT_TOPIC`, `DEVICES_DLT_*` и subjects `*-dlt-value` удалены, вместо них тема
+  `failed-events` («Контракты и Kafka», «Прием событий», «device-collector-service»); исход «в `devices-dlt`» в таблице обработки
+  устройств (FR-015, строка 11) — `FailedEvent` с кодом `VALIDATION_FAILED`.
+- События и сообщения, не принятые сборщиками, публикуются синхронно, смещение — после публикации; статус лога `FAILED_EVENT`
+  вместо `REJECTED` и `DLT`; метрика `devices_dlt_published_total` заменена `failed_events_published_total` («Наблюдаемость»).
+- MinIO — в базовом стенде, а не в профиле `platform`; бакеты `failed-events`, `mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups`
+  вместо `iot-dlt`, `iot-attachments`; у каждого компонента своя учётка («Запуск»).
+- Prometheus удалён: метрики принимает Mimir, Grafana читает из него с прежним `uid: prometheus`; Loki и Tempo хранят данные в MinIO
+  («Наблюдаемость»).
+- Копии: шарды PostgreSQL и ClickHouse уходят в `backups/` по расписанию, восстановление из MinIO — `make shard-restore FROM=minio`,
+  `make clickhouse-restore` («База данных», бэкап).
+- `make shard-backup` остаётся для локальной копии: тот же скрипт `shard-backup.sh` вызывает и `make shard-backup` (локальная копия), и backup-runner (копия в MinIO); второй реализации нет (ADR-0017).

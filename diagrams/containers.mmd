@@ -1,6 +1,7 @@
 %% C4 Level 2 — контейнеры IoT-платформы. Маршруты: T — телеметрия и реестр устройств, A — управление устройствами
-%% (запись через device-service), Q — чтение устройства (Cache-Aside), C — команды устройствам, E — ошибки,
-%% B — сборка и схема БД, M — метрики, L — логи, R — трейсы. Сплошные линии — данные и команды, пунктир — остальное.
+%% (запись через device-service), Q — чтение устройства (Cache-Aside), C — команды устройствам, E — ошибки (failed-events),
+%% S — объектное хранилище MinIO (S3 API), B — сборка, схема БД, бакеты и копии, M — метрики, L — логи, R — трейсы.
+%% Сплошные линии — данные и команды, пунктир — остальное.
 flowchart LR
     engineer(["<b>Инженер</b><br/>Регистрирует устройства, отправляет<br/>команды, смотрит телеметрию"])
     device["<b>IoT-устройство</b><br/>Датчик/контроллер: шлёт телеметрию,<br/>получает команды"]
@@ -12,29 +13,28 @@ flowchart LR
             command_service["<b>Command Service</b><br/><i>Spring Boot</i><br/>Жизненный цикл команд: NEW → SENT →<br/>DONE/FAILED"]
             event_service["<b>Event Service</b><br/><i>Spring Boot</i><br/>Чтение телеметрии и событий для API"]
             device_gateway["<b>Device Gateway</b><br/><i>Spring Boot, MQTT/HTTP adapter</i><br/>Протокольный шлюз устройств: принимает<br/>MQTT/HTTP, проверяет устройство, публикует<br/>в Kafka; доставляет команды устройству"]
-            events_collector["<b>events-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>events -> ClickHouse (device_events с данными<br/>устройства + outbox); DeviceInfo в devices<br/>(operation = null) - только новое устройство<br/>или изменённые данные"]
-            device_collector["<b>device-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>Единственный писатель реестра устройств:<br/>события роутера и команды CREATE / UPDATE /<br/>DELETE, идемпотентно; после COMMIT<br/>сбрасывает кэш устройства"]
-            failed_processor["<b>Failed Events Processor</b><br/><i>Spring Boot, Kafka consumer</i><br/>Разбор DLT: сохраняет сбойные сообщения,<br/>повторяет обработку"]
+            events_collector["<b>events-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>events -> ClickHouse (device_events с данными<br/>устройства + outbox); DeviceInfo в devices<br/>(operation = null) - только новое устройство<br/>или изменённые данные. После N попыток записи —<br/>FailedEvent в failed-events"]
+            device_collector["<b>device-collector-service</b><br/><i>Spring Boot 4, Kafka consumer</i><br/>Единственный писатель реестра устройств:<br/>события роутера и команды CREATE / UPDATE /<br/>DELETE, идемпотентно; после COMMIT<br/>сбрасывает кэш устройства. Невалидное или<br/>недоступный шард — FailedEvent в failed-events"]
+            failed_processor["<b>failed-events-processor</b><br/><i>Spring Boot 4, Kafka consumer, S3 API</i><br/>failed-events → один JSON-объект на сообщение в MinIO.<br/>Смещение — после записи. Повторная доставка<br/>не создаёт второй объект"]
         end
         subgraph kafka["Kafka · Message Broker"]
             topic_events[/"<b>events</b><br/><i>Kafka topic, delete</i><br/>Сырые события устройств (Avro<br/>DeviceEvent), ключ deviceId"/]
             topic_device[/"<b>devices</b><br/><i>Kafka topic, delete, хранение 30 суток</i><br/>DeviceInfo, ключ deviceId: события роутера<br/>(operation = null) и команды device-service<br/>(operation CREATE / UPDATE / DELETE).<br/>Команда несёт все поля администратора.<br/>Хранение вместо сжатия: порядок «команда →<br/>снимок» не теряется (ADR-0011)"/]
-            topic_events_dlt[/"<b>events-dlt</b><br/><i>Kafka topic, delete</i><br/>Не Avro / невалидные события и не<br/>записанные в ClickHouse за N попыток"/]
-            topic_devices_dlt[/"<b>devices-dlt</b><br/><i>Kafka topic, delete</i><br/>Невалидные DeviceInfo и команды, не<br/>записанные в PostgreSQL после повторов"/]
-            topic_dlt[/"<b>iot.dlt</b><br/><i>Kafka topic</i><br/>Отклонённые шлюзом сообщения устройств<br/>(шлюз пока не реализован)"/]
+            topic_failed[/"<b>failed-events</b><br/><i>Kafka topic, delete, 3 раздела, хранение 14 суток</i><br/>FailedEvent (Avro): исходное сообщение байт в байт,<br/>ключ sourceTopic-sourcePartition-sourceOffset"/]
         end
         schema_registry["<b>Schema Registry</b><br/><i>Confluent</i><br/>Avro-схемы тем, FULL_TRANSITIVE.<br/>Схемы регистрирует только schema-register:<br/>у продюсеров auto.register.schemas=false"]
-        avros["<b>avros</b><br/><i>Проект монорепозитория; одноразовые задачи Compose</i><br/>Все Avro-схемы платформы, 1.3.0: DeviceInfo.operation.<br/>avros-publish: проверка FULL с Nexus и Schema<br/>Registry, публикация. schema-register: регистрация"]
+        avros["<b>avros</b><br/><i>Проект монорепозитория; одноразовые задачи Compose</i><br/>Все Avro-схемы платформы, 1.4.0: DeviceInfo.operation,<br/>FailedEvent. avros-publish: проверка FULL с Nexus и Schema<br/>Registry, публикация. schema-register: регистрация"]
         nexus["<b>Nexus</b><br/><i>Sonatype Nexus 3, Maven</i><br/>avros и device-service-client: выпущенная<br/>версия не перезаписывается, потребители<br/>подключают явную версию"]
-        startup["<b>Порядок старта (Docker Compose)</b><br/>Nexus → avros-publish → schema-register →<br/>db-migrator → Proxy; Redis + Sentinel, Keycloak<br/>(импорт realm) → сервисы. Каждый шаг ждёт<br/>успешного завершения предыдущего"]
+        startup["<b>Порядок старта (Docker Compose)</b><br/>Nexus → avros-publish → schema-register →<br/>db-migrator → Proxy; MinIO → minio-init;<br/>Redis + Sentinel, Keycloak (импорт realm) → сервисы.<br/>Каждый шаг ждёт успешного завершения предыдущего"]
         keycloak["<b>Keycloak</b><br/><i>Keycloak 26, realm iot-platform</i><br/>Realm из репозитория импортируется при старте:<br/>клиент device-service (роли devices.read / write),<br/>клиенты-потребители с сервисной учётной записью"]
+        minio_init["<b>minio-init</b><br/><i>Одноразовая задача Compose, образ MinIO, /bin/sh</i><br/>Бакеты, учётки, политики и ILM при запуске стенда"]
+        backup_runner["<b>backup-runner</b><br/><i>busybox crond, расписание BACKUP_SCHEDULE</i><br/>Копии PostgreSQL (pg_dump с реплик) и ClickHouse<br/>(BACKUP) в бакет backups, по префиксам"]
         subgraph registry["Реестр устройств"]
             proxy["<b>ShardingSphere-Proxy</b><br/><i>Apache ShardingSphere 5.5.3, PostgreSQL protocol</i><br/>Маршрут #124;hashCode(device_id)#124; % 2. Логические базы:<br/>devices — основные узлы (запись, только DCS),<br/>devices_read — только реплики (чтение device-service)"]
             shard0[("<b>postgres-shard-0</b><br/><i>PostgreSQL 18, primary, база shard_0</i><br/>devices, processed_device_events — часть<br/>устройств")]
             shard1[("<b>postgres-shard-1</b><br/><i>PostgreSQL 18, primary, база shard_1</i><br/>devices, processed_device_events —<br/>остальные устройства")]
             replica0[("<b>postgres-shard-0-replica</b><br/><i>PostgreSQL 18, hot standby</i><br/>Только чтение: источник devices_read,<br/>роль device_reader")]
             replica1[("<b>postgres-shard-1-replica</b><br/><i>PostgreSQL 18, hot standby</i><br/>Только чтение: источник devices_read,<br/>роль device_reader")]
-            backups[("<b>backups/</b><br/><i>pg_dump, каталог на хосте</i><br/>Копия каждого шарда, manifest, SHA-256")]
             db_migrator["<b>db-migrator</b><br/><i>Java 25, Flyway 12.11</i><br/>Одноразовая задача: миграции (IF NOT EXISTS)<br/>напрямую на primary каждого шарда,<br/>сверка версий схемы"]
         end
         pg[("<b>PostgreSQL</b><br/><i>Реляционная БД</i><br/>device_commands; БД Camunda")]
@@ -43,16 +43,16 @@ flowchart LR
             redis[("<b>redis</b> (master) + <b>redis-replica</b><br/><i>Redis 8</i><br/>outbox:lease, devices:published, devices:fingerprint;<br/>кэш device:cache:v1:{deviceId} — данные и version (TTL кэша);<br/>device:floor:v1:{deviceId} — минимальная версия для<br/>записи, свой срок DEVICE_CACHE_FLOOR_TTL")]
         end
         clickhouse[("<b>ClickHouse</b><br/><i>Колоночная БД</i><br/>iot_platform: device_events, device_outbox<br/>(ReplacingMergeTree),<br/>device_publication_audit (MergeTree)")]
-        minio[("<b>MinIO</b><br/><i>Object Storage</i><br/>Бакеты iot-dlt, iot-attachments")]
+        minio[("<b>MinIO</b><br/><i>Object Storage, одна нода</i><br/>Бакеты failed-events, mimir-blocks, loki-chunks,<br/>tempo-traces, backups (префиксы postgres/, clickhouse/)")]
         camunda["<b>Camunda</b><br/><i>BPM Engine</i><br/>Процесс выполнения команды: отправка,<br/>ожидание подтверждения, таймаут"]
         subgraph obs["Наблюдаемость"]
-            alloy["<b>Alloy</b><br/><i>Grafana Alloy</i><br/>Агент: читает логи контейнеров проекта<br/>через Docker API, принимает OTLP-трейсы,<br/>собирает метрики сервисов платформы"]
-            loki[("<b>Loki</b><br/><i>Log storage</i><br/>Логи JSON с traceId; метки service, container")]
-            tempo[("<b>Tempo</b><br/><i>Trace storage</i><br/>Трейсы")]
-            prometheus[("<b>Prometheus</b><br/><i>TSDB, pull + remote write</i><br/>Метрики сервисов (от Alloy) и экспортёров")]
-            pg_exporter["<b>postgres-exporter</b><br/><i>Prometheus exporter</i><br/>Метрики PostgreSQL платформы, шардов и<br/>реплик, отставание реплик"]
-            kafka_exporter["<b>kafka-exporter</b><br/><i>Prometheus exporter</i><br/>Метрики Kafka на :9308"]
-            grafana["<b>Grafana</b><br/><i>Dashboards</i><br/>Панели events-collector, device-collector,<br/>device-service, PostgreSQL"]
+            alloy["<b>Alloy</b><br/><i>Grafana Alloy</i><br/>Агент: читает логи контейнеров проекта<br/>через Docker API, принимает OTLP-трейсы,<br/>скрейпит метрики сервисов и экспортёров,<br/>remote write в Mimir"]
+            mimir[("<b>Mimir</b><br/><i>Grafana Mimir 3.2.6, монолит</i><br/>Метрики (remote write от Alloy), blocks и ruler в MinIO")]
+            loki[("<b>Loki</b><br/><i>Log storage</i><br/>Логи JSON с traceId; chunks и индекс в MinIO,<br/>метки service, container")]
+            tempo[("<b>Tempo</b><br/><i>Trace storage</i><br/>Трейсы; блоки в MinIO")]
+            pg_exporter["<b>postgres-exporter</b><br/><i>Экспортёр метрик</i><br/>Метрики PostgreSQL платформы, шардов и<br/>реплик, отставание реплик"]
+            kafka_exporter["<b>kafka-exporter</b><br/><i>Экспортёр метрик</i><br/>Метрики Kafka на :9308"]
+            grafana["<b>Grafana</b><br/><i>Dashboards</i><br/>Панели events-collector, device-collector,<br/>device-service, failed-events-processor, MinIO, PostgreSQL"]
         end
     end
     docker["<b>Docker Engine</b><br/>Логи контейнеров, метки Compose-проекта"]
@@ -79,6 +79,7 @@ flowchart LR
     events_collector -- "Схемы Avro по ID, без авторегистрации · HTTP" --> schema_registry
     device_collector -- "Схемы Avro по ID · HTTP" --> schema_registry
     device_service -- "Схемы Avro по ID, без авторегистрации · HTTP" --> schema_registry
+    failed_processor -- "Схемы Avro по ID, без авторегистрации · HTTP" --> schema_registry
     event_service -- "Выборки телеметрии · HTTP/SQL" --> clickhouse
     %% A: управление устройствами (запись через Kafka)
     orchestrator -- "A1. Сервисный токен · OAuth2 client credentials" --> keycloak
@@ -94,19 +95,34 @@ flowchart LR
     proxy -- "Q4. devices_read: маршрут по device_id · JDBC" --> replica1
     apps -. "Адрес текущего master · Sentinel :26379" .-> sentinel
     sentinel -. "Наблюдение, failover" .-> redis
-    %% B: сборка и схема БД
-    events_collector -. "B1. Сборка: avros 1.3.0, явная версия · Maven" .-> nexus
-    device_collector -. "B1. Сборка: avros 1.3.0, явная версия · Maven" .-> nexus
-    device_service -. "B1. Сборка: avros 1.3.0; B3. публикация<br/>device-service-client (DTO + HTTP Service Client<br/>из OpenAPI) · Maven" .-> nexus
+    %% B: сборка, схема БД, бакеты и копии
+    events_collector -. "B1. Сборка: avros 1.4.0, явная версия · Maven" .-> nexus
+    device_collector -. "B1. Сборка: avros 1.4.0, явная версия · Maven" .-> nexus
+    failed_processor -. "B1. Сборка: avros 1.4.0, явная версия · Maven" .-> nexus
+    device_service -. "B1. Сборка: avros 1.4.0; B3. публикация<br/>device-service-client (DTO + HTTP Service Client<br/>из OpenAPI) · Maven" .-> nexus
     orchestrator -. "B4. Подключает device-service-client<br/>явной версии · Maven" .-> nexus
     db_migrator -. "B2. Flyway migrate · JDBC" .-> shard0
     db_migrator -. "B2. Flyway migrate · JDBC" .-> shard1
     avros -. "B0. Проверка FULL с зарегистрированными<br/>версиями; после публикации - регистрация · HTTP" .-> schema_registry
     avros -. "B0. Публикация артефакта avros (версия<br/>не перезаписывается) · Maven" .-> nexus
+    minio_init -. "B5. Бакеты, учётки, политики, ILM · S3 API (mc)" .-> minio
+    backup_runner -. "B6. pg_dump с реплик, manifest · JDBC" .-> replica0
+    backup_runner -. "B6. pg_dump с реплик, manifest · JDBC" .-> replica1
+    backup_runner -. "B7. BACKUP DATABASE … TO S3, ключи из<br/>named collection · HTTP" .-> clickhouse
+    backup_runner -. "B8. позиции группы · Kafka protocol" .-> kafka
     shard0 -. "Потоковая репликация WAL (асинхронная)" .-> replica0
     shard1 -. "Потоковая репликация WAL (асинхронная)" .-> replica1
-    shard0 -. "Резервная копия (pg_dump)" .-> backups
-    shard1 -. "Резервная копия (pg_dump)" .-> backups
+    %% E: ошибки — failed-events
+    events_collector -. "E1. N попыток исчерпаны: FailedEvent, ack после публикации · Kafka" .-> topic_failed
+    device_collector -. "E2. Невалидное сообщение или команда / шард недоступен<br/>после N попыток: FailedEvent · Kafka" .-> topic_failed
+    failed_processor -. "E3. Чтение failed-events, смещение после записи · Kafka" .-> topic_failed
+    %% S: объектное хранилище MinIO
+    failed_processor -. "S1. PutObject If-None-Match: *, метаданные · S3 API" .-> minio
+    backup_runner -. "S2. Копии PostgreSQL в backups/postgres/ · S3 API (mc)" .-> minio
+    clickhouse -. "S3. Выгрузка копии в backups/clickhouse/ · S3 API" .-> minio
+    mimir -. "S4. Blocks и ruler · S3 API" .-> minio
+    loki -. "S5. Chunks и индекс · S3 API" .-> minio
+    tempo -. "S6. Блоки трейсов · S3 API" .-> minio
     %% C: выполнение команд
     orchestrator -- "C1. Запуск процесса команды · REST" --> camunda
     camunda -- "C2. Шаг «отправить команду» · External Task /<br/>REST" --> command_service
@@ -116,34 +132,24 @@ flowchart LR
     device -- "C6. Подтверждение (ack) → events · MQTT/HTTP" --> device_gateway
     command_service -- "C7. Чтение ack → DONE, завершение шага · Kafka" --> topic_events
     camunda -- "Состояние процессов · JDBC" --> pg
-    %% E: обработка ошибок
-    device_gateway -. "E1. Неизвестное устройство / невалидное<br/>сообщение · Kafka" .-> topic_dlt
-    events_collector -. "E1. Не Avro / невалидное событие / не записано<br/>за N попыток, ack после записи в DLT · Kafka" .-> topic_events_dlt
-    device_collector -. "E1. Невалидное сообщение или команда /<br/>шард недоступен после N попыток · Kafka" .-> topic_devices_dlt
-    failed_processor -. "E2. Чтение DLT · Kafka" .-> topic_dlt
-    failed_processor -. "E2. Чтение DLT · Kafka" .-> topic_events_dlt
-    failed_processor -. "E2. Чтение DLT · Kafka" .-> topic_devices_dlt
-    failed_processor -. "E3. Исходное сообщение · S3 API" .-> minio
-    failed_processor -. "E3. Запись в dead_letters · HTTP/SQL" .-> clickhouse
-    failed_processor -. "E4. Повторная публикация исправимых (журнал<br/>отсекает дубли) · Kafka" .-> topic_device
     camunda -. "E5. Таймаут ack → FAILED · External Task / REST" .-> command_service
-    %% M: метрики (сервисы платформы собирает Alloy и передаёт remote write; экспортёры Prometheus забирает сам, pull)
+    %% M: метрики (Alloy собирает и отправляет в Mimir; экспортёры скрейпит Alloy)
     alloy -. "M1. /actuator/prometheus, все экземпляры (DNS Docker) · HTTP" .-> events_collector
     alloy -. "M1. /actuator/prometheus: devices_*, shard · HTTP" .-> device_collector
     alloy -. "M1. /actuator/prometheus (management-порт): http_server_requests,<br/>device_commands_*, device_cache_* · HTTP" .-> device_service
-    alloy -. "M2. Метрики сервисов · Prometheus remote write" .-> prometheus
-    prometheus -. "M1. Скрейп /metrics · HTTP :9187" .-> pg_exporter
+    alloy -. "M1. /actuator/prometheus: failed_events_archived_*, s3 put-object · HTTP" .-> failed_processor
+    alloy -. "M2. Метрики сервисов · remote write /api/v1/push" .-> mimir
+    alloy -. "M1. Скрейп /metrics · HTTP :9187" .-> pg_exporter
     pg_exporter -. "M2. Статистика pg_stat_* · SQL" .-> pg
     pg_exporter -. "M2. pg_stat_*, pg_stat_replication · SQL" .-> shard0
     pg_exporter -. "M2. pg_stat_*, pg_stat_replication · SQL" .-> shard1
     pg_exporter -. "M2. Отставание воспроизведения WAL · SQL" .-> replica0
     pg_exporter -. "M2. Отставание воспроизведения WAL · SQL" .-> replica1
-    prometheus -. "M1. Метрики Proxy: агент, плагин Prometheus · HTTP" .-> proxy
-    prometheus -. "M1. Скрейп /metrics · HTTP :9308" .-> kafka_exporter
+    alloy -. "M1. Метрики Proxy: агент · HTTP" .-> proxy
+    alloy -. "M1. Скрейп /metrics · HTTP :9308" .-> kafka_exporter
     kafka_exporter -. "M2. Брокеры, топики, лаг · Kafka protocol" .-> kafka
-    prometheus -. "M1. Встроенные метрики · HTTP :9000" .-> minio
-    prometheus -. "M1. Встроенные метрики · HTTP :9000" .-> keycloak
-    prometheus -. "M1. Собственные метрики (также Loki, Tempo,<br/>Grafana) · HTTP" .-> alloy
+    alloy -. "M1. Метрики MinIO: cluster и bucket (v3) · HTTP :9000" .-> minio
+    alloy -. "M1. Встроенные метрики · HTTP" .-> keycloak
     %% L: логи
     alloy -. "L1. Контейнеры проекта и их stdout/stderr ·<br/>Docker API, фильтр com.docker.compose.project" .-> docker
     alloy -. "L2. Отправка логов · HTTP push :3100" .-> loki
@@ -151,7 +157,7 @@ flowchart LR
     apps -. "R1. Трейсы (один трейс: HTTP device-service -> devices -><br/>device-collector-service -> PostgreSQL) · OTLP" .-> alloy
     alloy -. "R2. Батчи трейсов · OTLP gRPC :4317" .-> tempo
     %% Просмотр
-    grafana -- "Запросы метрик · PromQL" --> prometheus
+    grafana -- "Запросы метрик · PromQL" --> mimir
     grafana -- "Запросы логов · LogQL" --> loki
     grafana -- "Запросы трейсов · TraceQL" --> tempo
     engineer -- "Дашборды, логи, трейсы · Web UI" --> grafana
@@ -165,18 +171,19 @@ flowchart LR
     classDef boundary fill:#ffffff,stroke:#8a8a8a,stroke-dasharray:6 4,color:#333
     class engineer person
     class device,docker external
-    class startup,gateway,orchestrator,command_service,event_service,device_gateway,events_collector,device_collector,failed_processor,schema_registry,avros,nexus,proxy,db_migrator,camunda,alloy,pg_exporter,kafka_exporter,grafana,keycloak container
-    class device_service,sentinel newcontainer
-    class topic_events,topic_device,topic_events_dlt,topic_devices_dlt,topic_dlt queue
-    class shard0,shard1,replica0,replica1,backups,pg,redis,clickhouse,minio,loki,tempo,prometheus store
+    class startup,gateway,orchestrator,command_service,event_service,device_gateway,events_collector,device_collector,schema_registry,avros,nexus,proxy,db_migrator,camunda,alloy,pg_exporter,kafka_exporter,grafana,keycloak container
+    class device_service,sentinel,failed_processor,backup_runner,minio_init newcontainer
+    class topic_events,topic_device,topic_failed queue
+    class shard0,shard1,replica0,replica1,pg,redis,clickhouse,minio,loki,tempo,mimir store
     class platform,apps,kafka,registry,obs,redis_ha boundary
-    %% Цвета маршрутов. Номер — порядок связи в файле (с 0): добавили связь — пересчитать (relink.py)
+    %% Цвета маршрутов. Номер — порядок связи в файле (с 0): добавили связь — пересчитать linkStyle
     linkStyle 5,6,7,8,9,10,11,12,13,14,15 stroke:#1565C0,stroke-width:2px,color:#1565C0
-    linkStyle 21,22,23,24,25 stroke:#AD1457,stroke-width:2px,color:#AD1457
-    linkStyle 26,27,28,29,30 stroke:#827717,stroke-width:2px,color:#827717
-    linkStyle 33,34,35,36,37,38,39,40 stroke:#5D4037,stroke-width:2px,color:#5D4037
-    linkStyle 45,46,47,48,49,50,51 stroke:#2E7D32,stroke-width:2px,color:#2E7D32
-    linkStyle 53,54,55,56,57,58,59,60,61,62 stroke:#C62828,stroke-width:2px,color:#C62828
-    linkStyle 63,64,65,66,67,68,69,70,71,72,73,74,75,76,77 stroke:#EF6C00,stroke-width:2px,color:#EF6C00
-    linkStyle 78,79 stroke:#6A1B9A,stroke-width:2px,color:#6A1B9A
-    linkStyle 80,81 stroke:#00838F,stroke-width:2px,color:#00838F
+    linkStyle 22,23,24,25,26 stroke:#AD1457,stroke-width:2px,color:#AD1457
+    linkStyle 27,28,29,30,31 stroke:#827717,stroke-width:2px,color:#827717
+    linkStyle 34,35,36,37,38,39,40,41,42,43,44,45,46,47 stroke:#5D4037,stroke-width:2px,color:#5D4037
+    linkStyle 59,60,61,62,63,64,65 stroke:#2E7D32,stroke-width:2px,color:#2E7D32
+    linkStyle 50,51,52,67 stroke:#C62828,stroke-width:2px,color:#C62828
+    linkStyle 53,54,55,56,57,58 stroke:#00695C,stroke-width:2px,color:#00695C
+    linkStyle 68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83 stroke:#EF6C00,stroke-width:2px,color:#EF6C00
+    linkStyle 84,85 stroke:#6A1B9A,stroke-width:2px,color:#6A1B9A
+    linkStyle 86,87 stroke:#00838F,stroke-width:2px,color:#00838F

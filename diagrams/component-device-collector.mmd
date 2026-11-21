@@ -4,14 +4,14 @@ flowchart LR
 
     subgraph kafka["Kafka 4.2 (KRaft) и Schema Registry"]
         devices[["devices<br/>ключ deviceId · 3 раздела<br/>cleanup.policy=delete<br/>retention.ms = KAFKA_DEVICES_RETENTION_MS"]]
-        dlt[["devices-dlt<br/>3 раздела · cleanup.policy=delete"]]
-        sr[("Schema Registry<br/>devices-value · FULL")]
+        failed[["failed-events<br/>ключ sourceTopic-sourcePartition-sourceOffset · 3 раздела<br/>cleanup.policy=delete"]]
+        sr[("Schema Registry<br/>devices-value · FULL_TRANSITIVE")]
     end
 
     subgraph svc["device-collector-service (до 3 реплик, одна consumer group)"]
         direction TB
         listener["DeviceInfoListener<br/>adapter.in.kafka<br/>max.poll.records=1 · manual ack"]
-        errors["DefaultErrorHandler<br/>+ DeadLetterPublishingRecoverer<br/>3 попытки при ошибке БД (пауза растёт экспоненциально,<br/>со случайным разбросом), валидация — сразу,<br/>Schema Registry недоступен — без ограничения<br/>число попыток и паузы — из переменных окружения"]
+        errors["DefaultErrorHandler<br/>+ FailedEventRecoverer (ConsumerRecordRecoverer)<br/>попытки при ошибке БД — DEVICES_MAX_ATTEMPTS (пауза растёт экспоненциально,<br/>со случайным разбросом), валидация — сразу,<br/>Schema Registry недоступен — без ограничения<br/>число попыток и паузы — из переменных окружения<br/>FailedEvent синхронно, смещение — после ack"]
         api["DeviceController<br/>adapter.in.web<br/>GET /api/v1/devices/{deviceId}"]
         query["DeviceQueryService<br/>domain.service"]
         registry["DeviceRegistryService<br/>domain.service"]
@@ -47,16 +47,16 @@ flowchart LR
     migrator["db-migrator<br/>Flyway · одноразовый<br/>до старта Proxy и сервиса"]
 
     subgraph obs["Наблюдаемость (профиль observability)"]
-        prom["Prometheus"]
+        mimir[("Mimir")]
         alloy["Grafana Alloy"]
-        tempo["Tempo"]
-        loki["Loki"]
+        tempo[("Tempo")]
+        loki[("Loki")]
     end
 
     ecs -- "DeviceInfo (Avro), traceparent" --> devices
     devices -- "poll по одному" --> listener
     listener -. "схема по id" .- sr
-    errors -- "DeviceInfo (Avro) или исходные байты · kafka_dlt-*" --> dlt
+    errors -- "FailedEvent (Avro) с исходными байтами" --> failed
     repo -- "BEGIN · SELECT … FOR UPDATE · INSERT журнал ON CONFLICT DO NOTHING · INSERT / UPDATE devices · RETURNING current_database() · COMMIT" --> proxy
     shards -- "PREVIEW SELECT … WHERE device_id" --> proxy
     proxy -- "device_id → shard_0" --> s0
@@ -70,8 +70,8 @@ flowchart LR
     rsentinel -. "наблюдение, failover" .-> rmaster
 
     alloy -- "/actuator/prometheus, все экземпляры" --> svc
-    alloy -- "remote write" --> prom
-    prom -- "метрики Proxy (агент)" --> proxy
+    alloy -- "remote write" --> mimir
+    alloy -- "метрики Proxy (агент) · HTTP" --> proxy
     svc -- "логи stdout JSON · трейсы OTLP" --> alloy
     alloy --> loki
     alloy --> tempo

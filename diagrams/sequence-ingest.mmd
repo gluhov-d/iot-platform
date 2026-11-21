@@ -1,5 +1,5 @@
 %% Прием события: at-least-once, offset подтверждается только после записи в обе таблицы
-%% или после записи сообщения в events-dlt. Реестр устройств: событие может нести данные устройства (DeviceEvent 1.2: имя, ОС и её версия, прошивка)
+%% или после публикации FailedEvent в failed-events. Реестр устройств: событие может нести данные устройства (DeviceEvent 1.2: имя, ОС и её версия, прошивка)
 sequenceDiagram
     autonumber
     participant K as Kafka (events)
@@ -11,18 +11,23 @@ sequenceDiagram
     participant V as DeviceEventValidator
     participant CE as ClickHouse device_events
     participant CO as ClickHouse device_outbox
-    participant D as Kafka (events-dlt)
+    participant D as Kafka (failed-events)
 
     K->>C: poll (max.poll.records=1, enable.auto.commit=false)
     C->>SR: схема по id (KafkaAvroDeserializer, кешируется)
     alt Schema Registry не ответил (сеть, 5xx)
         SR--xC: ошибка
         C-->>H: DeserializationException - временная
-        Note over H,K: повтор с backoff 0,5 → 10 с без лимита попыток, offset не подтверждается
+        break повтор без лимита попыток, смещение не подтверждается
+            Note over H,K: пауза по EVENTS_RETRY_INTERVAL с ростом EVENTS_RETRY_MULTIPLIER, FailedEvent не создаётся
+        end
     else не Avro / схема не найдена
         C-->>H: DeserializationException - «ядовитое» сообщение
-        H->>D: исходные байты, тот же номер раздела
-        H->>K: commit offset после записи в DLT
+        H->>D: FailedEvent DESERIALIZATION_FAILED, исходные байты
+        H->>K: commit offset после публикации FailedEvent
+        break сообщение обработано, дальше схема не идёт
+            Note over H,K: FailedEvent опубликован, смещение подтверждено
+        end
     else DeviceEvent (SpecificRecord, контракт avros 1.0 – 1.2)
         SR-->>C: схема
         C->>L: DeviceEvent
@@ -32,8 +37,11 @@ sequenceDiagram
         alt событие невалидно (в т. ч. device.deviceId ≠ deviceId)
             V-->>S: InvalidEventException
             S-->>H: исключение - не повторяется
-            H->>D: DeviceEvent (Avro), тот же номер раздела
-            H->>K: commit offset после записи в DLT, лог status=REJECTED
+            H->>D: FailedEvent VALIDATION_FAILED, DeviceEvent (Avro)
+            H->>K: commit offset после публикации FailedEvent, лог status=FAILED_EVENT
+            break сообщение обработано, дальше схема не идёт
+                Note over H,K: FailedEvent опубликован, смещение подтверждено
+            end
         else событие валидно
             S->>S: event_date = дата в UTC, ingested_at = now<br/>device_snapshot = снимок в Avro JSON, '' - если снимка нет
             S->>CE: INSERT device_events (+ device_snapshot, device_name, os_name, os_version,<br/>firmware_version, source_system, payload) - колонки добавлены ADD COLUMN IF NOT EXISTS
@@ -43,19 +51,33 @@ sequenceDiagram
                 loop до EVENTS_MAX_ATTEMPTS попыток, пауза растёт экспоненциально со случайным разбросом
                     H->>L: повтор того же сообщения
                 end
-                H->>D: DeviceEvent (Avro), тот же номер раздела, заголовки kafka_dlt-*
-                H->>K: commit offset после записи в DLT, лог status=DLT
+                H->>D: FailedEvent STORAGE_UNAVAILABLE, DeviceEvent (Avro), attempts = N
+                H->>K: commit offset после публикации FailedEvent, лог status=FAILED_EVENT
+                break сообщение обработано, дальше схема не идёт
+                    Note over H,K: FailedEvent опубликован, смещение подтверждено
+                end
             else записано
                 S->>CO: INSERT device_outbox (state_version=1, NEW, attempts=0, device_snapshot,<br/>trace_id/span_id текущего спана - для сквозного трейса)
                 alt ошибка записи
                     CO-->>S: ошибка
                     S-->>H: EventPersistenceException
-                    Note over H,K: повторы, как выше, затем events-dlt.<br/>Повторная строка device_events схлопнется ReplacingMergeTree
+                    loop до EVENTS_MAX_ATTEMPTS попыток, как выше
+                        H->>L: повтор того же сообщения
+                    end
+                    Note over H,D: повторная строка device_events схлопнется ReplacingMergeTree
+                    H->>D: FailedEvent STORAGE_UNAVAILABLE, DeviceEvent (Avro), attempts = N
+                    H->>K: commit offset после публикации FailedEvent, лог status=FAILED_EVENT
+                    break сообщение обработано, дальше схема не идёт
+                        Note over H,K: FailedEvent опубликован, смещение подтверждено
+                    end
                 else записано
                     S-->>L: ok (events_processed_total++, outbox_candidate_created_total++)
                     L->>K: ack.acknowledge() - commit offset
+                    break сообщение обработано, дальше схема не идёт
+                        Note over L,K: событие записано в обе таблицы, смещение подтверждено
+                    end
                 end
             end
         end
     end
-    Note over D,K: запись в DLT не удалась - offset не подтверждается, сообщение будет обработано снова
+    Note over D,K: публикация FailedEvent не удалась - offset не подтверждается, сообщение будет обработано снова
