@@ -35,14 +35,14 @@
 
 ## Phase 1 (P1): Контракт FailedEvent
 
-- [ ] T001 Схема `FailedEvent` — JSON дословно из [failed-event.avsc](contracts/failed-event.avsc), версия avros `1.4.0` —
+- [X] T001 Схема `FailedEvent` — JSON дословно из [failed-event.avsc](contracts/failed-event.avsc), версия avros `1.4.0` —
   `AV/avro/failed-event.avsc`, `AV/build.gradle.kts` (FR-001, FR-002)
-- [ ] T002 [P] Регистрация subject `failed-events-value=FailedEvent` вместо `events-dlt-value`, `devices-dlt-value`; переменная
+- [X] T002 [P] Регистрация subject `failed-events-value=FailedEvent` вместо `events-dlt-value`, `devices-dlt-value`; переменная
   `KAFKA_FAILED_EVENTS_TOPIC` вместо `KAFKA_EVENTS_DLT_TOPIC`, `KAFKA_DEVICES_DLT_TOPIC` — `AV/scripts/schema-subjects.sh`,
   `AV/scripts/container-register.sh`, `AV/scripts/container-publish.sh`, `AV/scripts/nexus-env.sh` (FR-001, FR-003)
-- [ ] T003 (R9) Проверить совместимость без публикации: `make avros-check` — код 0; сборка генерирует классы `FailedEvent`,
+- [X] T003 (R9) Проверить совместимость без публикации: `make avros-check` — код 0; сборка генерирует классы `FailedEvent`,
   `ErrorCode`, `ErrorType` (`./gradlew :avros:build`) (FR-001)
-- [ ] T004 **ЧЕЛОВЕК** (необратимо: версия в Nexus не перезаписывается) Опубликовать и зарегистрировать avros 1.4.0: `make avros-up`;
+- [X] T004 **ЧЕЛОВЕК** (необратимо: версия в Nexus не перезаписывается) Опубликовать avros 1.4.0 (`make avros-up`) и зарегистрировать схемы (`make schemas-register`);
   проверить `curl -s localhost:8081/subjects/failed-events-value/versions/latest` (FR-001)
 
 **Checkpoint**: `make avros-check` и `./gradlew :avros:build` проходят; после T004 subject `failed-events-value` есть в Schema Registry.

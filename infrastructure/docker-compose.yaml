@@ -935,8 +935,7 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
@@ -962,8 +961,7 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
       SCHEMA_COMPATIBILITY: FULL_TRANSITIVE
     entrypoint: [ "/workspace/avros/scripts/container-register.sh" ]
     networks: [ iot-net ]

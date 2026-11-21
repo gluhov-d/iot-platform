@@ -14,13 +14,12 @@ set -euo pipefail
 : "${SCHEMA_REGISTRY_URL:?SCHEMA_REGISTRY_URL не задан}"
 EVENTS_TOPIC="${KAFKA_EVENTS_TOPIC:?KAFKA_EVENTS_TOPIC не задан}"
 DEVICES_TOPIC="${KAFKA_DEVICES_TOPIC:?KAFKA_DEVICES_TOPIC не задан}"
-EVENTS_DLT_TOPIC="${KAFKA_EVENTS_DLT_TOPIC:?KAFKA_EVENTS_DLT_TOPIC не задан}"
-DEVICES_DLT_TOPIC="${KAFKA_DEVICES_DLT_TOPIC:?KAFKA_DEVICES_DLT_TOPIC не задан}"
+FAILED_EVENTS_TOPIC="${KAFKA_FAILED_EVENTS_TOPIC:?KAFKA_FAILED_EVENTS_TOPIC не задан}"
 ARTIFACT_PATH="com/github/gluhov/iotplatform/avros"
 
 # shellcheck source=schema-subjects.sh
 source "$(dirname "${BASH_SOURCE[0]}")/schema-subjects.sh"
-subjects="$(schema_subjects "${EVENTS_TOPIC}" "${EVENTS_DLT_TOPIC}" "${DEVICES_TOPIC}" "${DEVICES_DLT_TOPIC}")"
+subjects="$(schema_subjects "${EVENTS_TOPIC}" "${DEVICES_TOPIC}" "${FAILED_EVENTS_TOPIC}")"
 
 cd /workspace
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
