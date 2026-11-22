@@ -1,0 +1,10 @@
+<clickhouse>
+    <!-- Пользователю стенда нужен доступ к named collection backup_s3: без named_collection_control запрос
+         BACKUP ... TO S3(backup_s3, ...) отклоняется. Имя пользователя здесь - значение CLICKHOUSE_USERNAME
+         из .env.example (по имени XML-элемента подставить переменную нельзя; сменили имя - смените его и здесь). -->
+    <users>
+        <iot>
+            <named_collection_control>1</named_collection_control>
+        </iot>
+    </users>
+</clickhouse>

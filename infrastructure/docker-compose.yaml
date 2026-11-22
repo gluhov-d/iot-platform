@@ -192,6 +192,11 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      # Named collection backup_s3 (config/clickhouse/config.d/backup_s3.xml): копии BACKUP DATABASE уходят в MinIO,
+      # адрес и ключи берутся отсюда, в тексте запроса их нет (ADR-0017)
+      BACKUP_CLICKHOUSE_S3_URL: "http://minio:9000/${MINIO_BUCKET_BACKUPS}/clickhouse/"
+      BACKUP_CLICKHOUSE_S3_ACCESS_KEY: ${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}
+      BACKUP_CLICKHOUSE_S3_SECRET_KEY: ${BACKUP_CLICKHOUSE_S3_SECRET_KEY}
     ports:
       - "${CLICKHOUSE_HTTP_PORT}:8123"
       - "${CLICKHOUSE_NATIVE_PORT}:9000"
@@ -199,6 +204,8 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       # 01-schema.sh выполняется entrypoint-ом только на пустом томе
       - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
+      - ./config/clickhouse/config.d/backup_s3.xml:/etc/clickhouse-server/config.d/backup_s3.xml:ro
+      - ./config/clickhouse/users.d/backup.xml:/etc/clickhouse-server/users.d/backup.xml:ro
     ulimits:
       nofile:
         soft: 262144
@@ -1038,6 +1045,65 @@ services:
       - ./init/minio/init.sh:/opt/init/init.sh:ro
       - ./config/minio:/opt/init/config:ro
     entrypoint: ["/bin/sh", "/opt/init/init.sh"]
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # backup-runner — копии шардов PostgreSQL и ClickHouse в MinIO по расписанию BACKUP_SCHEDULE (cron, UTC) и по make backup.
+  # Скрипты монтируются, образ их не содержит (ADR-0017). Копия шардов PostgreSQL идёт с реплик, позиции группы
+  # device-collector читаются из Kafka; make shard-backup запускает тот же скрипт с копией в ./backups
+  # ---------------------------------------------------------------------------
+  backup-runner:
+    build:
+      context: ./config/backup-runner
+      args:
+        PG_IMAGE: postgres:${POSTGRES_SHARD_VERSION}
+        MC_IMAGE: ${MC_IMAGE}:${MC_VERSION}
+    image: iot-platform/backup-runner:${BACKUP_RUNNER_IMAGE_TAG}
+    container_name: iot-backup-runner
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      postgres-shard-0-replica:
+        condition: service_healthy
+      postgres-shard-1-replica:
+        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE}
+      # PostgreSQL: реплики шардов по сети, позиции группы - из Kafka
+      SHARD_DB_USER: ${SHARD_DB_USER}
+      SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      KAFKA_INTERNAL_PORT: ${KAFKA_INTERNAL_PORT}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      DEVICE_COLLECTOR_CONSUMER_GROUP: ${DEVICE_COLLECTOR_CONSUMER_GROUP:-device-collector}
+      # ClickHouse: запросы BACKUP/RESTORE по HTTP, ключи MinIO ClickHouse берёт у себя (named collection)
+      CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
+      # MinIO: каждая копия - своей учёткой, доступной только к своему префиксу бакета
+      MINIO_BUCKET_BACKUPS: ${MINIO_BUCKET_BACKUPS}
+      BACKUP_POSTGRES_S3_ACCESS_KEY: ${BACKUP_POSTGRES_S3_ACCESS_KEY}
+      BACKUP_POSTGRES_S3_SECRET_KEY: ${BACKUP_POSTGRES_S3_SECRET_KEY}
+      BACKUP_CLICKHOUSE_S3_ACCESS_KEY: ${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}
+      BACKUP_CLICKHOUSE_S3_SECRET_KEY: ${BACKUP_CLICKHOUSE_S3_SECRET_KEY}
+    volumes:
+      - ./config/backup-runner:/opt/backup-runner:ro
+      # shard-lib.sh (общие функции копии шардов): тот же файл, что у make shard-backup и shard-restore
+      - ./config/postgres:/opt/postgres:ro
+      # make shard-backup кладёт копию сюда, shard-restore читает отсюда
+      - ../backups:/backups
+    healthcheck:
+      # crond запущен как PID 1 и расписание записано
+      test: ["CMD-SHELL", "tr '\\0' ' ' </proc/1/cmdline | grep -q 'crond -f' && test -s /etc/crontabs/root"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------

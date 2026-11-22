@@ -1,42 +1,72 @@
-#!/usr/bin/env bash
-# Общие функции shard-backup.sh и shard-restore.sh (подключается через source).
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-# COMPOSE_FILE из окружения - другой compose-файл (например, тестового стенда)
-COMPOSE=(docker compose --env-file "${ROOT_DIR}/.env" -f "${COMPOSE_FILE:-${ROOT_DIR}/infrastructure/docker-compose.yaml}")
-BACKUP_ROOT="${BACKUP_ROOT:-${ROOT_DIR}/backups}"
+# Общие функции shard-backup.sh, shard-restore.sh и backup-postgres.sh (подключается через source).
+#
+# Два режима (SHARD_LIB_MODE):
+#   host (по умолчанию) - на хосте: контейнеры стенда достаются через docker compose exec, значения читаются из .env;
+#   container           - внутри backup-runner (его выставляет backup-postgres.sh): Kafka и PostgreSQL - по сети compose,
+#                         значения берутся из окружения контейнера, docker и compose не нужны.
+SHARD_LIB_MODE="${SHARD_LIB_MODE:-host}"
 SHARDS=(0 1)
+
+if [[ "${SHARD_LIB_MODE}" == container ]]; then
+  # Окружение backup-runner (compose передаёт их в T064): SHARD_DB_USER, SHARD_DB_PASSWORD - роль шардов,
+  # KAFKA_INTERNAL_PORT, KAFKA_DEVICES_TOPIC, DEVICE_COLLECTOR_CONSUMER_GROUP - позиции группы
+  : "${SHARD_DB_USER:?SHARD_DB_USER не задан}" "${SHARD_DB_PASSWORD:?SHARD_DB_PASSWORD не задан}"
+  DEVICES_TOPIC="${KAFKA_DEVICES_TOPIC:-devices}"
+  CONSUMER_GROUP="${DEVICE_COLLECTOR_CONSUMER_GROUP:-device-collector}"
+  KAFKA_PORT="${KAFKA_INTERNAL_PORT:-9092}"
+else
+  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+  # COMPOSE_FILE из окружения - другой compose-файл (например, тестового стенда)
+  COMPOSE=(docker compose --env-file "${ROOT_DIR}/.env" -f "${COMPOSE_FILE:-${ROOT_DIR}/infrastructure/docker-compose.yaml}")
+  BACKUP_ROOT="${BACKUP_ROOT:-${ROOT_DIR}/backups}"
+
+  [[ -f "${ROOT_DIR}/.env" ]] || { echo "[FAIL] ${ROOT_DIR}/.env not found: cp .env.example .env" >&2; exit 1; }
+
+  # Значения из .env в том виде, как их разобрал Compose
+  env_dump="$("${COMPOSE[@]}" config --environment)"
+  env_value() { sed -n "s/^$1=//p" <<<"${env_dump}"; }
+  DEVICES_TOPIC="$(env_value KAFKA_DEVICES_TOPIC)"; DEVICES_TOPIC="${DEVICES_TOPIC:-devices}"
+  CONSUMER_GROUP="$(env_value DEVICE_COLLECTOR_CONSUMER_GROUP)"; CONSUMER_GROUP="${CONSUMER_GROUP:-device-collector}"
+  KAFKA_PORT="$(env_value KAFKA_INTERNAL_PORT)"; KAFKA_PORT="${KAFKA_PORT:-9092}"
+fi
 # Сколько секунд ждать, пока реплика применит WAL шарда
 LAG_TIMEOUT="${BACKUP_LAG_TIMEOUT:-60}"
-
-[[ -f "${ROOT_DIR}/.env" ]] || { echo "[FAIL] ${ROOT_DIR}/.env not found: cp .env.example .env" >&2; exit 1; }
-
-# Значения из .env в том виде, как их разобрал Compose
-env_dump="$("${COMPOSE[@]}" config --environment)"
-env_value() { sed -n "s/^$1=//p" <<<"${env_dump}"; }
-DEVICES_TOPIC="$(env_value KAFKA_DEVICES_TOPIC)"; DEVICES_TOPIC="${DEVICES_TOPIC:-devices}"
-CONSUMER_GROUP="$(env_value DEVICE_COLLECTOR_CONSUMER_GROUP)"; CONSUMER_GROUP="${CONSUMER_GROUP:-device-collector}"
-KAFKA_PORT="$(env_value KAFKA_INTERNAL_PORT)"; KAFKA_PORT="${KAFKA_PORT:-9092}"
 
 # Инструмент Kafka в контейнере kafka: $1 - имя без .sh, дальше его аргументы. Код возврата и сообщения об ошибках
 # не скрываются: недоступный брокер не должен выглядеть как «у группы нет коммитов»
 kafka_tool() {
   local tool="$1"; shift
-  "${COMPOSE[@]}" exec -T kafka "/opt/kafka/bin/${tool}.sh" --bootstrap-server "kafka:${KAFKA_PORT}" "$@" < /dev/null
+  if [[ "${SHARD_LIB_MODE}" == container ]]; then
+    "/opt/kafka/bin/${tool}.sh" --bootstrap-server "kafka:${KAFKA_PORT}" "$@" < /dev/null
+  else
+    "${COMPOSE[@]}" exec -T kafka "/opt/kafka/bin/${tool}.sh" --bootstrap-server "kafka:${KAFKA_PORT}" "$@" < /dev/null
+  fi
 }
 
 # Позиции группы $1 по КАЖДОМУ разделу темы $2: раздел:offset,раздел:offset,...
 # Раздел с коммитом - подтверждённый offset; раздел без коммита - его начало: consumer без коммита читает с earliest
 # (auto-offset-reset), поэтому «нет коммита» тоже позиция, к которой нужно вернуться при восстановлении.
 # Группы, которой нет в Kafka (коммитов не было нигде), - все разделы с начала.
+# Инструменты Kafka при таймауте печатают исключение и могут вернуть код 0: такой вывод - ошибка, а не «нет коммитов»
+# (иначе позиции группы в копии молча оказались бы началом разделов). Предупреждения JVM и WARN не считаются ошибкой.
+kafka_tool_checked() {
+  local out
+  out="$(kafka_tool "$@" 2>&1)" || { printf '%s\n' "${out}" | grep -v 'SVE' | head -5 >&2; return 1; }
+  if grep -Eq 'Exception|^ERROR' <<<"${out}"; then
+    grep -E 'Exception|^ERROR' <<<"${out}" | head -3 >&2
+    return 1
+  fi
+  printf '%s\n' "${out}"
+}
+
 group_positions() {
   local group="$1" topic="$2" starts groups committed=""
-  starts="$(kafka_tool kafka-get-offsets --topic "${topic}" --time -2)" \
+  starts="$(kafka_tool_checked kafka-get-offsets --topic "${topic}" --time -2)" \
     || { echo "[FAIL] cannot read partitions of ${topic} from Kafka" >&2; return 1; }
-  groups="$(kafka_tool kafka-consumer-groups --list)" \
+  groups="$(kafka_tool_checked kafka-consumer-groups --list)" \
     || { echo "[FAIL] cannot list consumer groups in Kafka" >&2; return 1; }
   if grep -qx -- "${group}" <<<"${groups}"; then
-    committed="$(kafka_tool kafka-consumer-groups --describe --group "${group}")" \
+    committed="$(kafka_tool_checked kafka-consumer-groups --describe --group "${group}")" \
       || { echo "[FAIL] cannot read offsets of group ${group} from Kafka" >&2; return 1; }
   fi
   { sed 's/^/C /' <<<"${committed}"; sed 's/^/S /' <<<"${starts}"; } | awk -v topic="${topic}" '
@@ -65,8 +95,13 @@ quiet() {
 # SQL в контейнере PostgreSQL (шард или реплика) по сокету: учётная запись - из окружения контейнера
 # $1 - контейнер, $2 - номер шарда (имя базы shard_N), $3 - запрос
 sql_in() {
-  "${COMPOSE[@]}" exec -T "$1" sh -c \
-    'psql -U "$POSTGRES_USER" -d "shard_$1" -tA -v ON_ERROR_STOP=1 -c "$2"' sh "$2" "$3" < /dev/null
+  if [[ "${SHARD_LIB_MODE}" == container ]]; then
+    # В сети compose контейнер доступен по имени сервиса; пароль - через окружение процесса, не в командной строке
+    PGPASSWORD="${SHARD_DB_PASSWORD}" psql -h "$1" -U "${SHARD_DB_USER}" -d "shard_$2" -tA -v ON_ERROR_STOP=1 -c "$3" < /dev/null
+  else
+    "${COMPOSE[@]}" exec -T "$1" sh -c \
+      'psql -U "$POSTGRES_USER" -d "shard_$1" -tA -v ON_ERROR_STOP=1 -c "$2"' sh "$2" "$3" < /dev/null
+  fi
 }
 primary_sql() { sql_in "postgres-shard-$1" "$1" "$2"; }
 replica_sql() { sql_in "postgres-shard-$1-replica" "$1" "$2"; }
@@ -120,15 +155,19 @@ require_replica_streaming() {
 
 # Данные таблицы $2 из копии $1 в формате COPY (текст)
 dump_table_data() {
-  "${COMPOSE[@]}" exec -T "${3:-postgres-shard-0}" pg_restore --data-only --table="$2" --file=- < "$1"
+  if [[ "${SHARD_LIB_MODE}" == container ]]; then
+    pg_restore --data-only --table="$2" --file=- < "$1"
+  else
+    "${COMPOSE[@]}" exec -T "${3:-postgres-shard-0}" pg_restore --data-only --table="$2" --file=- < "$1"
+  fi
 }
 # Число строк таблицы в копии
 dump_rows() {
-  dump_table_data "$1" "$2" "$3" | awk 'c && /^\\\.$/ { c = 0; next } c { n++; next } /^COPY / { c = 1 } END { print n + 0 }'
+  dump_table_data "$1" "$2" "${3:-}" | awk 'c && /^\\\.$/ { c = 0; next } c { n++; next } /^COPY / { c = 1 } END { print n + 0 }'
 }
 # До 5 deviceId из копии (только безопасные для командной строки символы)
 dump_sample_ids() {
-  dump_table_data "$1" devices "$2" | awk -F'\t' '
+  dump_table_data "$1" devices "${2:-}" | awk -F'\t' '
     c && /^\\\.$/ { c = 0; next }
     c { if ($1 ~ /^[A-Za-z0-9._:-]+$/ && k < 5) { ids = ids sep $1; sep = " "; k++ } next }
     /^COPY / { c = 1 }
@@ -136,7 +175,7 @@ dump_sample_ids() {
 }
 # Версия схемы в копии - последняя успешная миграция Flyway
 dump_schema_version() {
-  dump_table_data "$1" flyway_schema_history "$2" | awk -F'\t' '
+  dump_table_data "$1" flyway_schema_history "${2:-}" | awk -F'\t' '
     c && /^\\\.$/ { c = 0; next }
     c { if ($10 == "t" && $1 + 0 >= rank) { rank = $1 + 0; v = $2 } next }
     /^COPY / { c = 1 }

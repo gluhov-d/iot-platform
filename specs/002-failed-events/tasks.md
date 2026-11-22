@@ -208,19 +208,19 @@
 
 После P6.
 
-- [ ] T060 [Mac] (R18) Проверка на стенде (первой в P7, до кода T061–T066; проверяет непроверенное из research.md R18): `make backup` → в `backups/` две копии с manifest; расписание срабатывает (журнал); `flock` — второй запуск отказывается; после удаления
+- [X] T060 [Mac] (R18) Проверка на стенде (первой в P7, до кода T061–T066; проверяет непроверенное из research.md R18): `make backup` → в `backups/` две копии с manifest; расписание срабатывает (журнал); `flock` — второй запуск отказывается; после удаления
   данных `make shard-restore FROM=minio …` и `make clickhouse-restore …` возвращают число устройств и строк из manifest, смещения группы возвращены — `INF/config/backup-runner/check.sh` (100755), `Makefile` (`make backup-check`) (FR-020, FR-021, SC-004)
-- [ ] T061 Образ `backup-runner`: `FROM apache/kafka:4.2.0`, клиенты PostgreSQL 18.6 (копия из `postgres:18.6-alpine`), `mc` из `pgsty/mc`, busybox `crond`, root; entrypoint пишет
+- [X] T061 Образ `backup-runner`: `FROM apache/kafka:4.2.0`, клиенты PostgreSQL 18.6 (копия из `postgres:18.6-alpine`), `mc` из `pgsty/mc`, busybox `crond`, root; entrypoint пишет
   `/etc/backup.env` — `INF/config/backup-runner/Dockerfile`, `INF/config/backup-runner/entrypoint.sh` (100755) (FR-020; R18)
-- [ ] T062 Копия PostgreSQL: логика `shard-backup.sh` (с реплик, manifest со смещениями группы, `*.partial` → переименование) → `mc` в `backups/postgres/<метка>/`; один общий скрипт (вызывают `make shard-backup` и backup-runner, без второй реализации);
+- [X] T062 Копия PostgreSQL: логика `shard-backup.sh` (с реплик, manifest со смещениями группы, `*.partial` → переименование) → `mc` в `backups/postgres/<метка>/`; один общий скрипт (вызывают `make shard-backup` и backup-runner, без второй реализации);
   блокировка `flock` против двух одновременных копий — `INF/config/backup-runner/backup-postgres.sh` (100755) (FR-020; R18)
-- [ ] T063 Копия ClickHouse: `BACKUP DATABASE … TO S3(backup_s3, …)` через HTTP, ключи — named collection с `from_env`, `named_collection_control` пользователю, уникальный id —
+- [X] T063 Копия ClickHouse: `BACKUP DATABASE … TO S3(backup_s3, …)` через HTTP, ключи — named collection с `from_env`, `named_collection_control` пользователю, уникальный id —
   `INF/config/clickhouse/users.d/backup.xml`, `INF/config/clickhouse/config.d/backup_s3.xml`, `INF/config/backup-runner/backup-clickhouse.sh` (100755) (FR-020; R17)
-- [ ] T064 Сервис `backup-runner` в compose (расписание `BACKUP_SCHEDULE`, учётки `BACKUP_*_S3_*`, зависимости от шардов, ClickHouse, MinIO, Kafka), цели `make backup`,
+- [X] T064 Сервис `backup-runner` в compose (расписание `BACKUP_SCHEDULE`, учётки `BACKUP_*_S3_*`, зависимости от шардов, ClickHouse, MinIO, Kafka), цели `make backup`,
   `make backup-list` — `INF/docker-compose.yaml`, `Makefile` (FR-020)
-- [ ] T065 Восстановление PostgreSQL из MinIO: `FROM=minio` в `shard-restore.sh` (скачать → проверка sha256 → прежний путь, сброс смещений группы `--reset-offsets --from-file`),
+- [X] T065 Восстановление PostgreSQL из MinIO: `FROM=minio` в `shard-restore.sh` (скачать → проверка sha256 → прежний путь, сброс смещений группы `--reset-offsets --from-file`),
   `make shard-restore FROM=minio BACKUP=<метка>` — `INF/config/postgres/shard-restore.sh`, `Makefile` (FR-021; R18)
-- [ ] T066 Восстановление ClickHouse: `make clickhouse-restore BACKUP=<метка>` — `INF/config/backup-runner/restore-clickhouse.sh` (100755), `Makefile` (FR-021; R17)
+- [X] T066 Восстановление ClickHouse: `make clickhouse-restore BACKUP=<метка>` — `INF/config/backup-runner/restore-clickhouse.sh` (100755), `Makefile` (FR-021; R17)
 
 **Checkpoint** ([Mac]): `make check`; `make backup-check` на своём проекте compose проходит; `git diff --summary | grep mode` — режимы `100755` у новых скриптов.
 

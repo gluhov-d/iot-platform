@@ -39,7 +39,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli minio-check obs-check topics check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -220,8 +220,28 @@ replication-status: ## Репликация шардов: клиенты и сл
 shard-backup: ## Копия каждого шарда с его реплики без остановки сервисов (backups/<время>/, manifest: SHA-256, offset Kafka)
 	@$(INFRA_DIR)/config/postgres/shard-backup.sh
 
-shard-restore: ## УДАЛЯЕТ данные шардов и восстанавливает из копии: make shard-restore CONFIRM=yes [BACKUP=backups/<время>]
-	@$(INFRA_DIR)/config/postgres/shard-restore.sh $(if $(filter yes,$(CONFIRM)),--yes) $(BACKUP)
+shard-restore: ## УДАЛЯЕТ данные шардов и восстанавливает из копии: make shard-restore CONFIRM=yes [BACKUP=backups/<время>] или FROM=minio [BACKUP=<метка>]
+	@$(INFRA_DIR)/config/postgres/shard-restore.sh $(if $(filter yes,$(CONFIRM)),--yes) $(if $(filter minio,$(FROM)),--from-minio) $(BACKUP)
+
+backup: ## Копии PostgreSQL и ClickHouse в MinIO сейчас (то же, что делает cron backup-runner); сбой одной копии не отменяет другую
+	@rc=0; \
+	$(COMPOSE) exec -T backup-runner /opt/backup-runner/backup-postgres.sh || rc=1; \
+	$(COMPOSE) exec -T backup-runner /opt/backup-runner/backup-clickhouse.sh || rc=1; \
+	exit $$rc
+
+backup-list: ## Метки копий в MinIO: backups/postgres/ и backups/clickhouse/ (завершённые - с manifest.txt)
+	@$(COMPOSE) exec -T backup-runner sh -c '. /etc/backup.env; \
+	  MC_HOST_pg="http://$${BACKUP_POSTGRES_S3_ACCESS_KEY}:$${BACKUP_POSTGRES_S3_SECRET_KEY}@minio:9000"; \
+	  MC_HOST_ch="http://$${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}:$${BACKUP_CLICKHOUSE_S3_SECRET_KEY}@minio:9000"; export MC_HOST_pg MC_HOST_ch; \
+	  for kind in postgres:pg clickhouse:ch; do d=$${kind%%:*}; a=$${kind##*:}; echo "== backups/$$d/"; \
+	    mc ls "$$a/$$MINIO_BUCKET_BACKUPS/$$d/" | awk "{print \$$NF}" | tr -d "/" | sort; done'
+
+clickhouse-restore: ## Восстановить базу ClickHouse из копии в MinIO: make clickhouse-restore BACKUP=<метка> [CONFIRM=yes - заменить существующую базу]
+	@[ -n "$(BACKUP)" ] || { echo "Укажите метку копии: make clickhouse-restore BACKUP=<метка> (метки - make backup-list)"; exit 1; }
+	@$(COMPOSE) exec -T $(if $(filter yes,$(CONFIRM)),-e RESTORE_CONFIRM=yes) backup-runner /opt/backup-runner/restore-clickhouse.sh "$(BACKUP)"
+
+backup-check: ## УДАЛЯЕТ данные шардов и ClickHouse проекта и восстанавливает из MinIO: make backup-check CONFIRM=yes (config/backup-runner/check.sh)
+	@COMPOSE_CMD="$(COMPOSE)" BACKUP_CHECK_CONFIRM="$(filter yes,$(CONFIRM))" MAKE="$(MAKE)" $(INFRA_DIR)/config/backup-runner/check.sh
 
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml

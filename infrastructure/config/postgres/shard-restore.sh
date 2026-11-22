@@ -3,6 +3,10 @@
 #
 #   infrastructure/config/postgres/shard-restore.sh --yes [backups/<время>]
 #   (по умолчанию - последняя завершённая копия)
+#   infrastructure/config/postgres/shard-restore.sh --yes --from-minio [<метка>]
+#   (копия из MinIO - backups/postgres/<метка>/, по умолчанию последняя; make shard-restore FROM=minio BACKUP=<метка>)
+#   Копия из MinIO сначала скачивается во временный каталог через backup-runner, дальше путь тот же, что у локальной:
+#   SHA-256 файлов сверяется с manifest, и только потом что-либо останавливается или удаляется.
 #
 # ВНИМАНИЕ: текущие данные шардов и их реплик удаляются - контейнеры и тома создаются заново.
 #   1. SHA-256 файлов сверяется с manifest - до того, как что-либо остановлено или удалено;
@@ -26,14 +30,52 @@ source "$(dirname "${BASH_SOURCE[0]}")/shard-lib.sh"
 
 confirm=""
 dir=""
+from_minio=""
+tmp_dir=""
+# Временный каталог скачанной копии убирается при любом выходе (on_exit ниже его тоже убирает)
+trap '[[ -z "${tmp_dir}" ]] || rm -rf "${tmp_dir}"' EXIT
 for arg in "$@"; do
   case "${arg}" in
     --yes) confirm="yes" ;;
+    --from-minio) from_minio="yes" ;;
     -*) echo "[FAIL] unknown option ${arg}" >&2; exit 2 ;;
     *) dir="${arg}" ;;
   esac
 done
-if [[ -z "${dir}" ]]; then
+
+# Объект копии PostgreSQL из MinIO ($1 - путь после postgres/) в stdout. Ключи - из окружения backup-runner, на хост не попадают
+minio_cat() {
+  "${COMPOSE[@]}" exec -T backup-runner sh -c \
+    '. /etc/backup.env; MC_HOST_bpg="http://${BACKUP_POSTGRES_S3_ACCESS_KEY}:${BACKUP_POSTGRES_S3_SECRET_KEY}@${MINIO_ENDPOINT:-minio:9000}"; export MC_HOST_bpg; mc cat "bpg/${MINIO_BUCKET_BACKUPS}/postgres/$1"' \
+    sh "$1" < /dev/null
+}
+minio_labels() {
+  "${COMPOSE[@]}" exec -T backup-runner sh -c \
+    '. /etc/backup.env; MC_HOST_bpg="http://${BACKUP_POSTGRES_S3_ACCESS_KEY}:${BACKUP_POSTGRES_S3_SECRET_KEY}@${MINIO_ENDPOINT:-minio:9000}"; export MC_HOST_bpg; mc ls "bpg/${MINIO_BUCKET_BACKUPS}/postgres/"' \
+    < /dev/null | awk '{ print $NF }' | tr -d / | grep -E '^[0-9]{8}T[0-9]{6}Z$' | sort
+}
+
+if [[ -n "${from_minio}" ]]; then
+  [[ -n "$("${COMPOSE[@]}" ps -q --status running backup-runner)" ]] \
+    || { echo "[FAIL] backup-runner is not running: the copy cannot be taken from MinIO (make up)" >&2; exit 1; }
+  label="${dir}"
+  if [[ -z "${label}" ]]; then
+    # Завершённая копия - каталог с меткой времени (.partial в список не попадает)
+    label="$(minio_labels | tail -1)"
+    [[ -n "${label}" ]] || { echo "[FAIL] no completed PostgreSQL backups in MinIO (make backup)" >&2; exit 1; }
+  fi
+  [[ "${label}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] \
+    || { echo "[FAIL] backup label '${label}': expected <UTC-time>, e.g. 20261122T030000Z (make backup-list)" >&2; exit 1; }
+  tmp_dir="$(mktemp -d)"
+  dir="${tmp_dir}/${label}"
+  mkdir "${dir}"
+  echo "==> download backups/postgres/${label}/ from MinIO"
+  for f in manifest.txt $(printf 'shard_%s.dump ' "${SHARDS[@]}"); do
+    minio_cat "${label}/${f}" > "${dir}/${f}" \
+      || { echo "[FAIL] ${f} of backup ${label} was not downloaded from MinIO (make backup-list)" >&2; exit 1; }
+    [[ -s "${dir}/${f}" ]] || { echo "[FAIL] ${f} of backup ${label} is empty or missing in MinIO" >&2; exit 1; }
+  done
+elif [[ -z "${dir}" ]]; then
   # Незавершённые копии (*.partial) не выбираются
   dir="$(ls -1d "${BACKUP_ROOT}"/*/ 2>/dev/null | grep -v '\.partial/$' | sort | tail -1 || true)"
   [[ -n "${dir}" ]] || { echo "[FAIL] no completed backups in ${BACKUP_ROOT}" >&2; exit 1; }
@@ -113,6 +155,7 @@ current_positions="$(group_positions "${group}" "${topic}")" || exit 1
 stopped=""
 on_exit() {
   local rc=$?
+  [[ -z "${tmp_dir}" ]] || rm -rf "${tmp_dir}"
   if [[ ${rc} -ne 0 && -n "${stopped}" ]]; then
     echo "[FAIL] restore interrupted: shardingsphere-proxy and device-collector-service may be stopped," >&2
     echo "       shards or replicas may be empty. The backup is intact - repeat: make shard-restore CONFIRM=yes BACKUP=${dir}" >&2
