@@ -142,16 +142,15 @@
   во все Dockerfile других подпроектов (`grep -L` пуст; после T031 — нужен `build.gradle.kts` процессора) — `settings.gradle.kts`, `AV/Dockerfile`, `ECS/Dockerfile`, `DCS/Dockerfile`,
   `services/db-migrator/Dockerfile`, `services/device-service/Dockerfile` (FR-022)
 - [ ] T033 [P] Правила слоёв: домен не зависит от Kafka, S3 SDK, Spring Kafka; `@KafkaListener` только в `adapter.in.kafka` — `FEPT/architecture/ArchitectureTest.java` (FR-022)
-- [ ] T034 [P] Тест ключа: `givenFailedEvent_whenKey_thenFromSourceCoordinatesAndSourceTimestampUtc`, `…WhenTwoPublicationsOfSameSource_thenSameKey`,
-  `…WhenNoDeviceId…`, символы в `sourceTopic` — `FEPT/domain/model/ArchiveKeyTest.java` (FR-007, FR-008)
+- [ ] T034 [P] Тест ключа: `givenRecord_whenKey_thenFromFailedEventsPartitionOffsetAndRecordTimestampUtc`, `…WhenUnreadableAndReadableOfSameRecord_thenSameKey`,
+  `…WhenRedelivered_thenSameKeyAndSameDate`, `…WhenNoDeviceId…` — `FEPT/domain/model/ArchiveKeyTest.java` (FR-007, FR-008)
 - [ ] T035 [P] Тест JSON-документа: все поля `FailedEvent` присутствуют, `base64(value)` и `base64(key)` равны байтам, `null` у `traceId`/`key`/`value`, заголовки,
   метаданные объекта — `FEPT/domain/service/ArchiveServiceTest.java` (FR-007; R5)
 - [ ] T036 Контракт: запись `FailedEvent` 1.4.0 читается процессором; неизвестный `errorCode` → `UNKNOWN`, в объекте `UNKNOWN` и исходное число — `FEPT/contract/FailedEventContractTest.java` (FR-001; R9)
-- [ ] T037 IT (Kafka, Schema Registry, MinIO — `pgsty/minio` через `asCompatibleSubstituteFor`; R19): объект создан, JSON полон, байты побайтно (FR-007); повторная доставка и две
-  записи с одним исходным сообщением → один объект, одна версия (FR-008); нечитаемые байты → `unreadable/…` (FR-010) — `FEPT/it/ItFailedEventsProcessorTest.java`,
+- [ ] T037 IT (Kafka, Schema Registry, MinIO — `pgsty/minio` через `asCompatibleSubstituteFor`; R19): объект создан, JSON полон, байты побайтно (FR-007); повторная доставка → один объект, одна версия (FR-008); запись, сначала нечитаемая, затем разобранная (схема появилась), → один объект (FR-008, FR-010); нечитаемые байты → объект с `kind = unreadable` (FR-010) — `FEPT/it/ItFailedEventsProcessorTest.java`,
   `FEPT/it/AbstractItTest.java`, `FEPT/it/MinioTestContainerConfig.java` (FR-007, FR-008, FR-010, FR-023, SC-002)
 - [ ] T038 IT недоступности: MinIO на `docker pause` дольше `max.poll.interval.ms` — смещение не движется, группа `Stable`, после снятия паузы объект появился и смещение
-  продвинулось (SC-003); перезапуск процессора над непустым бакетом — объекты на месте; Schema Registry на паузе — `unreadable` не создаётся — `FEPT/it/ItFailedEventsOutageTest.java` (FR-009, FR-010; R6, R7)
+  продвинулось (SC-003); перезапуск процессора над непустым бакетом — объекты на месте; Schema Registry на паузе — объект `unreadable` не создаётся — `FEPT/it/ItFailedEventsOutageTest.java` (FR-009, FR-010; R6, R7)
 - [ ] T039 IT трассы: запись с `traceparent` — объект содержит тот же `traceId`, спан `s3.put-object` — потомок спана слушателя — `FEPT/it/ItFailedEventsTraceTest.java` (FR-011; R8)
 - [ ] T040 [P] Точка входа и конфигурация только из переменных окружения (plan.md), JSON-логи с `traceId`/`spanId`, `max.poll.interval.ms`,
   `enable-auto-commit: false`, `ack-mode: manual_immediate`, `max-poll-records: 1`, `auto-offset-reset: earliest` —

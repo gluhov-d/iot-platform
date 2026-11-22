@@ -3,6 +3,7 @@ sequenceDiagram
     autonumber
     participant K as Kafka devices
     participant L as DeviceInfoListener
+    participant H as DefaultErrorHandler<br/>(FailedEventRecoverer)
     participant S as DeviceRegistryService
     participant P as Proxy devices → шард
     participant RD as Redis master (адрес от Sentinel)
@@ -12,12 +13,19 @@ sequenceDiagram
     L->>S: process(key, DeviceInfo)
     S->>S: валидация: ключ = deviceId, у CREATE / UPDATE есть device,<br/>operation = UNKNOWN (новее схемы потребителя)
     alt валидация не прошла
-        S->>D: FailedEvent VALIDATION_FAILED, attempts = 1
-        D-->>S: ack
-        S-->>L: FAILED_EVENT (VALIDATION_FAILED)
-        L->>K: ack смещения после публикации FailedEvent
-        break сообщение не применяется, дальше схема не идёт
-            Note over S,P: устройство не меняется, смещение подтверждено
+        S-->>H: InvalidDeviceInfoException (VALIDATION_FAILED, не повторяется, FailedEvent сервис не публикует)
+        H->>D: FailedEvent VALIDATION_FAILED, key и value — исходные байты из x-raw-key, x-raw-value, attempts = 1
+        alt публикация FailedEvent принята (acks=all)
+            D-->>H: ack
+            H->>K: commit смещения после ответа Kafka (commitRecovered=true), лог status=FAILED_EVENT
+            break сообщение не применяется, дальше схема не идёт
+                Note over S,P: устройство не меняется, смещение подтверждено
+            end
+        else публикация FailedEvent не удалась (ошибка или тайм-аут send().get)
+            D--xH: ошибка
+            break смещение не подтверждается
+                Note over H,K: сообщение будет обработано снова после восстановления failed-events, не теряется
+            end
         end
     end
     S->>P: BEGIN · SELECT … FOR UPDATE (version, last_state_at, managed_at, deleted_at, deleted_by)

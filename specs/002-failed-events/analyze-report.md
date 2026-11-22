@@ -26,3 +26,14 @@
 **Unmapped tasks:** T074, T075, T077, T078, T083 — документы, снимки и converge, требований FR не закрывают.
 
 **Metrics:** требований 25 FR + 5 SC; задач 83 (из них **ЧЕЛОВЕК** 3: T004, T077, T078); критических находок 0; открытых HIGH 0, открытых MEDIUM 3 (I2, C2, R1).
+
+## Проход после ревью PR #6 (2026-11-22)
+
+Четыре замечания ревью (proselytear) к диаграммам; сверка с кодом ветки реализации показала, что верно первое, остальные три — расхождения диаграмм.
+
+| ID | Category | Severity | Location(s) | Summary | Статус |
+|----|----------|----------|-------------|---------|--------|
+| P1 | Inconsistency | HIGH | ADR-0014, ADR-0018, spec.md (FR-007, FR-008, FR-010), data-model.md, plan.md, `fep-error-to-minio-sequence.mmd`, `component-failed-events-processor.mmd` | У нечитаемой и разобранной записи разные ключи: сбой между записью `unreadable` и подтверждением смещения после восстановления схемы даёт два объекта | Исправлено: общий ключ `<yyyy>/<MM>/<dd>/failed-events-<partition>-<offset>.json` из координат и времени записи `failed-events`; цена (потеря префикса сервис/код, второй объект при повторной публикации сборщиком) записана в ADR-0014 |
+| P2 | Inconsistency | MEDIUM | `fep-error-to-minio-sequence.mmd`, `sequence-ingest.mmd` | Смещение `events` подтверждалось после `device_events` без `device_outbox` | Исправлено: обе записи — один шаг, ack после обеих, ошибка любой ведёт к повторам и `FailedEvent` |
+| P3 | Inconsistency | MEDIUM | `sequence-ingest.mmd`, `dcs-error-sequence.mmd` | В `FailedEvent` то `DeviceEvent`/`DeviceInfo` (Avro), то исходные байты | Исправлено: везде исходные байты из заголовков `x-raw-key`, `x-raw-value`, добавлен шаг их сохранения до разбора |
+| P4 | Inconsistency | MEDIUM | `dcs-operations-sequence.mmd` | `DeviceRegistryService` сам публикует `FailedEvent`, в других схемах — `DefaultErrorHandler` | Исправлено: сервис бросает исключение, публикует обработчик, ack после ответа Kafka, добавлена ветка неудачной публикации |

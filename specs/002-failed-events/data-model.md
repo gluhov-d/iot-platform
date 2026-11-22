@@ -6,13 +6,13 @@
 ## FailedEvent (тема `failed-events`, subject `failed-events-value`, avros 1.4.0)
 
 Ключ сообщения — строка `<sourceTopic>-<sourcePartition>-<sourceOffset>`: равномерно по трём разделам даже при шуме одного устройства и при `null`-ключе исходного
-сообщения; совпадает с концом ключа объекта (видно в Kafka UI). Порядок между ошибками не нужен — каждый объект независим.
+сообщения; с ключом объекта не совпадает (он строится из раздела и смещения записи `failed-events`). Порядок между ошибками не нужен — каждый объект независим.
 
 | Поле | Тип | Минимум задания / как используется |
 |---|---|---|
-| `sourceService` | string | минимум; префикс ключа объекта, метка метрик и панелей |
-| `sourceTopic`, `sourcePartition`, `sourceOffset` | string, int, long | минимум; ключ объекта и сообщения; возврат в исходную тему (FR-024) |
-| `sourceTimestamp` | timestamp-millis | **сверх**: дата в ключе объекта. Одинакова у повторных публикаций одного исходного сообщения → один объект |
+| `sourceService` | string | минимум; метка метрик и панелей, метаданные и поле JSON объекта |
+| `sourceTopic`, `sourcePartition`, `sourceOffset` | string, int, long | минимум; ключ сообщения; поля JSON объекта; возврат в исходную тему (FR-024) |
+| `sourceTimestamp` | timestamp-millis | **сверх**: время исходного сообщения, поле JSON объекта; дата ключа объекта — время записи `failed-events` |
 | `failedAt` | timestamp-millis | минимум (время ошибки); поле JSON, панель задержки «ошибка → объект» |
 | `errorCode` | enum `ErrorCode`, default `UNKNOWN` | минимум; сегмент ключа объекта, метка метрик; единый справочник кодов |
 | `errorType` | enum `ErrorType`, default `PERMANENT` | минимум; метка метрик, разбор: постоянную чинят данные, временную — повтор |
@@ -50,8 +50,9 @@
 
 ## Объект ошибки (бакет `failed-events`)
 
-Ключ: `<sourceService>/<yyyy>/<MM>/<dd>/<errorCode>/<sourceTopic>-<sourcePartition>-<sourceOffset>.json`; дата — `sourceTimestamp` в UTC.
-Пример: `device-collector-service/2026/11/21/STORAGE_UNAVAILABLE/devices-1-1042.json`.
+Ключ: `<yyyy>/<MM>/<dd>/failed-events-<partition>-<offset>.json`; `partition` и `offset` — раздел и смещение записи в `failed-events`, дата — время
+этой записи в UTC. Один ключ для читаемой и нечитаемой записи; при повторной доставке записи он не меняется.
+Пример: `2026/11/21/failed-events-1-7.json`.
 
 Метаданные объекта (поиск без чтения тела): `x-amz-meta-error-code`, `-source-service`, `-source-topic`, `-trace-id` (если есть), `-device-id` (если есть).
 
@@ -80,9 +81,9 @@ JSON-документ (все поля `FailedEvent`; время — ISO-8601 UT
 ```
 
 Восстановление байт в байт: `base64 -d` поля `value` (и `key`, `headers`) даёт исходные байты. `archive` — служебный блок процессора: координаты записи
-`failed-events` и время записи; в ключ объекта не входят.
+`failed-events` и время записи; из них строится ключ объекта.
 
-Нечитаемая запись (`unreadable/<yyyy>/<MM>/<dd>/failed-events-<partition>-<offset>.json`, дата — время записи в `failed-events`):
+Нечитаемая запись (тот же ключ `<yyyy>/<MM>/<dd>/failed-events-<partition>-<offset>.json`, дата — время записи в `failed-events`):
 
 ```json
 {

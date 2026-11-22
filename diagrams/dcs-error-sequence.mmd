@@ -10,6 +10,7 @@ sequenceDiagram
     participant D as Kafka (failed-events)
 
     K->>L: poll
+    L->>L: RawKeepingDeserializer: исходные байты key и value (без копии и пересериализации) → заголовки записи x-raw-key, x-raw-value, до разбора Avro
 
     alt Schema Registry недоступен (сеть, 5xx)
         L->>H: DeserializationException - временная
@@ -18,7 +19,7 @@ sequenceDiagram
         end
     else не Avro / схема не найдена
         L->>H: DeserializationException - не разобрано
-        H->>D: FailedEvent DESERIALIZATION_FAILED, исходные байты, sourceTopic, sourcePartition, sourceOffset
+        H->>D: FailedEvent DESERIALIZATION_FAILED, key и value — исходные байты из x-raw-key, x-raw-value, sourceTopic, sourcePartition, sourceOffset
         D-->>H: ack
         H->>K: commit offset после публикации FailedEvent
         break сообщение обработано, дальше схема не идёт
@@ -27,7 +28,7 @@ sequenceDiagram
     else невалидное сообщение
         L->>S: process(record)
         S-->>H: InvalidDeviceInfoException<br/>(ключ ≠ deviceId ≠ device.deviceId, пустые tenantId/deviceType, emittedAtMs ≤ 0)
-        H->>D: FailedEvent VALIDATION_FAILED, attempts = 1
+        H->>D: FailedEvent VALIDATION_FAILED, key и value — исходные байты из x-raw-key, x-raw-value, attempts = 1
         D-->>H: ack
         H->>K: commit offset после публикации FailedEvent
         break сообщение обработано, дальше схема не идёт
@@ -49,7 +50,7 @@ sequenceDiagram
             L->>S: process(record)
             S-->>H: ошибка
         end
-        H->>D: FailedEvent STORAGE_UNAVAILABLE, attempts = DEVICES_MAX_ATTEMPTS, DeviceInfo (Avro) или исходные байты, traceId
+        H->>D: FailedEvent STORAGE_UNAVAILABLE, key и value — исходные байты из x-raw-key, x-raw-value, attempts = DEVICES_MAX_ATTEMPTS, traceId
         alt публикация FailedEvent успешна
             D-->>H: ack
             H->>K: commit offset (commitRecovered=true), раздел обрабатывается дальше

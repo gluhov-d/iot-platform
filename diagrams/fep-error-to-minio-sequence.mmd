@@ -1,28 +1,34 @@
 %% Сквозной путь ошибки: событие в events → events-collector-service (N попыток) → FailedEvent в failed-events → failed-events-processor → объект в MinIO.
 %% Смещение подтверждается только после успешного следующего шага, каждая ветка, после которой обработка сообщения заканчивается, завершается break.
+%% Ключ объекта один для читаемой и нечитаемой записи: он строится только из раздела, смещения и времени записи failed-events, поэтому повторная доставка всегда попадает в тот же ключ.
 sequenceDiagram
     autonumber
     participant K as Kafka events
     participant EC as events-collector-service
     participant CH as ClickHouse device_events
+    participant CO as ClickHouse device_outbox
     participant FK as Kafka failed-events
     participant FP as failed-events-processor
     participant M as MinIO бакет failed-events
 
     K->>EC: событие (заголовок traceparent), poll max.poll.records=1
+    Note over EC,CO: две записи — один шаг обработки (как в sequence-ingest.mmd): смещение подтверждается после обеих
     EC->>CH: INSERT device_events
-    alt запись в ClickHouse прошла
+    EC->>CO: INSERT device_outbox
+    alt обе записи прошли
         CH-->>EC: ok
+        CO-->>EC: ok
         EC->>K: ack смещения events
         break FailedEvent не создаётся
-            Note over EC,K: ошибки не было, сообщение обработано
+            Note over EC,K: ошибки не было, событие записано в обе таблицы, сообщение обработано
         end
-    else ошибка записи, попытки исчерпаны (EVENTS_MAX_ATTEMPTS)
-        loop повторы INSERT, пауза растёт экспоненциально
-            EC->>CH: повтор INSERT
-            CH--xEC: ошибка
+    else ошибка любой из двух записей, попытки исчерпаны (EVENTS_MAX_ATTEMPTS)
+        loop повторы обработки целиком, пауза растёт экспоненциально
+            EC->>CH: повтор INSERT device_events (повторная строка схлопнется ReplacingMergeTree)
+            EC->>CO: повтор INSERT device_outbox
+            CH--xEC: ошибка (device_events или device_outbox)
         end
-        EC->>FK: FailedEvent (Avro): исходные key и value, sourceTopic, sourcePartition, sourceOffset, sourceTimestamp, headers, traceId текущего спана, attempts = N, STORAGE_UNAVAILABLE, TRANSIENT
+        EC->>FK: FailedEvent (Avro): исходные key и value (байты из x-raw-key, x-raw-value), sourceTopic, sourcePartition, sourceOffset, sourceTimestamp, headers, traceId текущего спана, attempts = N, STORAGE_UNAVAILABLE, TRANSIENT
         alt публикация FailedEvent недоступна (тайм-аут send().get)
             FK--xEC: ошибка
             break смещение events не подтверждается
@@ -34,10 +40,11 @@ sequenceDiagram
         end
     end
 
-    FK->>FP: FailedEvent, poll (ErrorHandlingDeserializer)
+    FK->>FP: запись failed-events (раздел p, смещение o, время записи t), poll (ErrorHandlingDeserializer)
+    FP->>FP: ключ объекта, общий для обеих веток: yyyy/MM/dd/failed-events-p-o.json, дата — время записи t в UTC (при повторной доставке p, o и t те же)
     alt FailedEvent не разобрался (битые байты, схема не найдена)
-        FP->>FP: unreadable: base64 ключа, значения и заголовков, причина
-        FP->>M: PutObject unreadable/yyyy/MM/dd/failed-events-p-o.json, If-None-Match: *
+        FP->>FP: тело unreadable: kind=unreadable, base64 ключа, значения и заголовков, причина
+        FP->>M: PutObject (ключ объекта), If-None-Match: *
         alt MinIO недоступен
             M--xFP: ошибка
             break повтор с паузой, смещение failed-events не подтверждается
@@ -51,8 +58,8 @@ sequenceDiagram
             end
         end
     else FailedEvent прочитан
-        FP->>FP: ArchiveService: ключ sourceService/yyyy/MM/dd/errorCode/sourceTopic-p-o.json (дата — sourceTimestamp в UTC), JSON со всеми полями
-        FP->>M: PutObject, If-None-Match: *, x-amz-meta-error-code, source-service, device-id, trace-id
+        FP->>FP: ArchiveService: тело — JSON со всеми полями FailedEvent (sourceService, errorCode, sourceTopic, sourcePartition, sourceOffset — в теле и в метаданных)
+        FP->>M: PutObject (тот же ключ объекта), If-None-Match: *, x-amz-meta-error-code, source-service, device-id, trace-id
         alt объект создан
             M-->>FP: 200 OK
             FP->>FK: commit смещения failed-events, outcome = created
@@ -63,7 +70,7 @@ sequenceDiagram
             M-->>FP: 412 Precondition Failed
             FP->>FK: commit смещения failed-events, outcome = duplicate
             break объект уже есть, дальше схема не идёт
-                Note over FP,FK: второго объекта нет, содержимое не меняется
+                Note over FP,FK: второго объекта нет, содержимое не меняется, если раньше записан unreadable, а схема потом появилась, объект остаётся unreadable с теми же байтами
             end
         else MinIO недоступен (сеть, 5xx, тайм-аут SDK)
             M--xFP: ошибка
