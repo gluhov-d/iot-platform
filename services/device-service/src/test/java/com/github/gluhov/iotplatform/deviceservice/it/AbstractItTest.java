@@ -170,8 +170,11 @@ public abstract class AbstractItTest {
 
     private static void createTopics() {
         try {
+            // Тема failed-events - со значениями .env.example (имя и срок хранения): скрипт требует их без значений по умолчанию
             var result = KAFKA.execInContainer("bash", "-c", "KAFKA_BOOTSTRAP=" + KAFKA_INTERNAL
-                    + " KAFKA_DEVICES_RETENTION_MS=2592000000 /opt/init/init-topics.sh");
+                    + " KAFKA_DEVICES_RETENTION_MS=2592000000"
+                    + " KAFKA_FAILED_EVENTS_TOPIC=failed-events"
+                    + " KAFKA_FAILED_EVENTS_RETENTION_MS=1209600000 /opt/init/init-topics.sh");
             if (result.getExitCode() != 0) {
                 throw new IllegalStateException("init-topics.sh exited with code " + result.getExitCode()
                         + ":\n" + result.getStdout() + result.getStderr());

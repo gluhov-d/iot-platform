@@ -837,6 +837,70 @@ services:
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
+  # failed-events-processor — читает тему failed-events и кладёт каждую запись объектом в бакет MinIO (профиль не нужен).
+  # 1-3 экземпляра одной группы: без container_name, порты - диапазон. Число экземпляров - deploy.replicas или
+  # docker compose up -d --scale failed-events-processor=N (N не больше размера диапазона портов)
+  # ---------------------------------------------------------------------------
+  failed-events-processor:
+    build:
+      context: ..
+      dockerfile: services/failed-events-processor/Dockerfile
+      # Gradle внутри сборки берёт avros из Nexus хоста (как у device-collector-service)
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: iot-platform/failed-events-processor:${FAILED_EVENTS_PROCESSOR_IMAGE_TAG}
+    <<: *default-restart
+    logging: *default-logging
+    deploy:
+      replicas: 1
+    depends_on:
+      schema-register:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      FAILED_EVENTS_CONSUMER_GROUP: ${FAILED_EVENTS_CONSUMER_GROUP}
+      FAILED_EVENTS_MAX_POLL_INTERVAL_MS: ${FAILED_EVENTS_MAX_POLL_INTERVAL_MS}
+      FAILED_EVENTS_RETRY_INITIAL_INTERVAL: ${FAILED_EVENTS_RETRY_INITIAL_INTERVAL}
+      FAILED_EVENTS_RETRY_MAX_INTERVAL: ${FAILED_EVENTS_RETRY_MAX_INTERVAL}
+      FAILED_EVENTS_RETRY_MULTIPLIER: ${FAILED_EVENTS_RETRY_MULTIPLIER}
+      # MinIO: своя учётка с правом записи только в бакет failed-events (создаёт minio-init)
+      FAILED_EVENTS_BUCKET: ${FAILED_EVENTS_BUCKET}
+      FAILED_EVENTS_S3_ENDPOINT: ${FAILED_EVENTS_S3_ENDPOINT}
+      FAILED_EVENTS_S3_REGION: ${FAILED_EVENTS_S3_REGION}
+      FAILED_EVENTS_S3_ACCESS_KEY: ${FAILED_EVENTS_S3_ACCESS_KEY}
+      FAILED_EVENTS_S3_SECRET_KEY: ${FAILED_EVENTS_S3_SECRET_KEY}
+      FAILED_EVENTS_S3_CONNECT_TIMEOUT: ${FAILED_EVENTS_S3_CONNECT_TIMEOUT}
+      FAILED_EVENTS_S3_API_CALL_TIMEOUT: ${FAILED_EVENTS_S3_API_CALL_TIMEOUT}
+      FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT: ${FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT}
+      # Alloy поднимается профилем observability; без него трейсы просто не доставляются
+      MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
+    ports:
+      # Диапазон, а не один порт: при нескольких экземплярах каждый получает свой порт хоста
+      - "${FAILED_EVENTS_PROCESSOR_PORTS}:8080"
+    healthcheck:
+      # Liveness: процесс отвечает; состояние Kafka и MinIO не проверяется (при сбое MinIO процессор повторяет запись, а не перезапускается)
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /actuator/health/liveness HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [ iot-net ]
+
+  # ---------------------------------------------------------------------------
   # Kafka UI — темы, сообщения (Avro через Schema Registry) и consumer group
   # ---------------------------------------------------------------------------
   kafka-ui:

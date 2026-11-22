@@ -29,10 +29,27 @@ spring:
       ack-mode: manual_immediate
       observation-enabled: true
 
+# Только технические точки: health (liveness для healthcheck Compose), metrics, prometheus (скрейп Alloy)
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
   otlp:
     tracing:
       endpoint: ${MANAGEMENT_OTLP_ENDPOINT}
+    # Метрики отдаются только через /actuator/prometheus, логи - в stdout (их собирает Alloy)
+    metrics:
+      export:
+        enabled: false
+  logging:
+    export:
+      otlp:
+        enabled: false
 
 failed-events:
   bucket: ${FAILED_EVENTS_BUCKET}

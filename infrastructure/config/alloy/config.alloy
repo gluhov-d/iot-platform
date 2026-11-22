@@ -123,7 +123,7 @@ otelcol.exporter.otlp "tempo" {
 }
 
 // --------------------------------------------------- метрики сервисов платформы
-// events-collector-service, device-collector-service, device-service: DNS Docker возвращает все экземпляры сервиса,
+// events-collector-service, device-collector-service, device-service, failed-events-processor: DNS Docker возвращает все экземпляры сервиса,
 // поэтому при --scale каждый скрейпится отдельно. Метки как при прямом сборе Prometheus: job - имя сервиса,
 // instance - адрес экземпляра; ряд up формирует сам Alloy. Экспортёры и сторонние компоненты - в следующем разделе.
 // Приёмник - Mimir (ADR-0016), Grafana читает его через источник prometheus
@@ -150,6 +150,13 @@ discovery.dns "device_service" {
   refresh_interval = "15s"
 }
 
+discovery.dns "failed_events_processor" {
+  names            = ["failed-events-processor"]
+  type             = "A"
+  port             = 8080
+  refresh_interval = "15s"
+}
+
 prometheus.scrape "events_collector" {
   targets         = discovery.dns.events_collector.targets
   job_name        = "events-collector-service"
@@ -171,6 +178,15 @@ prometheus.scrape "device_collector" {
 prometheus.scrape "device_service" {
   targets         = discovery.dns.device_service.targets
   job_name        = "device-service"
+  metrics_path    = "/actuator/prometheus"
+  scrape_interval = "5s"
+  scrape_timeout  = "5s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "failed_events_processor" {
+  targets         = discovery.dns.failed_events_processor.targets
+  job_name        = "failed-events-processor"
   metrics_path    = "/actuator/prometheus"
   scrape_interval = "5s"
   scrape_timeout  = "5s"

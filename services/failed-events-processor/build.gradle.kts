@@ -47,6 +47,8 @@ dependencyManagement {
 }
 
 dependencies {
+    // Веб-сервер нужен только для /actuator (health liveness для Compose, prometheus для Alloy); REST API у процессора нет
+    implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-kafka")
     implementation("org.springframework.boot:spring-boot-starter-opentelemetry")

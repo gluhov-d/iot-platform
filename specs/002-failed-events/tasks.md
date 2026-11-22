@@ -170,7 +170,7 @@
   `FEPJ/config/KafkaConfig.java`, `FEPJ/domain/service/UnreadableRecorder.java` (FR-009, FR-010, FR-011)
 - [X] T047 [P] Метрики: `failed.events.archived{source_service,error_code,outcome=created|duplicate|unreadable}`, `failed.events.archive.errors{reason}`;
   таймер наблюдения `s3.put-object` — `FEPJ/support/MetricsFacade.java`, `FEPT/support/MetricsFacadeTest.java` (FR-011, FR-019)
-- [ ] T048 [Mac] Скрипт стенда `make fep-quick-check` (по образцу `DCS/scripts/quick-check.sh`): невалидное событие в `events` с заданным `traceparent`, невалидное сообщение в `devices`,
+- [X] T048 [Mac] Скрипт стенда `make fep-quick-check` (по образцу `DCS/scripts/quick-check.sh`): невалидное событие в `events` с заданным `traceparent`, невалидное сообщение в `devices`,
   байты-мусор в `events` → три объекта в `failed-events` (`mc`), `traceId` в JSON, `base64(value)` равно отправленному — `FEP/scripts/quick-check.sh` (100755) (FR-007, FR-011, FR-023)
 
 **Checkpoint**: `./gradlew :services:failed-events-processor:test :services:failed-events-processor:integrationTest :services:failed-events-processor:check` проходят;
@@ -228,15 +228,15 @@
 
 После P3–P7.
 
-- [ ] T067 Сервис `failed-events-processor` в compose: 1–3 экземпляра (`deploy.replicas`), диапазон портов `FAILED_EVENTS_PROCESSOR_PORTS`, зависимости (`kafka-init`, `schema-register`,
+- [X] T067 Сервис `failed-events-processor` в compose: 1–3 экземпляра (`deploy.replicas`), диапазон портов `FAILED_EVENTS_PROCESSOR_PORTS`, зависимости (`kafka-init`, `schema-register`,
   `minio-init`), healthcheck через `/actuator/health/liveness`, `OTLP` на Alloy, переменные без значений по умолчанию; Alloy находит экземпляры и собирает метрики —
   `INF/docker-compose.yaml`, `INF/config/alloy/config.alloy` (FR-022)
-- [ ] T068 Makefile: только `make help` и проверка, что все цели есть (цели создают свои пакеты): `fep-quick-check`, `minio-check`, `obs-check`, `backup*`, `topics` — `Makefile` (FR-022)
-- [ ] T069 [Mac] `make up` на чистом стенде (свой проект compose): порядок старта, все контейнеры `healthy`; `make check-local`, `dcs-quick-check`, `ds-quick-check`,
+- [X] T068 Makefile: только `make help` и проверка, что все цели есть (цели создают свои пакеты): `fep-quick-check`, `minio-check`, `obs-check`, `backup*`, `topics` — `Makefile` (FR-022)
+- [X] T069 [Mac] `make up` на чистом стенде (свой проект compose): порядок старта, все контейнеры `healthy`; `make check-local`, `dcs-quick-check`, `ds-quick-check`,
   `fep-quick-check` — вывод в отчёт (FR-022, FR-007)
-- [ ] T070 [Mac] (R20) Всплеск: Proxy остановлен, N событий в `events` → N записей `STORAGE_UNAVAILABLE` после `EVENTS_MAX_ATTEMPTS` попыток, N объектов после; замер скорости процессора
+- [X] T070 [Mac] (R20) Всплеск: Proxy остановлен, N событий в `events` → N записей `STORAGE_UNAVAILABLE` после `EVENTS_MAX_ATTEMPTS` попыток, N объектов после; замер скорости процессора
   (объектов/с), отставание на панели; результат — раздел «Результаты проверок на стенде» в research.md; число записей `failed-events` равно числу объектов (FR-012, SC-001)
-- [ ] T071 [Mac] Поиск через полгода: команды `mc ls`, `mc find --metadata` по сервису, дате, коду, `deviceId`, `traceId` проверены на тестовом сообщении — раздел README и
+- [X] T071 [Mac] Поиск через полгода: команды `mc ls`, `mc find --metadata` по сервису, дате, коду, `deviceId`, `traceId` проверены на тестовом сообщении — раздел README и
   quickstart (FR-013)
 - [ ] T072 Диаграммы привести к реализации: `diagrams/containers.mmd`, `component-failed-events-processor.mmd`, `fep-error-to-minio-sequence.mmd`, прежние компонентные и sequence;
   `grep -rn -i -E 'dlt|iot\.dlt' diagrams` пуст; PNG перерендерить рядом (неотслеживаемые) (FR-003)

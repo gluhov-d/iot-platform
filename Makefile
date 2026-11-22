@@ -16,6 +16,8 @@ DS_PROJ       := :services:device-service
 # device-service-client (клиент API device-service)
 DS_CLIENT_DIR  := $(ROOT_DIR)/services/device-service-client
 DS_CLIENT_PROJ := :services:device-service-client
+# failed-events-processor (архив ошибок в MinIO)
+FEP_DIR       := $(ROOT_DIR)/services/failed-events-processor
 
 # Профили Compose: пусто - базовый стенд;
 #	make up PROFILES=observability		- плюс Mimir/Grafana/Loki/Tempo/Alloy
@@ -39,7 +41,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli minio-check obs-check topics check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release fep-quick-check schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -92,7 +94,7 @@ clean: ## Удалить контейнеры всех профилей вмес
 
 reset: clean up ## Полный пересоздание окружения с нуля
 
-KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service device-collector-service
+KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service device-collector-service failed-events-processor
 
 kafka-reset: ## Пересоздать только том Kafka (сообщения, офсеты и схемы будут потеряны)
 	@echo "!!! Будут удалены ВСЕ данные Kafka: сообщения во всех топиках, офсеты"
@@ -291,6 +293,10 @@ ds-client-check: ## Сборка и тесты клиента device-service (б
 	@$(GRADLE) $(DS_CLIENT_PROJ):build
 ds-client-release: ## Публикация клиента device-service в Nexus (необратимо: выпущенная версия не перезаписывается)
 	@$(DS_CLIENT_DIR)/scripts/publish.sh
+
+## ----------------------------------------------------------- failed-events-processor (архив ошибок)
+fep-quick-check: ## Быстрая проверка поднятого стенда: ошибки событий, устройств и мусор доходят до объектов в MinIO (scripts/quick-check.sh)
+	@$(FEP_DIR)/scripts/quick-check.sh
 
 ## ----------------------------------------------------------------- avros
 avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up; Schema Registry поднимется сама)
