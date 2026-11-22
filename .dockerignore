@@ -22,3 +22,6 @@ services/device-service-client/.gradle
 !services/device-service/**
 services/device-service/build
 services/device-service/.gradle
+!services/failed-events-processor/**
+services/failed-events-processor/build
+services/failed-events-processor/.gradle
