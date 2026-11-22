@@ -18,7 +18,7 @@ DS_CLIENT_DIR  := $(ROOT_DIR)/services/device-service-client
 DS_CLIENT_PROJ := :services:device-service-client
 
 # Профили Compose: пусто - базовый стенд;
-#	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
+#	make up PROFILES=observability		- плюс Mimir/Grafana/Loki/Tempo/Alloy
 #	make up PROFILES=tools	- плюс Kafka UI
 #	make up PROFILES="observability platform" - плюс окружение модуля
 PROFILES ?=
@@ -31,11 +31,14 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
 INIT_SERVICES := kafka-init minio-init nexus-init avros-publish schema-register clickhouse-init shard-replication-init db-migrator
+# Долгоживущие сервисы без healthcheck (в образе нет shell, curl и wget): достаточно состояния running;
+# их готовность проверяют скрипты (mimir - make obs-check)
+NO_HEALTHCHECK_SERVICES := mimir
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli minio-check topics check check-local test integration-test coverage \
+        psql redis-cli clickhouse-cli minio-check obs-check topics check check-local test integration-test coverage \
         avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
@@ -134,7 +137,7 @@ wait: ## Дождаться, пока все сервисы станут healthy
 	    else \
 	      case "$$state/$$health" in \
 	      	running/healthy) ;; \
-	     	running/) failed="$$failed $$s(нет healthcheck)" ;; \
+	     	running/) [[ " $(NO_HEALTHCHECK_SERVICES) " == *" $$s "* ]] || failed="$$failed $$s(нет healthcheck)" ;; \
 	    	exited/*|dead/*) failed="$$failed $$s($$state)" ;; \
 	   		*) pending="$$pending $$s" ;; \
 	   	  esac; \
@@ -167,12 +170,12 @@ urls: ## Показать адреса всех сервисов
 	echo "  Kafka UI                  http://localhost:$$(v KAFKA_UI_PORT)"; \
 	echo "  --- профиль observability"; \
 	echo "  Grafana                   http://localhost:$$(v GRAFANA_PORT)"; \
-	echo "  Prometheus                http://localhost:$$(v PROMETHEUS_PORT)"; \
+	echo "  Mimir (метрики)           только сеть compose: mimir:$$(v MIMIR_PORT); читает Grafana (источник prometheus)"; \
 	echo "  Loki                      http://localhost:$$(v LOKI_PORT)"; \
 	echo "  Tempo                     http://localhost:$$(v TEMPO_HTTP_PORT)  (OTLP: $$(v TEMPO_OTLP_GRPC_PORT)/$$(v TEMPO_OTLP_HTTP_PORT))"; \
 	echo "  Alloy                     http://localhost:$$(v ALLOY_PORT)"; \
 	echo "  kafka-exporter            http://localhost:$$(v KAFKA_EXPORTER_PORT)/metrics"; \
-	echo "  Proxy и шарды (метрики)   только сеть compose: shardingsphere-proxy:9090, postgres-exporter-shard-N[-replica]:9187 (читает Prometheus)"; \
+	echo "  Proxy и шарды (метрики)   только сеть compose: shardingsphere-proxy:9090, postgres-exporter-shard-N[-replica]:9187 (собирает Alloy)"; \
 	echo "  --- профиль platform"; \
 	echo "  PostgreSQL                postgresql://localhost:$$(v POSTGRES_PORT)/$$(v POSTGRES_DB)"; \
 	echo "  postgres-exporter         http://localhost:$$(v POSTGRES_EXPORTER_PORT)/metrics"; \
@@ -193,6 +196,9 @@ redis-cli: ## Открыть redis-cli к текущему основному у
 
 minio-check: ## Проверить MinIO: права учёток по бакетам и префиксам, сроки ILM, Object Lock и условную запись в failed-events (config/minio/check.sh)
 	@COMPOSE_CMD="$(COMPOSE)" $(INFRA_DIR)/config/minio/check.sh
+
+obs-check: ## Проверить наблюдаемость: источники Grafana, все PromQL дашбордов, up{job}, объекты Mimir, Loki и Tempo в MinIO (config/observability/check.sh)
+	@COMPOSE_CMD="$(COMPOSE) --profile observability" $(INFRA_DIR)/config/observability/check.sh
 
 clickhouse-cli: ## Открыть clickhouse-client
 	@$(COMPOSE) exec clickhouse sh -c 'exec clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD"'

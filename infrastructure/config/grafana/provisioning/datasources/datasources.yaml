@@ -1,11 +1,13 @@
 apiVersion: 1
 
 datasources:
+  # Метрики хранит Mimir (ADR-0016). Имя, тип и uid прежние (prometheus): дашборды и serviceMap Tempo не меняются.
+  # MIMIR_PORT - из окружения контейнера Grafana (интерполяция provisioning)
   - name: Prometheus
     uid: prometheus
     type: prometheus
     access: proxy
-    url: http://prometheus:9090
+    url: http://mimir:${MIMIR_PORT}/prometheus
     isDefault: true
     jsonData:
       httpMethod: POST

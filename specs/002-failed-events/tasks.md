@@ -180,26 +180,26 @@
 
 После P2.
 
-- [ ] T049 [Mac] Проверка наблюдаемости: скрипт — все PromQL всех дашбордов (200, нет 400), источники Grafana, `up{job}` сервисов, объекты в `mimir-blocks`, `loki-chunks`,
+- [X] T049 [Mac] Проверка наблюдаемости: скрипт — все PromQL всех дашбордов (200, нет 400), источники Grafana, `up{job}` сервисов, объекты в `mimir-blocks`, `loki-chunks`,
   `tempo-traces`; запуск `make obs-check` — `INF/config/observability/check.sh` (100755), `Makefile` (FR-017…FR-019)
-- [ ] T050 (R13) Mimir `grafana/mimir:${MIMIR_VERSION}`: монолит `-target=all`, порт 8080, blocks в префиксе бакета `mimir-blocks`, ruler — префиксом того же бакета, ограничение хранения
+- [X] T050 (R13) Mimir `grafana/mimir:${MIMIR_VERSION}`: монолит `-target=all`, порт 8080, blocks в префиксе бакета `mimir-blocks`, ruler — префиксом того же бакета, ограничение хранения
   `MIMIR_RETENTION_PERIOD`, учётка `MIMIR_S3_*`; без healthcheck (нет shell); зависимые — `service_started` — `INF/config/mimir/mimir.yaml`, `INF/docker-compose.yaml` (FR-017, FR-018; R13)
-- [ ] T051 Alloy: `prometheus.remote_write` → `http://mimir:8080/api/v1/push`; скрейп MinIO (`/minio/v2/metrics/cluster`, `/minio/metrics/v3/cluster/usage/buckets`) и прежних
+- [X] T051 Alloy: `prometheus.remote_write` → `http://mimir:8080/api/v1/push`; скрейп MinIO (`/minio/v2/metrics/cluster`, `/minio/metrics/v3/cluster/usage/buckets`) и прежних
   заданий Prometheus (прокси, экспортёры PostgreSQL/Kafka, Keycloak, Loki, Tempo, Grafana, сам Alloy, Mimir) — `INF/config/alloy/config.alloy` (FR-017; R13, R16)
-- [ ] T052 Grafana: источник `uid: prometheus`, тип `prometheus`, адрес `http://mimir:8080/prometheus`; зависимость от Mimir вместо Prometheus —
+- [X] T052 Grafana: источник `uid: prometheus`, тип `prometheus`, адрес `http://mimir:8080/prometheus`; зависимость от Mimir вместо Prometheus —
   `INF/config/grafana/provisioning/datasources/datasources.yaml`, `INF/docker-compose.yaml` (FR-017; R13)
-- [ ] T053 Prometheus удалить: сервис, том, `INF/config/prometheus/`, `PROMETHEUS_*`, зависимости Alloy и Grafana, `serviceMap` Tempo (источник тот же uid) —
+- [X] T053 Prometheus удалить: сервис, том, `INF/config/prometheus/`, `PROMETHEUS_*`, зависимости Alloy и Grafana, `serviceMap` Tempo (источник тот же uid) —
   `INF/docker-compose.yaml`, `INF/config/prometheus/`, `INF/config/tempo/tempo.yaml` (FR-017)
-- [ ] T054 Loki: хранилище S3 (бакет `loki-chunks`, учётка `LOKI_S3_*`), срок `LOKI_RETENTION_PERIOD` (90 суток), без `flush_on_shutdown`; локальный том остаётся для WAL —
+- [X] T054 Loki: хранилище S3 (бакет `loki-chunks`, учётка `LOKI_S3_*`), срок `LOKI_RETENTION_PERIOD` (90 суток), без `flush_on_shutdown`; локальный том остаётся для WAL —
   `INF/config/loki/loki-config.yaml` (FR-018; R14)
-- [ ] T055 Tempo: хранилище S3 (бакет `tempo-traces`, `TEMPO_S3_*`), срок `TEMPO_BLOCK_RETENTION` (14 суток) — `INF/config/tempo/tempo.yaml` (FR-018; R15)
-- [ ] T056 Дашборд `failed-events-processor` (поток по `source_service` и `error_code`, исходы `created/duplicate/unreadable`, задержка `s3_put_object_seconds`, отставание группы
+- [X] T055 Tempo: хранилище S3 (бакет `tempo-traces`, `TEMPO_S3_*`), срок `TEMPO_BLOCK_RETENTION` (14 суток) — `INF/config/tempo/tempo.yaml` (FR-018; R15)
+- [X] T056 Дашборд `failed-events-processor` (поток по `source_service` и `error_code`, исходы `created/duplicate/unreadable`, задержка `s3_put_object_seconds`, отставание группы
   `kafka_consumergroup_lag{consumergroup="failed-events-processor"}`, ошибки записи, логи `{service="failed-events-processor"}`) — `INF/config/grafana/dashboards/failed-events-processor.json` (FR-019)
-- [ ] T057 [Mac] Панели MinIO (первым шагом (R16): прогнать PromQL панелей MinIO через Mimir `/prometheus/api/v1/query`, каждое выражение возвращает ряды. Панели: объём и число объектов по бакетам — v3 `minio_cluster_usage_buckets_*`, запросы `minio_s3_requests_total`, ошибки 4xx/5xx, `ttfb`) —
+- [X] T057 [Mac] Панели MinIO (первым шагом (R16): прогнать PromQL панелей MinIO через Mimir `/prometheus/api/v1/query`, каждое выражение возвращает ряды. Панели: объём и число объектов по бакетам — v3 `minio_cluster_usage_buckets_*`, запросы `minio_s3_requests_total`, ошибки 4xx/5xx, `ttfb`) —
   `INF/config/grafana/dashboards/minio.json` (FR-019; R16)
-- [ ] T058 Панели DLT заменить: `device-collector.json` («В devices-dlt», «devices-dlt, ops/s» → `failed_events_published_total`), `events-collector.json` (панель
+- [X] T058 Панели DLT заменить: `device-collector.json` («В devices-dlt», «devices-dlt, ops/s» → `failed_events_published_total`), `events-collector.json` (панель
   публикации ошибок), `kafka.json` (тема `failed-events`) — `INF/config/grafana/dashboards/{device-collector,events-collector,kafka}.json` (FR-019)
-- [ ] T059 Alloy: метки логов процессора (`service`, `trace_id`, `device_id`) — `stage.match` для `failed-events-processor` — `INF/config/alloy/config.alloy` (FR-011)
+- [X] T059 Alloy: метки логов процессора (`service`, `trace_id`, `device_id`) — `stage.match` для `failed-events-processor` — `INF/config/alloy/config.alloy` (FR-011)
 
 **Checkpoint** ([Mac]): `make check`; `make up PROFILES=observability` на своём проекте compose; `make obs-check` проходит; `git grep -n -i prometheus -- infrastructure`
 не содержит сервиса `prometheus` (остаётся только формат метрик).

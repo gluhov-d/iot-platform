@@ -1111,7 +1111,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # postgres-exporter — метрики PostgreSQL для Prometheus
+  # postgres-exporter — метрики PostgreSQL (формат Prometheus, собирает Alloy)
   # ---------------------------------------------------------------------------
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:${POSTGRES_EXPORTER_VERSION}
@@ -1145,7 +1145,7 @@ services:
   # ---------------------------------------------------------------------------
   # Экспортёры метрик шардов и их реплик: по одному postgres-exporter на каждый сервер PostgreSQL
   # (профиль observability). Под ролью exporter (pg_monitor), создаёт её shard-replication-init.
-  # Порты на хост не публикуются: метрики читает Prometheus по сети compose
+  # Порты на хост не публикуются: метрики собирает Alloy по сети compose
   # ---------------------------------------------------------------------------
   postgres-exporter-shard-0:
     <<: *shard-exporter
@@ -1196,7 +1196,7 @@ services:
       DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
 
   # ---------------------------------------------------------------------------
-  # kafka-exporter — метрики Kafka (лаг консьюмер-групп) для Prometheus
+  # kafka-exporter — метрики Kafka (лаг консьюмер-групп; формат Prometheus, собирает Alloy)
   # ---------------------------------------------------------------------------
   kafka-exporter:
     image: danielqsj/kafka-exporter:${KAFKA_EXPORTER_VERSION}
@@ -1219,36 +1219,39 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Prometheus — сбор метрик
+  # Mimir — хранилище метрик (вместо Prometheus, ADR-0016): монолит, блоки в бакете MinIO mimir-blocks.
+  # Метрики сервисов и экспортёров приходят от Alloy (remote write), Grafana читает через источник prometheus.
+  # В образе нет shell, curl и wget: healthcheck невозможен, зависимые сервисы ждут service_started
+  # (готовность - GET /ready снаружи, make obs-check). Порт на хост не публикуется: читает Grafana по сети compose.
   # ---------------------------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
-    container_name: iot-prometheus
+  mimir:
+    image: grafana/mimir:${MIMIR_VERSION}
+    container_name: iot-mimir
     profiles: [observability]
     <<: *default-restart
     logging: *default-logging
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=7d"
-      - "--web.enable-lifecycle"
-      # Метрики сервисов платформы приходят от Alloy (ADR-0012)
-      - "--web.enable-remote-write-receiver"
-    ports:
-      - "${PROMETHEUS_PORT}:9090"
+      - "-config.file=/etc/mimir/mimir.yaml"
+      - "-config.expand-env=true"
+      - "-target=all"
+    user: "0"
+    environment:
+      MIMIR_PORT: ${MIMIR_PORT}
+      MINIO_BUCKET_MIMIR: ${MINIO_BUCKET_MIMIR}
+      MIMIR_S3_ACCESS_KEY: ${MIMIR_S3_ACCESS_KEY}
+      MIMIR_S3_SECRET_KEY: ${MIMIR_S3_SECRET_KEY}
+      MIMIR_RETENTION_PERIOD: ${MIMIR_RETENTION_PERIOD}
     volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+      - ./config/mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      # Локально - только WAL и рабочие каталоги; блоки уходят в MinIO
+      - mimir-data:/data
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Loki — хранение логов
+  # Loki — хранение логов: чанки и индекс - в бакете MinIO loki-chunks, локальный том - WAL и рабочие каталоги
   # ---------------------------------------------------------------------------
   loki:
     image: grafana/loki:${LOKI_VERSION}
@@ -1256,8 +1259,16 @@ services:
     profiles: [observability]
     <<: *default-restart
     logging: *default-logging
-    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["-config.file=/etc/loki/loki-config.yaml", "-config.expand-env=true"]
     user: "0"
+    environment:
+      MINIO_BUCKET_LOKI: ${MINIO_BUCKET_LOKI}
+      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
+      LOKI_RETENTION_PERIOD: ${LOKI_RETENTION_PERIOD}
     ports:
       - "${LOKI_PORT}:3100"
     volumes:
@@ -1272,7 +1283,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Tempo — хранение трейсов (OTLP)
+  # Tempo — хранение трейсов (OTLP): блоки - в бакете MinIO tempo-traces, локальный том - WAL
   # ---------------------------------------------------------------------------
   tempo:
     image: grafana/tempo:${TEMPO_VERSION}
@@ -1280,8 +1291,16 @@ services:
     profiles: [observability]
     <<: *default-restart
     logging: *default-logging
-    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
     user: "0"
+    environment:
+      MINIO_BUCKET_TEMPO: ${MINIO_BUCKET_TEMPO}
+      TEMPO_S3_ACCESS_KEY: ${TEMPO_S3_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${TEMPO_S3_SECRET_KEY}
+      TEMPO_BLOCK_RETENTION: ${TEMPO_BLOCK_RETENTION}
     ports:
       - "${TEMPO_HTTP_PORT}:3200"
       - "${TEMPO_OTLP_GRPC_PORT}:4317"
@@ -1311,11 +1330,13 @@ services:
         condition: service_healthy
       tempo:
         condition: service_healthy
-      prometheus:
-        condition: service_healthy
+      mimir:
+        condition: service_started
     environment:
       # Имя Compose-проекта: Alloy собирает логи только его контейнеров
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-iot-platform}
+      # Порт Mimir внутри сети compose (remote write, sys.env в config.alloy)
+      MIMIR_PORT: ${MIMIR_PORT}
       # Management-порт device-service для сбора метрик (sys.env в config.alloy)
       DEVICE_SERVICE_MANAGEMENT_PORT: ${DEVICE_SERVICE_MANAGEMENT_PORT}
     command:
@@ -1340,7 +1361,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Grafana — дашборды (Kafka, PostgreSQL) поверх Prometheus/Loki/Tempo
+  # Grafana — дашборды поверх Mimir (источник prometheus), Loki и Tempo
   # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
@@ -1349,13 +1370,15 @@ services:
     <<: *default-restart
     logging: *default-logging
     depends_on:
-      prometheus:
-        condition: service_healthy
+      mimir:
+        condition: service_started
       loki:
         condition: service_healthy
       tempo:
         condition: service_healthy
     environment:
+      # Порт Mimir внутри сети compose: подставляется в адрес источника (provisioning/datasources)
+      MIMIR_PORT: ${MIMIR_PORT}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -1392,7 +1415,7 @@ volumes:
   clickhouse-data:
   kafka-data:
   minio-data:
-  prometheus-data:
+  mimir-data:
   loki-data:
   tempo-data:
   alloy-data:

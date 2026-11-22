@@ -19,7 +19,7 @@
         "name": "status",
         "label": "status в логах",
         "type": "custom",
-        "query": ".*,APPLIED,STALE,DUPLICATE,FAILED,REJECTED,DLT",
+        "query": ".*,APPLIED,STALE,DUPLICATE,FAILED,FAILED_EVENT",
         "current": {
           "text": ".*",
           "value": ".*"
@@ -321,8 +321,8 @@
     {
       "id": 7,
       "type": "stat",
-      "title": "В devices-dlt",
-      "description": "devices_dlt_published_total",
+      "title": "В failed-events",
+      "description": "failed_events_published_total: сообщения, записанные в тему failed-events",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -375,7 +375,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(devices_dlt_published_total{job=\"device-collector-service\"}[$__range])) or vector(0)"
+          "expr": "sum(increase(failed_events_published_total{job=\"device-collector-service\"}[$__range])) or vector(0)"
         }
       ]
     },
@@ -590,8 +590,8 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "devices-dlt, ops/s",
-      "description": "Почему сообщения уходят в devices-dlt: invalid, deserialization - сразу; storage, error - после повторов",
+      "title": "failed-events, ops/s",
+      "description": "Публикация в failed-events по коду и типу ошибки. PERMANENT (invalid, нечитаемое) - сразу; TRANSIENT (хранилище недоступно) - после повторов",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -628,8 +628,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (rate(devices_dlt_published_total{job=\"device-collector-service\"}[1m]))",
-          "legendFormat": "{{reason}}"
+          "expr": "sum by (error_code, error_type) (rate(failed_events_published_total{job=\"device-collector-service\"}[1m]))",
+          "legendFormat": "{{error_code}} ({{error_type}})"
         }
       ]
     },
