@@ -76,7 +76,6 @@ public abstract class AbstractItTest {
     protected static final JsonMapper JSON = JsonMapper.builder().build();
     protected static final String TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
     protected static final String PARENT_SPAN_ID = "00f067aa0ba902b7";
-    protected static final String SOURCE_KEY_PREFIX = "events-collector-service/2026/11/21/VALIDATION_FAILED/events-2-";
 
     private static final Network NETWORK = Network.newNetwork();
     private static final String KAFKA_INTERNAL = "kafka:19092";
@@ -254,15 +253,14 @@ public abstract class AbstractItTest {
         return NEXT_SOURCE_OFFSET.incrementAndGet();
     }
 
-    protected static String sourceKey(long sourceOffset) {
-        return SOURCE_KEY_PREFIX + sourceOffset + ".json";
-    }
-
-    /** Ключ объекта unreadable: дата - время записи в failed-events (UTC). */
-    protected static String unreadableKey(RecordMetadata record) {
-        return "unreadable/" + java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd")
+    /**
+     * Ключ объекта для записи failed-events - один для читаемой и нечитаемой записи (ADR-0014):
+     * дата - время записи (UTC), затем тема, раздел и смещение записи.
+     */
+    protected static String objectKey(RecordMetadata record) {
+        return java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd")
                 .withZone(java.time.ZoneOffset.UTC).format(Instant.ofEpochMilli(record.timestamp()))
-                + "/failed-events-" + record.partition() + "-" + record.offset() + ".json";
+                + "/" + record.topic() + "-" + record.partition() + "-" + record.offset() + ".json";
     }
 
     // ------------------------------------------------------------------ MinIO

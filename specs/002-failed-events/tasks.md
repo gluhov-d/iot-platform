@@ -145,9 +145,9 @@
 - [X] T034 [P] Тест ключа: `givenRecord_whenKey_thenFromFailedEventsPartitionOffsetAndRecordTimestampUtc`, `…WhenUnreadableAndReadableOfSameRecord_thenSameKey`,
   `…WhenRedelivered_thenSameKeyAndSameDate`, `…WhenNoDeviceId…` — `FEPT/domain/model/ArchiveKeyTest.java` (FR-007, FR-008)
 - [X] T035 [P] Тест JSON-документа: все поля `FailedEvent` присутствуют, `base64(value)` и `base64(key)` равны байтам, `null` у `traceId`/`key`/`value`, заголовки,
-  метаданные объекта — `FEPT/domain/service/ArchiveServiceTest.java` (FR-007; R5)
+  метаданные объекта; запись, сначала нечитаемая, затем разобранная (схема появилась): тот же ключ, второй `put` — `DUPLICATE`, объект один — `FEPT/domain/service/ArchiveServiceTest.java` (FR-007, FR-008, FR-010; R5)
 - [X] T036 Контракт: запись `FailedEvent` 1.4.0 читается процессором; неизвестный `errorCode` → `UNKNOWN`, в объекте `UNKNOWN` и исходное число — `FEPT/contract/FailedEventContractTest.java` (FR-001; R9)
-- [X] T037 IT (Kafka, Schema Registry, MinIO — `pgsty/minio` через `asCompatibleSubstituteFor`; R19): объект создан, JSON полон, байты побайтно (FR-007); повторная доставка → один объект, одна версия (FR-008); запись, сначала нечитаемая, затем разобранная (схема появилась), → один объект (FR-008, FR-010); нечитаемые байты → объект с `kind = unreadable` (FR-010) — `FEPT/it/ItFailedEventsProcessorTest.java`,
+- [X] T037 IT (Kafka, Schema Registry, MinIO — `pgsty/minio` через `asCompatibleSubstituteFor`; R19): объект создан, JSON полон, байты побайтно (FR-007); повторная доставка одной записи (сброс смещений группы) → один объект, одна версия (FR-008); повторная публикация того же исходного сообщения → два объекта по одному на запись, известное ограничение (ADR-0014); нечитаемые байты → объект с `kind = unreadable` (FR-010) — `FEPT/it/ItFailedEventsProcessorTest.java`,
   `FEPT/it/AbstractItTest.java`, `FEPT/it/MinioTestContainerConfig.java` (FR-007, FR-008, FR-010, FR-023, SC-002)
 - [X] T038 IT недоступности: MinIO на `docker pause` дольше `max.poll.interval.ms` — смещение не движется, группа `Stable`, после снятия паузы объект появился и смещение
   продвинулось (SC-003); перезапуск процессора над непустым бакетом — объекты на месте; Schema Registry на паузе — объект `unreadable` не создаётся — `FEPT/it/ItFailedEventsOutageTest.java` (FR-009, FR-010; R6, R7)

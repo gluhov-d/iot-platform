@@ -6,14 +6,15 @@
 #
 # Отправляет три сообщения и ждёт по объекту на каждое в бакете failed-events:
 #   1. невалидное событие в тему events (timestampMs = 0) с заданным traceparent
-#      -> events-collector-service/<yyyy>/<MM>/<dd>/VALIDATION_FAILED/events-<p>-<o>.json, traceId в JSON равен заданному;
+#      -> <yyyy>/<MM>/<dd>/failed-events-<p>-<o>.json (sourceService events-collector-service, VALIDATION_FAILED), traceId в JSON равен заданному;
 #   2. невалидное сообщение в тему devices (ключ не равен deviceId)
-#      -> device-collector-service/<yyyy>/<MM>/<dd>/VALIDATION_FAILED/devices-<p>-<o>.json;
+#      -> тот же вид ключа (sourceService device-collector-service, VALIDATION_FAILED);
 #   3. байты-мусор в тему events (не Avro)
-#      -> events-collector-service/<yyyy>/<MM>/<dd>/DESERIALIZATION_FAILED/events-<p>-<o>.json, base64(value) равно отправленному.
+#      -> тот же вид ключа (DESERIALIZATION_FAILED), base64(value) равно отправленному.
 # Во всех трёх объектах base64(key) равно отправленному ключу. Для Avro-сообщений (1 и 2) байты value заранее неизвестны
 # (их строит консольный продюсер): проверяется, что value начинается с байта 0 формата Schema Registry.
-# Объекты ищутся среди появившихся после запуска скрипта: ключ объекта зависит от раздела и смещения, а их заранее не знают.
+# Объекты ищутся среди появившихся после запуска скрипта: ключ объекта строится из раздела, смещения и времени записи
+# failed-events (ADR-0014), их заранее не знают, а сервис и код ошибки лежат в теле объекта.
 # Выход 0 - все в порядке ("All checks passed"), иначе номер упавшего шага в выводе.
 #
 # Все выполняется внутри контейнеров стенда (docker compose exec): на хосте нужны только docker и bash.
@@ -47,12 +48,9 @@ mc_exec() {
     _ mc "$@" < /dev/null
 }
 
-# Ключи всех объектов обоих сборщиков, по одному в строке, отсортированно (пустой бакет - пустой вывод)
+# Ключи всех объектов бакета, по одному в строке, отсортированно (пустой бакет - пустой вывод)
 list_keys() {
-  local prefix
-  for prefix in events-collector-service device-collector-service; do
-    mc_exec find "local/${BUCKET}/${prefix}" --name '*.json' 2>/dev/null || true
-  done | sort
+  mc_exec find "local/${BUCKET}" --name '*.json' 2>/dev/null | sort || true
 }
 
 # Ищет среди появившихся после snapshot объектов тот, в чьём теле есть строка $1; печатает его путь.
@@ -171,9 +169,11 @@ next "Invalid event: object VALIDATION_FAILED of events-collector-service with t
 object="$(find_object "\"traceId\":\"${TRACE_ID}\"")" \
   || fail "no object with traceId ${TRACE_ID} within ${TIMEOUT}s; see docker compose logs events-collector-service failed-events-processor"
 echo "    ${object}"
-[[ "${object}" =~ /events-collector-service/[0-9]{4}/[0-9]{2}/[0-9]{2}/VALIDATION_FAILED/events-[0-9]+-[0-9]+\.json$ ]] \
+[[ "${object}" =~ /[0-9]{4}/[0-9]{2}/[0-9]{2}/failed-events-[0-9]+-[0-9]+\.json$ ]] \
   || fail "unexpected object key: ${object}"
 body="$(mc_exec cat "${object}")"
+grep -qF -- '"sourceService":"events-collector-service"' <<< "${body}" || fail "sourceService in the object is not events-collector-service"
+grep -qF -- '"errorCode":"VALIDATION_FAILED"' <<< "${body}" || fail "errorCode in the object is not VALIDATION_FAILED"
 grep -qF -- "\"key\":\"$(b64 "${EVENT_KEY}")\"" <<< "${body}" || fail "base64(key) in the object differs from the sent key"
 grep -qF -- "\"value\":\"AAAA" <<< "${body}" || fail "value in the object does not start with the Schema Registry magic byte"
 grep -qF -- "\"traceparent\":\"$(b64 "${TRACEPARENT}")\"" <<< "${body}" || fail "header traceparent is missing in the object or differs"
@@ -184,9 +184,11 @@ next "Invalid DeviceInfo: object VALIDATION_FAILED of device-collector-service"
 object="$(find_object "\"deviceId\":\"${DEVICE_ID}\"")" \
   || fail "no object with deviceId ${DEVICE_ID} within ${TIMEOUT}s; see docker compose logs device-collector-service failed-events-processor"
 echo "    ${object}"
-[[ "${object}" =~ /device-collector-service/[0-9]{4}/[0-9]{2}/[0-9]{2}/VALIDATION_FAILED/devices-[0-9]+-[0-9]+\.json$ ]] \
+[[ "${object}" =~ /[0-9]{4}/[0-9]{2}/[0-9]{2}/failed-events-[0-9]+-[0-9]+\.json$ ]] \
   || fail "unexpected object key: ${object}"
 body="$(mc_exec cat "${object}")"
+grep -qF -- '"sourceService":"device-collector-service"' <<< "${body}" || fail "sourceService in the object is not device-collector-service"
+grep -qF -- '"errorCode":"VALIDATION_FAILED"' <<< "${body}" || fail "errorCode in the object is not VALIDATION_FAILED"
 grep -qF -- "\"key\":\"$(b64 "${DEVICE_KEY}")\"" <<< "${body}" || fail "base64(key) in the object differs from the sent key"
 grep -qF -- "\"value\":\"AAAA" <<< "${body}" || fail "value in the object does not start with the Schema Registry magic byte"
 ok "key and deviceId match; value is the original Avro message"
@@ -196,9 +198,11 @@ next "Garbage: object DESERIALIZATION_FAILED, base64(value) equals the sent byte
 object="$(find_object "\"value\":\"$(b64 "${GARBAGE_VALUE}")\"")" \
   || fail "no object with the sent value within ${TIMEOUT}s; see docker compose logs events-collector-service failed-events-processor"
 echo "    ${object}"
-[[ "${object}" =~ /events-collector-service/[0-9]{4}/[0-9]{2}/[0-9]{2}/DESERIALIZATION_FAILED/events-[0-9]+-[0-9]+\.json$ ]] \
+[[ "${object}" =~ /[0-9]{4}/[0-9]{2}/[0-9]{2}/failed-events-[0-9]+-[0-9]+\.json$ ]] \
   || fail "unexpected object key: ${object}"
 body="$(mc_exec cat "${object}")"
+grep -qF -- '"sourceService":"events-collector-service"' <<< "${body}" || fail "sourceService in the object is not events-collector-service"
+grep -qF -- '"errorCode":"DESERIALIZATION_FAILED"' <<< "${body}" || fail "errorCode in the object is not DESERIALIZATION_FAILED"
 grep -qF -- "\"key\":\"$(b64 "${GARBAGE_KEY}")\"" <<< "${body}" || fail "base64(key) in the object differs from the sent key"
 ok "key and value match the sent bytes"
 

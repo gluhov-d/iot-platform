@@ -199,7 +199,7 @@
       "id": 5,
       "type": "stat",
       "title": "Нечитаемые",
-      "description": "outcome=\"unreadable\": запись темы не разобрана, объект unreadable/…",
+      "description": "outcome=\"unreadable\": запись темы не разобрана, объект с kind=unreadable",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

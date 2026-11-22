@@ -44,7 +44,11 @@ class FailedEventListenerTest {
         Acknowledgment ack = mock(Acknowledgment.class);
         FailedEventListener listener = new FailedEventListener(archive, new MetricsFacade(registry), CLOCK);
 
-        listener.onMessage(new ConsumerRecord<>("failed-events", 1, 7L, "events-2-1042", event()), ack);
+        Instant recordTime = Instant.parse("2026-11-21T10:15:31.700Z");
+
+        listener.onMessage(new ConsumerRecord<>("failed-events", 1, 7L, recordTime.toEpochMilli(),
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, -1, -1, "events-2-1042", event(),
+                new org.apache.kafka.common.header.internals.RecordHeaders(), java.util.Optional.empty()), ack);
 
         ArgumentCaptor<FailedRecord> record = ArgumentCaptor.forClass(FailedRecord.class);
         ArgumentCaptor<ArchiveCoordinates> coords = ArgumentCaptor.forClass(ArchiveCoordinates.class);
@@ -55,7 +59,7 @@ class FailedEventListenerTest {
         assertThat(record.getValue().errorType()).isEqualTo("PERMANENT");
         assertThat(new String(record.getValue().value(), StandardCharsets.UTF_8)).isEqualTo("payload");
         assertThat(record.getValue().headers()).containsKey("traceparent");
-        assertThat(coords.getValue()).isEqualTo(new ArchiveCoordinates("failed-events", 1, 7L, NOW));
+        assertThat(coords.getValue()).isEqualTo(new ArchiveCoordinates("failed-events", 1, 7L, recordTime, NOW));
         verify(ack).acknowledge();
         assertThat(registry.get("failed.events.archived").tag("outcome", "created").counter().count())
                 .isEqualTo(1.0);

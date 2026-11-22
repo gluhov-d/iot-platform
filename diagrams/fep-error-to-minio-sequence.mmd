@@ -44,7 +44,7 @@ sequenceDiagram
     FP->>FP: ключ объекта, общий для обеих веток: yyyy/MM/dd/failed-events-p-o.json, дата — время записи t в UTC (при повторной доставке p, o и t те же)
     alt FailedEvent не разобрался (битые байты, схема не найдена)
         FP->>FP: тело unreadable: kind=unreadable, base64 ключа, значения и заголовков, причина
-        FP->>M: PutObject (ключ объекта), If-None-Match: *
+        FP->>M: PutObject (ключ объекта), If-None-Match: *, x-amz-meta-kind=unreadable
         alt MinIO недоступен
             M--xFP: ошибка
             break повтор с паузой, смещение failed-events не подтверждается

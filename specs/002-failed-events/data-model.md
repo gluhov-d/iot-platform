@@ -76,7 +76,7 @@ JSON-документ (все поля `FailedEvent`; время — ISO-8601 UT
   "key": "ZGV2LTQy",
   "value": "AAAAAAEMZGV2LTQy…",
   "headers": { "traceparent": "MDAtMGFm…" },
-  "archive": { "failedEventsTopic": "failed-events", "failedEventsPartition": 1, "failedEventsOffset": 7, "archivedAt": "2026-11-21T10:15:31.902Z" }
+  "archive": { "failedEventsTopic": "failed-events", "failedEventsPartition": 1, "failedEventsOffset": 7, "recordTimestamp": "2026-11-21T10:15:31.700Z", "archivedAt": "2026-11-21T10:15:31.902Z" }
 }
 ```
 

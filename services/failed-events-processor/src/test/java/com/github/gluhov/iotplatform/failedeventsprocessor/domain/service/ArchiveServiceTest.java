@@ -1,7 +1,6 @@
 package com.github.gluhov.iotplatform.failedeventsprocessor.domain.service;
 
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.ArchiveCoordinates;
-import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.ArchiveKey;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.FailedRecord;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.PutOutcome;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.UnreadableRecord;
@@ -35,15 +34,15 @@ class ArchiveServiceTest {
     @Test
     void givenFailedRecord_whenArchive_thenObjectKeyAndJsonContainAllFields() throws Exception {
         FailedRecord record = record();
-        ArchiveCoordinates coords = new ArchiveCoordinates("failed-events", 1, 7L,
-                Instant.parse("2026-11-21T10:15:31.902Z"));
+        ArchiveCoordinates coords = coords();
 
         PutOutcome outcome = service.archive(record, coords);
 
         assertThat(outcome).isEqualTo(PutOutcome.CREATED);
         assertThat(stored).hasSize(1);
         Stored object = stored.getFirst();
-        assertThat(object.key()).isEqualTo(ArchiveKey.of(record));
+        // Ключ - из координат и времени записи failed-events, а не исходного сообщения (ADR-0014)
+        assertThat(object.key()).isEqualTo("2026/11/21/failed-events-1-7.json");
 
         JsonNode doc = JSON.readTree(object.body());
         assertThat(doc.get("schemaVersion").asInt()).isEqualTo(1);
@@ -62,6 +61,7 @@ class ArchiveServiceTest {
         assertThat(doc.get("archive").get("failedEventsTopic").asString()).isEqualTo("failed-events");
         assertThat(doc.get("archive").get("failedEventsPartition").asInt()).isEqualTo(1);
         assertThat(doc.get("archive").get("failedEventsOffset").asLong()).isEqualTo(7L);
+        assertThat(doc.get("archive").get("recordTimestamp").asString()).isEqualTo("2026-11-21T10:15:31.700Z");
         assertThat(doc.get("archive").get("archivedAt").asString()).isEqualTo("2026-11-21T10:15:31.902Z");
     }
 
@@ -134,7 +134,7 @@ class ArchiveServiceTest {
 
         assertThat(outcome).isEqualTo(PutOutcome.CREATED);
         Stored object = stored.getFirst();
-        assertThat(object.key()).isEqualTo("unreadable/2026/11/21/failed-events-1-8.json");
+        assertThat(object.key()).isEqualTo("2026/11/21/failed-events-1-8.json");
         assertThat(object.metadata()).containsOnlyKeys("kind").containsEntry("kind", "unreadable");
         JsonNode doc = JSON.readTree(object.body());
         assertThat(doc.get("kind").asString()).isEqualTo("unreadable");
@@ -148,8 +148,31 @@ class ArchiveServiceTest {
                 StandardCharsets.UTF_8)).isEqualTo("00-x");
     }
 
+    /**
+     * Запись failed-events сначала нечитаемая (схема не найдена), процесс упал до подтверждения смещения, схема
+     * появилась, и та же запись разобрана: ключ тот же, условная запись даёт «объект уже есть», объект один (FR-008, FR-010).
+     */
+    @Test
+    void givenUnreadableThenReadableOfSameRecord_whenArchive_thenSameKeyAndSecondIsDuplicate() {
+        Map<String, byte[]> bucket = new java.util.HashMap<>();
+        FailedEventArchive conditional = (key, body, metadata) ->
+                bucket.putIfAbsent(key, body) == null ? PutOutcome.CREATED : PutOutcome.DUPLICATE;
+        ArchiveService conditionalService = new ArchiveService(conditional);
+        UnreadableRecord unreadable = new UnreadableRecord("failed-events", 1, 7L,
+                Instant.parse("2026-11-21T10:15:31.700Z"), "RestClientException: schema not found",
+                KEY, VALUE, Map.of());
+
+        PutOutcome first = conditionalService.archiveUnreadable(unreadable);
+        PutOutcome second = conditionalService.archive(record(), coords());
+
+        assertThat(first).isEqualTo(PutOutcome.CREATED);
+        assertThat(second).isEqualTo(PutOutcome.DUPLICATE);
+        assertThat(bucket).containsOnlyKeys("2026/11/21/failed-events-1-7.json");
+    }
+
     private static ArchiveCoordinates coords() {
-        return new ArchiveCoordinates("failed-events", 1, 7L, Instant.parse("2026-11-21T10:15:31.902Z"));
+        return new ArchiveCoordinates("failed-events", 1, 7L, Instant.parse("2026-11-21T10:15:31.700Z"),
+                Instant.parse("2026-11-21T10:15:31.902Z"));
     }
 
     private static FailedRecord record() {

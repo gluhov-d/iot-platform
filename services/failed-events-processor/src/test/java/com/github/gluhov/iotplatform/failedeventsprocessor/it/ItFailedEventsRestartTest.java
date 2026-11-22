@@ -27,12 +27,12 @@ class ItFailedEventsRestartTest extends AbstractItTest {
     @Test
     void givenNonEmptyBucket_whenProcessorRestartedAndReadsFromStart_thenObjectsKeptWithoutNewVersions() throws Exception {
         long offset = nextSourceOffset();
-        send(FAILED + "-" + offset, event(offset, null, Instant.parse("2026-11-21T10:15:31.480Z")));
+        RecordMetadata readable = send(FAILED + "-" + offset, event(offset, null, Instant.parse("2026-11-21T10:15:31.480Z")));
         RecordMetadata raw = sendRaw("restart-" + nextSourceOffset(), new byte[]{9, 9, 9});
         awaitCommitted(raw);
 
-        String key = sourceKey(offset);
-        String unreadable = unreadableKey(raw);
+        String key = objectKey(readable);
+        String unreadable = objectKey(raw);
         awaitObject(key);
         awaitObject(unreadable);
         String etagBefore = head(key).eTag();

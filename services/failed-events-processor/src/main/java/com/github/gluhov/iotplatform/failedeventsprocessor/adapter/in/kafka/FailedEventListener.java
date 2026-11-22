@@ -50,7 +50,8 @@ public class FailedEventListener {
         PutOutcome outcome;
         try {
             outcome = archive.archive(failed, new ArchiveCoordinates(
-                    record.topic(), record.partition(), record.offset(), clock.instant()));
+                    record.topic(), record.partition(), record.offset(), Instant.ofEpochMilli(record.timestamp()),
+                    clock.instant()));
         } catch (ArchiveUnavailableException e) {
             metrics.archiveError("s3_unavailable");
             throw e;

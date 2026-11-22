@@ -29,12 +29,12 @@ public class ArchiveService {
     }
 
     public PutOutcome archive(FailedRecord record, ArchiveCoordinates coordinates) {
-        return archive.put(ArchiveKey.of(record), document(record, coordinates), metadata(record));
+        return archive.put(ArchiveKey.of(coordinates), document(record, coordinates), metadata(record));
     }
 
-    /** Нечитаемая запись failed-events: исходные байты в base64, причина и время записи (FR-010). */
+    /** Нечитаемая запись failed-events: исходные байты в base64, причина и время записи (FR-010); ключ тот же, что у разобранной записи. */
     public PutOutcome archiveUnreadable(UnreadableRecord record) {
-        return archive.put(ArchiveKey.unreadable(record), unreadableDocument(record),
+        return archive.put(ArchiveKey.of(record), unreadableDocument(record),
                 Map.of("kind", "unreadable"));
     }
 
@@ -83,6 +83,7 @@ public class ArchiveService {
         archiveBlock.put("failedEventsTopic", coordinates.topic());
         archiveBlock.put("failedEventsPartition", coordinates.partition());
         archiveBlock.put("failedEventsOffset", coordinates.offset());
+        archiveBlock.put("recordTimestamp", coordinates.recordTimestamp().toString());
         archiveBlock.put("archivedAt", coordinates.archivedAt().toString());
         doc.put("archive", archiveBlock);
         return JSON.writeValueAsBytes(doc);

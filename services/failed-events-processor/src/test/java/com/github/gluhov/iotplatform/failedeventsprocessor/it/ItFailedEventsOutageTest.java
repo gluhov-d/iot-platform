@@ -42,9 +42,10 @@ class ItFailedEventsOutageTest extends AbstractItTest {
             unpause(MINIO);
         }
 
-        awaitObject(sourceKey(offset));
+        String key = objectKey(sent);
+        awaitObject(key);
         awaitCommitted(sent);
-        assertThat(readJson(sourceKey(offset)).get("sourceOffset").asLong()).isEqualTo(offset);
+        assertThat(readJson(key).get("sourceOffset").asLong()).isEqualTo(offset);
     }
 
     @Test
@@ -57,7 +58,7 @@ class ItFailedEventsOutageTest extends AbstractItTest {
         pause(SCHEMA_REGISTRY);
         try {
             sent = sendRaw("sr-down-" + nextSourceOffset(), new byte[]{0, 0, 0, 0x27, 0x0F, 1, 2, 3});
-            String key = unreadableKey(sent);
+            String key = objectKey(sent);
             Instant until = Instant.now().plus(REGISTRY_PAUSE);
             while (Instant.now().isBefore(until)) {
                 Thread.sleep(5_000);
@@ -70,7 +71,7 @@ class ItFailedEventsOutageTest extends AbstractItTest {
             unpause(SCHEMA_REGISTRY);
         }
 
-        String key = unreadableKey(sent);
+        String key = objectKey(sent);
         awaitObject(key);
         awaitCommitted(sent);
         JsonNode doc = readJson(key);

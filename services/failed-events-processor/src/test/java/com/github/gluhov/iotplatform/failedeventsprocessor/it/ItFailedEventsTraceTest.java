@@ -26,7 +26,7 @@ class ItFailedEventsTraceTest extends AbstractItTest {
 
         awaitCommitted(sent);
 
-        String key = sourceKey(offset);
+        String key = objectKey(sent);
         awaitObject(key);
         JsonNode doc = readJson(key);
         assertThat(doc.get("traceId").asString()).isEqualTo(TRACE_ID);

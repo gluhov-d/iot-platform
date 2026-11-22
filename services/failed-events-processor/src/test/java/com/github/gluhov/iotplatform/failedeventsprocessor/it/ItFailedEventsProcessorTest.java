@@ -20,7 +20,7 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
 
         awaitCommitted(sent);
 
-        String key = sourceKey(offset);
+        String key = objectKey(sent);
         assertThat(exists(key)).isTrue();
         JsonNode doc = readJson(key);
         assertThat(doc.get("schemaVersion").asInt()).isEqualTo(1);
@@ -43,19 +43,29 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
                 .containsEntry("source-service", "events-collector-service");
     }
 
+    /**
+     * Повторная публикация того же исходного сообщения сборщиком - новая запись failed-events с другим смещением:
+     * объектов два (по одному на запись), каждый в одной версии, координаты исходного сообщения в них совпадают.
+     * Это известное ограничение единого ключа (ADR-0014); идемпотентность повторной доставки одной записи - в
+     * ItFailedEventsRestartTest.
+     */
     @Test
-    void givenSameSourceMessageTwice_whenProcessed_thenOneObjectOneVersion() throws Exception {
+    void givenSameSourceMessagePublishedTwice_whenProcessed_thenTwoObjectsOneVersionEach() throws Exception {
         long offset = nextSourceOffset();
-        send(FAILED + "-" + offset, event(offset, null, Instant.parse("2026-11-21T10:15:31.480Z")));
+        RecordMetadata first = send(FAILED + "-" + offset, event(offset, null, Instant.parse("2026-11-21T10:15:31.480Z")));
         // Повторная публикация того же сообщения: другое время ошибки и трасса, те же координаты источника
         RecordMetadata repeated = send(FAILED + "-" + offset,
                 event(offset, "0af7651916cd43dd8448eb211c80319c", Instant.parse("2026-11-21T12:00:00Z")));
 
         awaitCommitted(repeated);
 
-        String key = sourceKey(offset);
-        assertThat(exists(key)).isTrue();
-        assertThat(versionCount(key)).as("объект с одним ключом - одна версия (FR-008)").isEqualTo(1);
+        String firstKey = objectKey(first);
+        String repeatedKey = objectKey(repeated);
+        assertThat(repeatedKey).as("другая запись failed-events - другой ключ").isNotEqualTo(firstKey);
+        assertThat(versionCount(firstKey)).as("объект с одним ключом - одна версия (FR-008)").isEqualTo(1);
+        assertThat(versionCount(repeatedKey)).isEqualTo(1);
+        assertThat(readJson(firstKey).get("sourceOffset").asLong()).isEqualTo(offset);
+        assertThat(readJson(repeatedKey).get("sourceOffset").asLong()).isEqualTo(offset);
     }
 
     /** Ключ записи - строка: невалидный UTF-8 в ключе не должен ронять обработку (ограничение - в документации). */
@@ -65,7 +75,7 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
 
         awaitCommitted(sent);
 
-        String key = unreadableKey(sent);
+        String key = objectKey(sent);
         awaitObject(key);
         JsonNode doc = readJson(key);
         assertThat(doc.get("kind").asString()).isEqualTo("unreadable");
@@ -79,7 +89,7 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
 
         awaitCommitted(sent);
 
-        String key = unreadableKey(sent);
+        String key = objectKey(sent);
         awaitObject(key);
         JsonNode doc = readJson(key);
         assertThat(doc.get("kind").asString()).isEqualTo("unreadable");

@@ -25,8 +25,6 @@ import tools.jackson.databind.json.JsonMapper;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.HashMap;
@@ -40,14 +38,14 @@ import static org.awaitility.Awaitility.await;
 
 /**
  * Сообщение devices, которое сборщик не смог обработать, - до объекта в бакете failed-events (FR-004, FR-023):
- * сборщик публикует FailedEvent, процессор (второй контекст, R23) пишет объект по ключу
- * {@code device-collector-service/<дата>/<код>/devices-<раздел>-<смещение>.json}. Объект несёт исходные байты ключа
+ * сборщик публикует FailedEvent, процессор (второй контекст, R23) пишет объект по ключу из координат и времени
+ * записи failed-events ({@code <дата>/failed-events-<раздел>-<смещение>.json}, ADR-0014); тест находит объект по
+ * полям тела. Объект несёт исходные байты ключа
  * и значения, код, тип, число попыток, трассу входящего сообщения (traceparent) и заголовки исходной записи.
  */
 class ItFailedEventToObjectTest extends AbstractItTest {
 
     private static final String SERVICE = "device-collector-service";
-    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy/MM/dd").withZone(ZoneOffset.UTC);
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final String TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
     private static final String TRACEPARENT = "00-" + TRACE_ID + "-00f067aa0ba902b7-01";
@@ -143,8 +141,13 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         assertThat(decodeField(doc, "value")).isEqualTo(source);
     }
 
+    /**
+     * Сборщик повторно опубликовал то же FailedEvent: это новая запись failed-events с другим смещением, поэтому
+     * объектов два (по одному на запись), каждый в одной версии, с теми же исходными координатами. Это известное
+     * ограничение единого ключа (ADR-0014); идемпотентность повторной доставки одной записи проверяют тесты процессора.
+     */
     @Test
-    void givenSameFailedEventPublishedTwice_whenProcessed_thenOneObjectOneVersion() throws Exception {
+    void givenSameFailedEventPublishedTwice_whenProcessed_thenTwoObjectsOneVersionEach() throws Exception {
         byte[] key = ("dup-" + UUID.randomUUID()).getBytes(StandardCharsets.UTF_8);
         byte[] source = avroBytes(DEVICES, info(deviceOnShard(0), "evt-obj-4", DeviceUpsertEventType.CREATED, T).build());
         RecordMetadata original = sendBytes(key, source, 0, traceparent());
@@ -152,11 +155,12 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         awaitObject(archiveKey);
         FailedEvent event = failedEvent(original).orElseThrow();
 
-        // Сборщик повторно опубликовал то же FailedEvent: те же исходные координаты, тот же ключ записи
         RecordMetadata again = publishFailedEvent(original, event);
 
         awaitProcessed(again);
-        assertThat(versionCount(archiveKey)).as("повтор публикации не даёт второго объекта и второй версии (FR-008)").isEqualTo(1);
+        List<String> keys = findKeys("VALIDATION_FAILED", original);
+        assertThat(keys).as("две записи failed-events - два объекта с теми же исходными координатами").hasSize(2);
+        keys.forEach(objectKey -> assertThat(versionCount(objectKey)).as("одна версия на объект (FR-008)").isEqualTo(1));
     }
 
     // ------------------------------------------------------------------ Kafka
@@ -202,10 +206,40 @@ class ItFailedEventToObjectTest extends AbstractItTest {
 
     // ------------------------------------------------------------------ MinIO
 
-    /** Ключ объекта: дата - время исходного сообщения (UTC), как ArchiveKey процессора. */
+    /**
+     * Ключ объекта строится из координат и времени записи failed-events (ADR-0014), которые тест не знает: объект
+     * исходного сообщения ищется в бакете по полям тела (сервис, код, тема, раздел, смещение).
+     */
     private static String archiveKey(String errorCode, RecordMetadata source) {
-        return SERVICE + "/" + DAY.format(Instant.ofEpochMilli(source.timestamp())) + "/" + errorCode + "/"
-                + DEVICES + "-" + source.partition() + "-" + source.offset() + ".json";
+        try {
+            await().atMost(WAIT).pollInterval(Duration.ofMillis(500)).until(() -> !findKeys(errorCode, source).isEmpty());
+        } catch (ConditionTimeoutException e) {
+            throw new AssertionError("Объект для " + errorCode + " " + source.topic() + "-" + source.partition() + "-"
+                    + source.offset() + " не записан за " + WAIT + ". В бакете: "
+                    + s3.listObjectsV2(b -> b.bucket(BUCKET)).contents().stream().map(S3Object::key).toList()
+                    + ". " + processorState(), e);
+        }
+        return findKeys(errorCode, source).getFirst();
+    }
+
+    private static List<String> findKeys(String errorCode, RecordMetadata source) {
+        return s3.listObjectsV2Paginator(b -> b.bucket(BUCKET)).contents().stream()
+                .map(S3Object::key)
+                .filter(key -> describes(readJson(key), errorCode, source))
+                .toList();
+    }
+
+    private static boolean describes(JsonNode doc, String errorCode, RecordMetadata source) {
+        return SERVICE.equals(text(doc, "sourceService"))
+                && errorCode.equals(text(doc, "errorCode"))
+                && source.topic().equals(text(doc, "sourceTopic"))
+                && String.valueOf(source.partition()).equals(text(doc, "sourcePartition"))
+                && String.valueOf(source.offset()).equals(text(doc, "sourceOffset"));
+    }
+
+    private static String text(JsonNode doc, String field) {
+        JsonNode node = doc.get(field);
+        return node == null || node.isNull() ? "" : node.asString();
     }
 
     private static void awaitObject(String key) {

@@ -46,7 +46,7 @@ class UnreadableRecorderTest {
 
         recorder.accept(record("failed-events-key", null), deserializationFailure(RAW_VALUE, false));
 
-        assertThat(keys).containsExactly("unreadable/2026/11/21/failed-events-1-8.json");
+        assertThat(keys).containsExactly("2026/11/21/failed-events-1-8.json");
         JsonNode doc = JSON.readTree(bodies.getFirst());
         assertThat(doc.get("kind").asString()).isEqualTo("unreadable");
         assertThat(doc.get("reason").asString()).isEqualTo("SerializationException: Unknown magic byte!");

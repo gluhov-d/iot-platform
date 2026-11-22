@@ -173,8 +173,13 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         assertThat(bytes(doc, "key")).as("исходный ключ").isEqualTo("dev-errors".getBytes(StandardCharsets.UTF_8));
     }
 
+    /**
+     * Повторная публикация того же исходного сообщения - новая запись failed-events с другим смещением: объектов два
+     * (по одному на запись), каждый в одной версии, с теми же исходными координатами. Известное ограничение единого
+     * ключа объекта (ADR-0014); идемпотентность повторной доставки одной записи проверяют тесты процессора.
+     */
     @Test
-    void givenSameFailedEventPublishedTwice_whenProcessed_thenSingleObjectVersion() throws Exception {
+    void givenSameFailedEventPublishedTwice_whenProcessed_thenTwoObjectsOneVersionEach() throws Exception {
         long offset = nextOffset();
         FailedEvent event = failedEvent(offset);
 
@@ -182,10 +187,11 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         sendFailedEvent(event);
         RecordMetadata second = sendFailedEvent(event);
 
-        String key = objectKey(offset, "VALIDATION_FAILED");
-        // Процессор прошёл оба сообщения: второе подтверждено (412 - дубликат, смещение подтверждается)
+        // Процессор прошёл оба сообщения: смещение его группы больше смещения второй записи
         await().atMost(WAIT).untilAsserted(() -> assertThat(committedOffset()).isGreaterThan(second.offset()));
-        assertThat(versionCount(key)).as("второй объект не создан (условная запись дала 412)").isEqualTo(1);
+        List<String> keys = findKeys(offset, "VALIDATION_FAILED");
+        assertThat(keys).as("две записи failed-events - два объекта с теми же исходными координатами").hasSize(2);
+        keys.forEach(key -> assertThat(versionCount(key)).as("одна версия на объект (FR-008)").isEqualTo(1));
     }
 
     // ------------------------------------------------------------------ сообщения сборщика
@@ -255,24 +261,37 @@ class ItFailedEventToObjectTest extends AbstractItTest {
 
     // ------------------------------------------------------------------ MinIO
 
-    /** Объект ошибки для исходного смещения: ключ - {@code <сервис>/<дата>/<код>/<тема>-<раздел>-<смещение>.json}. */
+    /**
+     * Объект ошибки для исходного смещения. Ключ строится из координат и времени записи failed-events (ADR-0014),
+     * которые тест не знает, поэтому объект ищется по полям тела: сервис, код, тема, смещение.
+     */
     private static JsonNode awaitObject(long sourceOffset, String errorCode) {
         String key = await().atMost(WAIT).pollInterval(Duration.ofMillis(500))
-                .until(() -> findKey(sourceOffset, errorCode), java.util.Optional::isPresent).orElseThrow();
+                .until(() -> findKeys(sourceOffset, errorCode), keys -> !keys.isEmpty()).getFirst();
         return JSON.readTree(s3.getObjectAsBytes(b -> b.bucket(BUCKET).key(key)).asByteArray());
     }
 
-    private static String objectKey(long sourceOffset, String errorCode) {
-        return findKey(sourceOffset, errorCode).orElseThrow();
+    private static List<String> findKeys(long sourceOffset, String errorCode) {
+        return s3.listObjectsV2Paginator(ListObjectsV2Request.builder().bucket(BUCKET).build())
+                .contents().stream().map(S3Object::key)
+                .filter(key -> describes(readObject(key), sourceOffset, errorCode))
+                .toList();
     }
 
-    private static java.util.Optional<String> findKey(long sourceOffset, String errorCode) {
-        String suffix = "/" + errorCode + "/" + TOPIC + "-0-" + sourceOffset + ".json";
-        return s3.listObjectsV2Paginator(ListObjectsV2Request.builder().bucket(BUCKET).prefix(SOURCE_SERVICE + "/")
-                        .build())
-                .contents().stream().map(S3Object::key)
-                .filter(key -> key.endsWith(suffix))
-                .findFirst();
+    private static JsonNode readObject(String key) {
+        return JSON.readTree(s3.getObjectAsBytes(b -> b.bucket(BUCKET).key(key)).asByteArray());
+    }
+
+    private static boolean describes(JsonNode doc, long sourceOffset, String errorCode) {
+        return SOURCE_SERVICE.equals(text(doc, "sourceService"))
+                && errorCode.equals(text(doc, "errorCode"))
+                && TOPIC.equals(text(doc, "sourceTopic"))
+                && String.valueOf(sourceOffset).equals(text(doc, "sourceOffset"));
+    }
+
+    private static String text(JsonNode doc, String field) {
+        JsonNode node = doc.get(field);
+        return node == null || node.isNull() ? "" : node.asText();
     }
 
     private static int versionCount(String key) {

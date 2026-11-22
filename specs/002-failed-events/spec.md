@@ -57,7 +57,7 @@ MinIO становится общим хранилищем: в нём живут
 объектом с причиной и исходными байтами.
 
 **Independent Test**: сообщение с пустым `deviceId` в `events` (VALIDATION_FAILED; нечитаемые байты дают DESERIALIZATION_FAILED, см. data-model.md) — через несколько секунд один объект в бакете `failed-events`
-по пути `events-collector-service/…/VALIDATION_FAILED/events-<p>-<o>.json`; смещение `events` подтверждено.
+по ключу `<yyyy>/<MM>/<dd>/failed-events-<p>-<o>.json` (в теле `sourceService = events-collector-service`, `errorCode = VALIDATION_FAILED`); смещение `events` подтверждено.
 
 1. **Given** невалидное событие, **When** сборщик читает его, **Then** без повторов публикуется `FailedEvent`, затем фиксируется смещение.
 2. **Given** недоступное хранилище, **When** исчерпаны `*_MAX_ATTEMPTS` попыток, **Then** `FailedEvent` с `STORAGE_UNAVAILABLE`/`TRANSIENT`.
