@@ -10,11 +10,11 @@ flowchart LR
     subgraph svc["failed-events-processor (до 3 реплик, одна consumer group)"]
         direction TB
         listener["FailedEventListener<br/>adapter.in.kafka<br/>ErrorHandlingDeserializer · Avro FailedEvent<br/>max.poll.records=1 · manual ack"]
-        service["ArchiveService<br/>domain.service<br/>ключ объекта · JSON со всеми полями FailedEvent<br/>(байты ключа, значения и заголовков — base64)"]
-        model["FailedRecord · ArchiveKey<br/>domain.model"]
+        service["ArchiveService<br/>domain.service<br/>тело — JSON со всеми полями FailedEvent<br/>(байты ключа, значения и заголовков — base64)<br/>ключ объекта строит ArchiveKey"]
+        model["FailedRecord · ArchiveKey<br/>domain.model<br/>ArchiveKey: yyyy/MM/dd/failed-events-p-o.json по разделу, смещению<br/>и времени записи failed-events — одинаков для читаемой и нечитаемой записи"]
         port["FailedEventArchive<br/>domain.port"]
         s3["S3FailedEventArchive<br/>adapter.out.s3 (порт FailedEventArchive)<br/>PutObject If-None-Match: * · x-amz-meta-*<br/>apiCallTimeout 8 с · apiCallAttemptTimeout 4 с<br/>412 — объект уже записан"]
-        unreadable["UnreadableRecorder<br/>domain.service<br/>unreadable/yyyy/MM/dd — байты, причина,<br/>смещение подтверждается после записи"]
+        unreadable["UnreadableRecorder<br/>domain.service<br/>тело unreadable — байты, причина; ключ объекта тот же ArchiveKey,<br/>смещение подтверждается после записи"]
         errors["DefaultErrorHandler<br/>бесконечный ExponentialBackOff (max 10 с)<br/>+ ContainerPausingBackOffHandler<br/>MinIO недоступен — повтор, смещение не подтверждается"]
         metrics["MetricsFacade (support)<br/>failed.events.archived{source_service, error_code, outcome}<br/>таймер s3.put-object, ошибки записи"]
         tracing["Спан s3.put-object (Observation, тег bucket)<br/>дочерний спан слушателя той же трассы"]
@@ -30,7 +30,7 @@ flowchart LR
         s3 -.-> tracing
     end
 
-    minio[("MinIO · бакет failed-events<br/>sourceService/yyyy/MM/dd/errorCode/sourceTopic-sourcePartition-sourceOffset.json<br/>unreadable/yyyy/MM/dd/… · срок 180 суток")]
+    minio[("MinIO · бакет failed-events<br/>yyyy/MM/dd/failed-events-p-o.json — один ключ для всех объектов (дата — время записи failed-events, p и o — раздел и смещение)<br/>sourceService, errorCode, sourceTopic, deviceId, traceId — в теле и метаданных · срок 180 суток")]
 
     subgraph obs["Наблюдаемость"]
         alloy["Grafana Alloy"]

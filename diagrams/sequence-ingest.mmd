@@ -14,6 +14,7 @@ sequenceDiagram
     participant D as Kafka (failed-events)
 
     K->>C: poll (max.poll.records=1, enable.auto.commit=false)
+    C->>C: RawKeepingDeserializer: исходные байты key и value (без копии и пересериализации) → заголовки записи x-raw-key, x-raw-value, до разбора Avro
     C->>SR: схема по id (KafkaAvroDeserializer, кешируется)
     alt Schema Registry не ответил (сеть, 5xx)
         SR--xC: ошибка
@@ -23,7 +24,7 @@ sequenceDiagram
         end
     else не Avro / схема не найдена
         C-->>H: DeserializationException - «ядовитое» сообщение
-        H->>D: FailedEvent DESERIALIZATION_FAILED, исходные байты
+        H->>D: FailedEvent DESERIALIZATION_FAILED, key и value — исходные байты из заголовков x-raw-key, x-raw-value
         H->>K: commit offset после публикации FailedEvent
         break сообщение обработано, дальше схема не идёт
             Note over H,K: FailedEvent опубликован, смещение подтверждено
@@ -37,7 +38,7 @@ sequenceDiagram
         alt событие невалидно (в т. ч. device.deviceId ≠ deviceId)
             V-->>S: InvalidEventException
             S-->>H: исключение - не повторяется
-            H->>D: FailedEvent VALIDATION_FAILED, DeviceEvent (Avro)
+            H->>D: FailedEvent VALIDATION_FAILED, key и value — исходные байты из x-raw-key, x-raw-value (не DeviceEvent, пересериализованный из объекта)
             H->>K: commit offset после публикации FailedEvent, лог status=FAILED_EVENT
             break сообщение обработано, дальше схема не идёт
                 Note over H,K: FailedEvent опубликован, смещение подтверждено
@@ -51,7 +52,7 @@ sequenceDiagram
                 loop до EVENTS_MAX_ATTEMPTS попыток, пауза растёт экспоненциально со случайным разбросом
                     H->>L: повтор того же сообщения
                 end
-                H->>D: FailedEvent STORAGE_UNAVAILABLE, DeviceEvent (Avro), attempts = N
+                H->>D: FailedEvent STORAGE_UNAVAILABLE, key и value — исходные байты из x-raw-key, x-raw-value, attempts = N
                 H->>K: commit offset после публикации FailedEvent, лог status=FAILED_EVENT
                 break сообщение обработано, дальше схема не идёт
                     Note over H,K: FailedEvent опубликован, смещение подтверждено
@@ -65,7 +66,7 @@ sequenceDiagram
                         H->>L: повтор того же сообщения
                     end
                     Note over H,D: повторная строка device_events схлопнется ReplacingMergeTree
-                    H->>D: FailedEvent STORAGE_UNAVAILABLE, DeviceEvent (Avro), attempts = N
+                    H->>D: FailedEvent STORAGE_UNAVAILABLE, key и value — исходные байты из x-raw-key, x-raw-value, attempts = N
                     H->>K: commit offset после публикации FailedEvent, лог status=FAILED_EVENT
                     break сообщение обработано, дальше схема не идёт
                         Note over H,K: FailedEvent опубликован, смещение подтверждено
