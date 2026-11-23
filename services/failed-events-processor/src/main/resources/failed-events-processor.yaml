@@ -39,9 +39,17 @@ management:
     health:
       probes:
         enabled: true
-  otlp:
+  # Трассы: все спаны в Alloy (OTLP). Ключ endpoint - как у сборщиков (Spring Boot 4); прежний management.otlp.tracing.endpoint
+  # не читался, трассы уходили на localhost:4318, а без sampling.probability Boot отправляет 10 % трасс
+  tracing:
+    sampling:
+      probability: 1.0
+  opentelemetry:
     tracing:
-      endpoint: ${MANAGEMENT_OTLP_ENDPOINT}
+      export:
+        otlp:
+          endpoint: ${MANAGEMENT_OTLP_ENDPOINT}
+  otlp:
     # Метрики отдаются только через /actuator/prometheus, логи - в stdout (их собирает Alloy)
     metrics:
       export:
