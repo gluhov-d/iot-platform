@@ -19,7 +19,7 @@
 - Запись в объект: `PutObject` с `If-None-Match: *`. Ответ 412 означает, что объект уже записан; сообщение считается обработанным и смещение подтверждается. Версия не создаётся (см. research.md R5: `bitnamilegacy/minio` и `pgsty/minio`).
 - HEAD с последующим PUT не используется: между двумя экземплярами процессора это гонка.
 - Содержимое при повторе не сравнивается: 412 означает «объект с таким ключом уже есть». Ключ однозначно задаёт запись `failed-events`, поэтому сравнение не нужно.
-- Метаданные объекта: `x-amz-meta-error-code`, `x-amz-meta-source-service`, `x-amz-meta-device-id`, `x-amz-meta-trace-id`; у нечитаемой записи только `x-amz-meta-kind: unreadable`.
+- Метаданные объекта: `x-amz-meta-error-code`, `x-amz-meta-source-service`, `x-amz-meta-source-topic`, `x-amz-meta-device-id` (если есть), `x-amz-meta-trace-id` (если есть); у нечитаемой записи только `x-amz-meta-kind: unreadable`.
 - Поиск через полгода: `ListObjectsV2` по префиксу дня (`yyyy/MM/dd/`); сервис, код, `traceId` и `deviceId` — по метаданным объекта (`mc find --metadata`) или полю JSON.
 
 ## Последствия
