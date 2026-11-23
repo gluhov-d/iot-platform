@@ -39,14 +39,15 @@
 
 ### VII. Тесты на настоящей инфраструктуре
 Unit-тесты на логику без инфраструктуры; интеграционные — Testcontainers с теми же образами, что на стенде
-(Kafka, Schema Registry, PostgreSQL, Redis, Keycloak). Безопасность проверяется с настоящими токенами Keycloak.
+(Kafka, Schema Registry, PostgreSQL, Redis, Keycloak, MinIO). Безопасность проверяется с настоящими токенами Keycloak.
 Порог покрытия строк — 70 %.
 
 ## Технологии и запуск
 
 - Java 25, Spring Boot 4, Gradle (Kotlin DSL), монорепозиторий.
 - Kafka 4 (KRaft) + Confluent Schema Registry, PostgreSQL за ShardingSphere-Proxy, ClickHouse, Redis через
-  Sentinel, Keycloak, Nexus, Prometheus/Loki/Tempo/Grafana.
+  Sentinel, Keycloak, Nexus, MinIO (одна нода, S3 API: необработанные сообщения, данные наблюдаемости, копии баз),
+  Mimir/Loki/Tempo/Grafana, метрики, логи и трассы собирает Alloy (ADR-0012, ADR-0016).
 - Один Docker Compose на платформу; у сервиса свой Dockerfile в два этапа (JDK → JRE), образы и зависимости —
   с фиксированными версиями, без `latest`.
 - Ошибки HTTP — Problem Details (RFC 9457) с `code` и `traceId`.
@@ -66,4 +67,4 @@ Unit-тесты на логику без инфраструктуры; инте�
 Конституция важнее частных решений в spec и plan. Изменение — отдельным коммитом с новой версией и
 перечнем затронутых артефактов.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-11 | **Last Amended**: 2026-11-13
+**Version**: 1.2.0 | **Ratified**: 2026-11-11 | **Last Amended**: 2026-11-23

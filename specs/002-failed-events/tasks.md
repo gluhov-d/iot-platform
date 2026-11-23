@@ -237,15 +237,15 @@
   (объектов/с), отставание на панели; результат — раздел «Результаты проверок на стенде» в research.md; число записей `failed-events` равно числу объектов (FR-012, SC-001)
 - [X] T071 [Mac] Поиск через полгода: команды `mc ls`, `mc find --metadata` по сервису, дате, коду, `deviceId`, `traceId` проверены на тестовом сообщении — раздел README и
   quickstart (FR-013)
-- [ ] T072 Диаграммы привести к реализации: `diagrams/containers.mmd`, `component-failed-events-processor.mmd`, `fep-error-to-minio-sequence.mmd`, прежние компонентные и sequence;
+- [X] T072 Диаграммы привести к реализации: `diagrams/containers.mmd`, `component-failed-events-processor.mmd`, `fep-error-to-minio-sequence.mmd`, прежние компонентные и sequence;
   `grep -rn -i -E 'dlt|iot\.dlt' diagrams` пуст; PNG перерендерить рядом (неотслеживаемые) (FR-003)
-- [ ] T073 README: порядок запуска, как вызвать ошибку и найти объект, восстановление баз из копии, ограничения (одна нода MinIO, `pg_dump` не PITR), таблица «отличается от
+- [X] T073 README: порядок запуска, как вызвать ошибку и найти объект, восстановление баз из копии, ограничения (одна нода MinIO, `pg_dump` не PITR), таблица «отличается от
   иллюстративных примеров исходной постановки» (research.md), удалить разделы о DLT — `README.md` (FR-013, FR-021)
-- [ ] T074 Определение готовности: секция `docs/definition-of-done.md` — ссылка на spec.md, правки прошлых секций (DLT → `failed-events`, Prometheus → Mimir, MinIO в базовом
+- [X] T074 Определение готовности: секция `docs/definition-of-done.md` — ссылка на spec.md, правки прошлых секций (DLT → `failed-events`, Prometheus → Mimir, MinIO в базовом
   стенде, копии, судьба `make shard-backup`) на месте; `docs/adr/README.md` — 0013–0019 — `docs/definition-of-done.md`, `docs/adr/README.md`
-- [ ] T075 Конституция: «Технологии» — Mimir/Loki/Tempo/Grafana, MinIO; версия 1.2.0 — `.specify/memory/constitution.md`; `AGENTS.md` — таблица команд (`make minio-check`,
+- [X] T075 Конституция: «Технологии» — Mimir/Loki/Tempo/Grafana, MinIO; версия 1.2.0 — `.specify/memory/constitution.md`; `AGENTS.md` — таблица команд (`make minio-check`,
   `fep-quick-check`, `backup-check`, `obs-check`) — `AGENTS.md`
-- [ ] T076 `analyze`: проход `/speckit-analyze` (Spec Kit) и ручная сверка — дописать в `analyze-report.md` проход «после реализации» (FR-001…FR-023)
+- [X] T076 `analyze`: проход `/speckit-analyze` (Spec Kit) и ручная сверка — дописать в `analyze-report.md` проход «после реализации» (FR-001…FR-023)
 - [ ] T077 **ЧЕЛОВЕК** Снимки для сдачи: новые панели Grafana, сквозная трасса от события в `events` до `s3.put-object`, содержимое бакетов (объект ошибки, `mimir-blocks`,
   `loki-chunks`, `tempo-traces`, `backups`) — каталог `docs/screenshots/` (если принят в репозитории), ссылка в PR
 - [ ] T078 **ЧЕЛОВЕК** На стенде владельца после принятия PR: `make down`, `make up` (удалит темы `events-dlt`, `devices-dlt` вместе с данными — убедиться, что они не нужны), приёмка на Mac
