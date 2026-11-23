@@ -526,7 +526,7 @@ Tracking (исключение T109 — из AGENTS.md, не из констит
   пробелов и `/`» неверно — `DeviceInfoValidator` проверяет только непустой `deviceId` и длину до 128 (так с прошлого
   модуля). Устройство `a/b` из события роутера попадает в реестр, но device-service отвечает на него `400`. Либо поправить
   формулировку ADR-0006 и назвать ограничение в README, либо добавить проверку в `DeviceInfoValidator` (такие события
-  уйдут в `devices-dlt`) — `docs/adr/0006-device-id-assigned-by-client.md`,
+  уйдут в `failed-events`) — `docs/adr/0006-device-id-assigned-by-client.md`,
   `DCS/domain/service/DeviceInfoValidator.java` (ADR-0006, FR-004; contradicts)
 - [X] T117 Тестовый профиль device-service: сумма тайм-аутов клиента Schema Registry (1000 + 1000 мс) равна `send-timeout`
   (2 с), а инвариант README 22.4 требует «меньше» — `read` 500 мс —

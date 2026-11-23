@@ -114,8 +114,9 @@ MinIO становится общим хранилищем: в нём живут
   `retention.ms=${KAFKA_FAILED_EVENTS_RETENTION_MS}` (14 суток), без `retention.bytes`; ключ сообщения —
   `<sourceTopic>-<sourcePartition>-<sourceOffset>`. Темы `events-dlt`, `devices-dlt`, переменные `KAFKA_*_DLT_TOPIC`,
   `DEVICES_DLT_*`, subjects `events-dlt-value`, `devices-dlt-value`, код и тесты DLT удалены полностью.
-  *Проверка*: `make topics` показывает `failed-events` с этими настройками и не показывает DLT-темы; `git grep -i -E 'dlt|dead.?letter'`
-  вне `specs/`, `docs/adr/` и истории пуст.
+  *Проверка*: `make topics` показывает `failed-events` с этими настройками и не показывает DLT-темы; `git grep -i -E 'dlt|dead.?letter' -- services avros diagrams infrastructure/config`
+  пуст; вне этих путей слова остаются только там, где описано удаление: `infrastructure/init/kafka/init-topics.sh` (удаление прежних
+  тем), `README.md` и `docs/definition-of-done.md` (что заменено и как), `specs/`, `docs/adr/`.
 
 ### Сборщики
 
