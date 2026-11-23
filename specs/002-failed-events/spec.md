@@ -21,7 +21,7 @@ MinIO становится общим хранилищем: в нём живут
   [ADR-0014](../../docs/adr/0014-failed-object-key-and-idempotent-write.md)). Цена: повторная публикация того же исходного
   сообщения сборщиком — новая запись `failed-events` и второй объект с теми же координатами исходного сообщения в теле.
 - Q: Как найти объект через полгода? → A: по префиксу дня (`yyyy/MM/dd/`); сервис, код ошибки, `traceId` и `deviceId` — по
-  метаданным объекта (`x-amz-meta-error-code`, `-source-service`, `-trace-id`, `-device-id`) и по полям JSON; перечень объектов
+  метаданным объекта (`x-amz-meta-error-code`, `-source-service`, `-source-topic`, `-trace-id`, `-device-id`) и по полям JSON; перечень объектов
   за день можно выгрузить и искать по тексту ([ADR-0014](../../docs/adr/0014-failed-object-key-and-idempotent-write.md)).
 - Q: Что делает процессор с сообщением, которое сам не смог десериализовать? → A: пишет объект с тем же ключом и `kind = unreadable`
   в теле: сырые байты ключа, значения и заголовков записи `failed-events` в base64 и причина; затем подтверждает смещение. Временная
@@ -57,7 +57,7 @@ MinIO становится общим хранилищем: в нём живут
 объектом с причиной и исходными байтами.
 
 **Independent Test**: сообщение с пустым `deviceId` в `events` (VALIDATION_FAILED; нечитаемые байты дают DESERIALIZATION_FAILED, см. data-model.md) — через несколько секунд один объект в бакете `failed-events`
-по пути `events-collector-service/…/VALIDATION_FAILED/events-<p>-<o>.json`; смещение `events` подтверждено.
+по ключу `<yyyy>/<MM>/<dd>/failed-events-<p>-<o>.json` (в теле `sourceService = events-collector-service`, `errorCode = VALIDATION_FAILED`); смещение `events` подтверждено.
 
 1. **Given** невалидное событие, **When** сборщик читает его, **Then** без повторов публикуется `FailedEvent`, затем фиксируется смещение.
 2. **Given** недоступное хранилище, **When** исчерпаны `*_MAX_ATTEMPTS` попыток, **Then** `FailedEvent` с `STORAGE_UNAVAILABLE`/`TRANSIENT`.
