@@ -888,6 +888,19 @@ metadata (не метки, чтобы не раздувать индекс). С�
 | `grafana-device-collector-operations.png` | дашборд device-collector-service с командами администратора: добавлены исход `ignored` и сброс кэша устройства |
 | `tempo-trace-device-service.png` | сквозной трейс одного PUT: `http put /api/v1/devices/{deviceId}` и проверка токена (device-service) → `devices send` → `devices process`, `select device for update`, `insert processed_device_events`, `update devices: command`, `evalsha` сброса кэша (device-collector-service) |
 
+Снимки экрана обработки ошибок и архива в MinIO (снято на стенде при идущем потоке ошибок: нечитаемые сообщения в `events`, невалидные события и `DeviceInfo`):
+
+| Файл | Что |
+|---|---|
+| `grafana-failed-events-processor.png` | дашборд failed-events-processor: экземпляры, записано в архив, поток по сервису-источнику и коду ошибки, исходы записи, задержка `s3.put-object`, отставание группы, логи |
+| `grafana-events-collector-failed-events.png` | дашборд events-collector-service: панели «В failed-events», `failed-events` по коду и типу ошибки |
+| `grafana-device-collector-failed-events.png` | дашборд device-collector-service: `failed-events` по коду и типу ошибки вместо DLT |
+| `grafana-minio.png` | дашборд MinIO: объём и число объектов по бакетам, запросы S3, ошибки 4xx и 5xx |
+| `loki-failed-events-processor-logs.png` | логи процессора в Loki: `{service="failed-events-processor"} \| json` |
+| `minio-bucket-mimir-blocks.png`, `minio-bucket-loki-chunks.png`, `minio-bucket-tempo-traces.png` | бакеты данных наблюдаемости в консоли MinIO: блоки Mimir, чанки Loki, трассы Tempo |
+| `minio-bucket-backups-postgres.png`, `minio-bucket-backups-clickhouse.png` | бакет `backups`: копия шардов PostgreSQL (`shard_N.dump`, `manifest.txt`) и копия ClickHouse |
+| `failed-events-object-example.json` | пример объекта ошибки из бакета `failed-events` (`2026/11/23/failed-events-0-113.json`): все поля `FailedEvent`, байты `key` и `value` в base64, блок `archive` |
+
 Снимать при идущей нагрузке (например, несколько раз `make check-local`), иначе панели без трафика пусты.
 
 ## 17. Диаграммы
