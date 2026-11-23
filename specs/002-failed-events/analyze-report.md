@@ -90,12 +90,11 @@ SC-001…SC-005 — по тем же основаниям, что FR-007, FR-009
 | N5 | Inconsistency | MEDIUM | `sequence-ingest.mmd` | Отказ публикации `FailedEvent` описан одной общей заметкой, а не веткой у каждой из четырёх публикаций (замечание 4 ревью PR #6 к `dcs-operations-sequence`) | Исправлено (`1ddaaec`) |
 | N6 | Risk | MEDIUM | стенд, `iot-nexus` | Nexus перезапускается (счётчик дошёл до 8), `make up` падал на `avros-up` с `HTTP 000`; причина не установлена | Открыто: приёмка T078 — на стенде с памятью Docker не меньше 7 ГБ (README 10); при повторе — `docker logs iot-nexus` |
 | N7 | Risk | LOW | стенд Docker Desktop | При 5,8 ГБ памяти Docker и запущенном Nexus проверки стенда (`check-local`, `ds-quick-check`, `backup`) падали по тайм-аутам; после остановки Nexus проходили | Принято: README 10 называет ≥ 7 ГБ с профилями |
-| D1 | Documentation | LOW | spec.md FR-003 (*Проверка*) | `git grep -i -E 'dlt|dead.?letter'` вне `specs/` и `docs/adr/` не пуст: `README.md` и `docs/definition-of-done.md` описывают удаление DLT, `infrastructure/init/kafka/init-topics.sh` удаляет прежние темы (требует T006) | Открыто: документ не менялся. Предложение — исключить из проверки `README.md`, `docs/definition-of-done.md` и `init-topics.sh` или сузить её до `services/`, `avros/`, `diagrams/`, `infrastructure/config/` |
-| D3 | Documentation | LOW | `docs/adr/0002-device-info-operation.md` (строка 18), `specs/001-device-service/{spec.md (FR-015, строка 11), plan.md, tasks.md}` | Документы предыдущей фичи по-прежнему называют `devices-dlt`; DoD (раздел «Обработка ошибок и архив») оговаривает замену | Открыто: документы не менялись. Предложение — заменить `devices-dlt` на `failed-events` в этих четырёх местах |
+| D1 | Documentation | LOW | spec.md FR-003 (*Проверка*) | `git grep -i -E 'dlt|dead.?letter'` вне `specs/` и `docs/adr/` не пуст: `README.md` и `docs/definition-of-done.md` описывают удаление DLT, `infrastructure/init/kafka/init-topics.sh` удаляет прежние темы (требует T006) | Исправлено: проверка сужена до `services`, `avros`, `diagrams`, `infrastructure/config` (там пусто), остальные упоминания названы в spec (`e674824`) |
+| D3 | Documentation | LOW | `docs/adr/0002-device-info-operation.md` (строка 18), `specs/001-device-service/{spec.md (FR-015, строка 11), plan.md, tasks.md}` | Документы предыдущей фичи по-прежнему называют `devices-dlt`; DoD (раздел «Обработка ошибок и архив») оговаривает замену | Исправлено: `devices-dlt` заменён на `failed-events` в четырёх местах (`e674824`); `git grep devices-dlt` по `docs/adr` и `specs/001-device-service` пуст |
 | D2 | Documentation | LOW | README 15, `docs/definition-of-done.md` | Числа тестов device-service не пересчитаны (README — 100 unit, 49 IT; DoD — 100 и 44); фича их не меняла | Открыто: вне `specs/002-failed-events`, пересчитать при следующем `check` device-service |
 
-Закрыты находки первого прохода: I2 (`deviceId` есть в схеме и тестах контракта), C2 (T075: конституция 1.2.0, `AGENTS.md`); I3 закрыта частично (T073, T074:
-README и DoD без DLT и Prometheus, MinIO описан в базовом стенде), остаток — D3. R1: R20, R22 (arm64), R23 (второй контекст процессора в IT)
+Закрыты находки первого прохода: I2 (`deviceId` есть в схеме и тестах контракта), C2 (T075: конституция 1.2.0, `AGENTS.md`); I3 закрыта (T073, T074: README и DoD без DLT и Prometheus, MinIO описан в базовом стенде; D3: ADR-0002 и `specs/001-device-service`). R1: R20, R22 (arm64), R23 (второй контекст процессора в IT)
 подтверждены, R21 — Object Lock включён при создании бакета (`minio-check`), режим GOVERNANCE — фаза P9; R18 (возврат смещений при
 восстановлении) — см. FR-021.
 
@@ -103,7 +102,7 @@ README и DoD без DLT и Prometheus, MinIO описан в базовом с�
 FR-014…FR-019 и FR-023 (`fep-quick-check`); не подтверждены полностью — FR-021 (цикл восстановления) и частично FR-001 (`make avros-check`),
 FR-020 (расписание), FR-022 (`make up` на чистом стенде).
 
-**Metrics:** критических находок 0; открытых HIGH 0; открытых MEDIUM 1 (N6); LOW 4 (N7, D1, D2, D3).
+**Metrics:** критических находок 0; открытых HIGH 0; открытых MEDIUM 1 (N6); LOW 2 (N7, D2); D1 и D3 исправлены.
 
 **Next Actions:** T077 (снимки — приложены в `docs/screenshots/`) и T078 (приёмка на стенде владельца: `make up`, `make backup-check CONFIRM=yes` — закрывает FR-021 и
-FR-022) выполняет человек; D1 решает владелец документа; P9 (T079–T082) — после решения преподавателя (ADR-0019).
+FR-022) выполняет человек; P9 (T079–T082) — после решения преподавателя (ADR-0019).
