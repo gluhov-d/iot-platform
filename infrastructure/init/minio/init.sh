@@ -1,6 +1,7 @@
 #!/bin/sh
 # Одноразовая инициализация MinIO: сервис minio-init (образ MinIO, базовый стенд, compose).
-# Делает: бакеты (failed-events - с Object Lock и версиями, остальные - обычные), ILM по бакетам,
+# Делает: бакеты (failed-events - с Object Lock и версиями, остальные - обычные), режим GOVERNANCE по умолчанию для объектов
+# failed-events, ILM по бакетам,
 # политики компонентов и учётки компонентов. Идемпотентна: повторный запуск ничего не меняет и объекты не трогает.
 # Имена бакетов, сроки и учётки берутся из окружения. Шаблоны в config/minio/ получают значения подстановкой
 # токенов: в образе нет sed и awk.
@@ -19,6 +20,7 @@ die() { echo "[minio-init] ОШИБКА: $*" >&2; exit 1; }
 : "${MINIO_ROOT_USER:?MINIO_ROOT_USER не задан}"
 : "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD не задан}"
 : "${FAILED_EVENTS_BUCKET:?FAILED_EVENTS_BUCKET не задан}"
+: "${FAILED_EVENTS_LOCK_DAYS:?FAILED_EVENTS_LOCK_DAYS не задан}"
 : "${MINIO_BUCKET_MIMIR:?MINIO_BUCKET_MIMIR не задан}"
 : "${MINIO_BUCKET_LOKI:?MINIO_BUCKET_LOKI не задан}"
 : "${MINIO_BUCKET_TEMPO:?MINIO_BUCKET_TEMPO не задан}"
@@ -100,6 +102,16 @@ else
   mc mb --with-lock "local/$FAILED_EVENTS_BUCKET" >/dev/null || die "не создан бакет $FAILED_EVENTS_BUCKET"
   say "бакет $FAILED_EVENTS_BUCKET создан (Object Lock, версии)"
 fi
+# Режим по умолчанию (FR-025, ADR-0019): каждый новый объект failed-events защищён режимом GOVERNANCE на FAILED_EVENTS_LOCK_DAYS суток
+# (равен сроку ILM): версию не удалит ни процессор (нет права), ни администратор без обхода режима (mc rm --bypass). Условная
+# запись If-None-Match: * режим не меняет. Правило задаётся по S3 API (PUT ?object-lock): mc retention в этой сборке работает
+# с объектами и «Object locking is not enabled» показывает даже на бакете с lock. Уже записанные объекты правило не защищает.
+LOCK_XML="<ObjectLockConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>$FAILED_EVENTS_LOCK_DAYS</Days></DefaultRetention></Rule></ObjectLockConfiguration>"
+LOCK_SHA=$(printf '%s' "$LOCK_XML" | sha256sum | cut -d' ' -f1)
+LOCK_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --aws-sigv4 "aws:amz:us-east-1:s3" --user "$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD" \
+  -H "x-amz-content-sha256: $LOCK_SHA" --data-binary "$LOCK_XML" "$EP/$FAILED_EVENTS_BUCKET?object-lock")
+[ "$LOCK_CODE" = 200 ] || die "не задан режим GOVERNANCE для $FAILED_EVENTS_BUCKET (ответ $LOCK_CODE)"
+say "бакет $FAILED_EVENTS_BUCKET: режим GOVERNANCE по умолчанию, срок $FAILED_EVENTS_LOCK_DAYS дн."
 ensure_bucket "$MINIO_BUCKET_MIMIR"
 ensure_bucket "$MINIO_BUCKET_LOKI"
 ensure_bucket "$MINIO_BUCKET_TEMPO"

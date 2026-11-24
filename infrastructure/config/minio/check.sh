@@ -1,6 +1,7 @@
 #!/bin/sh
 # Проверка MinIO на поднятом стенде (make minio-check): права учёток по бакетам и префиксам, сроки ILM,
-# Object Lock и версии failed-events, условная запись If-None-Match на failed-events. Код 1, если проверка не прошла.
+# Object Lock (режим GOVERNANCE по умолчанию, запрет удаления версии), версии failed-events, условная запись If-None-Match на
+# failed-events. Код 1, если проверка не прошла.
 #
 # Запуск без аргументов - с хоста (из Makefile, COMPOSE_CMD - команда compose с --env-file и -f): одноразовый
 # контейнер minio-init выполняет этот же файл с аргументом --in-container. Учётки и секреты берутся из окружения
@@ -24,7 +25,7 @@ for v in MINIO_ROOT_USER MINIO_ROOT_PASSWORD FAILED_EVENTS_BUCKET MINIO_BUCKET_M
   MINIO_BUCKET_TEMPO MINIO_BUCKET_BACKUPS FAILED_EVENTS_S3_ACCESS_KEY FAILED_EVENTS_S3_SECRET_KEY \
   MIMIR_S3_ACCESS_KEY MIMIR_S3_SECRET_KEY LOKI_S3_ACCESS_KEY LOKI_S3_SECRET_KEY TEMPO_S3_ACCESS_KEY \
   TEMPO_S3_SECRET_KEY BACKUP_POSTGRES_S3_ACCESS_KEY BACKUP_POSTGRES_S3_SECRET_KEY BACKUP_CLICKHOUSE_S3_ACCESS_KEY \
-  BACKUP_CLICKHOUSE_S3_SECRET_KEY MINIO_EXPIRE_FAILED_EVENTS_DAYS MINIO_EXPIRE_BACKUPS_DAYS MINIO_EXPIRE_MIMIR_DAYS \
+  BACKUP_CLICKHOUSE_S3_SECRET_KEY MINIO_EXPIRE_FAILED_EVENTS_DAYS FAILED_EVENTS_LOCK_DAYS MINIO_EXPIRE_BACKUPS_DAYS MINIO_EXPIRE_MIMIR_DAYS \
   MINIO_EXPIRE_LOKI_DAYS MINIO_EXPIRE_TEMPO_DAYS; do
   eval "_val=\${$v:-}"
   [ -n "$_val" ] || { echo "FAIL  переменная $v не задана"; exit 1; }
@@ -44,7 +45,7 @@ run() {
     if [ "$_rc" -eq 0 ]; then pass "$_d"; else fail "$_d: $_out"; fi
   else
     case "$_out" in
-      *"Access Denied"*|*"AccessDenied"*|*"access denied"*|*"Insufficient permissions"*) pass "$_d" ;;
+      *"Access Denied"*|*"AccessDenied"*|*"access denied"*|*"Insufficient permissions"*|*"WORM protected"*) pass "$_d" ;;
       *) fail "$_d: ожидали 403, получили: $_out" ;;
     esac
   fi
@@ -140,6 +141,28 @@ case "$(mc version info "root/$B_FE" 2>&1)" in
   *) fail "failed-events: версии не включены" ;;
 esac
 
+# Object Lock: режим GOVERNANCE и срок по умолчанию (FR-025, ADR-0019); правило читается по S3 API (mc retention info в этой сборке
+# по умолчанию показывает «not enabled»)
+_lock_cfg=$(curl -s --aws-sigv4 "aws:amz:us-east-1:s3" --user "$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD" \
+  -H "x-amz-content-sha256: $EMPTY_SHA" "$EP/$B_FE?object-lock")
+case "$_lock_cfg" in
+  *"<Mode>GOVERNANCE</Mode>"*"<Days>$FAILED_EVENTS_LOCK_DAYS</Days>"*) pass "failed-events: режим GOVERNANCE, срок $FAILED_EVENTS_LOCK_DAYS дн. по умолчанию" ;;
+  *) fail "failed-events: ожидали режим GOVERNANCE на $FAILED_EVENTS_LOCK_DAYS дн. по умолчанию, получили: $_lock_cfg" ;;
+esac
+
+# Новый объект нельзя удалить: версию не удалит ни процессор (нет права), ни администратор без обхода режима; с обходом - можно
+printf probe | mc pipe "fe/$D_FE/lock.txt" >/dev/null 2>&1 || fail "processor не записал $D_FE/lock.txt"
+_lv=$(mc ls --versions --json "root/$D_FE/lock.txt" 2>/dev/null)
+_vid=${_lv#*\"versionId\":\"}
+_vid=${_vid%%\"*}
+if [ -z "$_vid" ] || [ "$_vid" = "$_lv" ]; then
+  fail "не получен идентификатор версии lock.txt: $_lv"
+else
+  run "processor: удаление версии объекта запрещено" denied mc rm --version-id "$_vid" "fe/$D_FE/lock.txt"
+  run "администратор: удаление версии без обхода режима запрещено" denied mc rm --version-id "$_vid" "root/$D_FE/lock.txt"
+  run "администратор: удаление версии с обходом режима GOVERNANCE" ok mc rm --bypass --version-id "$_vid" "root/$D_FE/lock.txt"
+fi
+
 ilm_check() { # бакет дни
   case "$(mc ilm rule ls --json "root/$1" 2>&1)" in
     *"\"Days\":$2}"*) pass "ILM $1: срок $2 дн." ;;
@@ -153,8 +176,12 @@ ilm_check "$B_TEMPO" "$MINIO_EXPIRE_TEMPO_DAYS"
 ilm_check "$B_BK" "$MINIO_EXPIRE_BACKUPS_DAYS"
 
 echo "== уборка проверочных каталогов"
+# Объекты failed-events под блокировкой: удаляются все версии с обходом режима GOVERNANCE (учётка root)
 for d in $ALL_DIRS "$B_FE/_healthcheck/$TS/cond.txt"; do
-  mc rm --recursive --force "root/$d" >/dev/null 2>&1 || true
+  case "$d" in
+    "$B_FE/"*) mc rm --recursive --force --versions --bypass "root/$d" >/dev/null 2>&1 || true ;;
+    *) mc rm --recursive --force "root/$d" >/dev/null 2>&1 || true ;;
+  esac
 done
 
 echo "ИТОГО: pass=$ok fail=$bad"

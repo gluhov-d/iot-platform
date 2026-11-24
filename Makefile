@@ -41,7 +41,7 @@ WAIT_TIMEOUT ?= 300
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
         psql redis-cli clickhouse-cli minio-check obs-check topics check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release fep-quick-check schemas-register schemas
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release fep-quick-check failed-replay failed-replay-test schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -297,6 +297,13 @@ ds-client-release: ## Публикация клиента device-service в Nexu
 ## ----------------------------------------------------------- failed-events-processor (архив ошибок)
 fep-quick-check: ## Быстрая проверка поднятого стенда: ошибки событий, устройств и мусор доходят до объектов в MinIO (scripts/quick-check.sh)
 	@$(FEP_DIR)/scripts/quick-check.sh
+
+failed-replay: ## Вернуть один объект из MinIO в исходную тему: make failed-replay KEY=2026/11/23/failed-events-0-113.json (scripts/replay.sh, ADR-0019)
+	@test -n "$(KEY)" || { echo "Укажите ключ объекта: make failed-replay KEY=<yyyy>/<MM>/<dd>/failed-events-<раздел>-<смещение>.json"; exit 1; }
+	@$(FEP_DIR)/scripts/replay.sh "$(KEY)"
+
+failed-replay-test: ## Проверка возврата на поднятом стенде: байты, заголовки, повтор, неизвестный ключ, нечитаемая запись (scripts/replay-test.sh)
+	@$(FEP_DIR)/scripts/replay-test.sh
 
 ## ----------------------------------------------------------------- avros
 avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up; Schema Registry поднимется сама)
