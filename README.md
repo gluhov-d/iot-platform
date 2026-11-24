@@ -698,7 +698,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 Это быстрая проверка поднятого стенда, а не замена интеграционным тестам.
 
 Остальные проверки поднятого стенда: `make dcs-quick-check` (раздел 19.8), `make ds-quick-check` (раздел 22),
-`make fep-quick-check` (ошибки доходят до объектов в MinIO), `make minio-check` (права учёток, ILM, Object Lock),
+`make fep-quick-check` (ошибки доходят до объектов в MinIO), `make minio-check` (права учёток, ILM, Object Lock и запрет удаления), `make failed-replay-test` (возврат объекта в тему),
 `make obs-check` (источники и запросы Grafana, объекты Mimir, Loki и Tempo в MinIO) и `make backup-check` (удаляет данные
 шардов и ClickHouse проекта и восстанавливает их из MinIO) — раздел 23.
 
@@ -1568,6 +1568,13 @@ mc cat local/failed-events/<ключ объекта>                            
 Ключи метаданных — без префикса `x-amz-meta-`. По `traceId` же находятся трасса в Tempo (Grafana → Explore → Tempo) и логи
 сборщика и процессора в Loki (`{service="failed-events-processor"} |= "<traceId>"`).
 
+**Вернуть объект в исходную тему** (дополнительная часть, ADR-0019): `make failed-replay KEY=<ключ объекта>`, например `KEY=2026/11/23/failed-events-0-113.json`.
+Команда читает объект, декодирует из base64 `key`, `value` и заголовки и публикует их в `sourceTopic` без пересериализации (байты те же, `traceparent` и прочие заголовки
+сохранены, раздел выбирает ключ), добавляя заголовок `x-replayed-from` с ключом объекта; объект в MinIO остаётся. Возврат точечный: одна команда — одно сообщение,
+повторный запуск публикует его ещё раз. Пока причина ошибки не устранена, сообщение снова попадёт в `failed-events`. Коды выхода: 0 — возвращено; 1 — неверные
+аргументы или ошибка публикации; 2 — объекта нет; 3 — нечитаемая запись (`kind = unreadable`): исходного сообщения в ней нет. Работает на поднятом стенде,
+запускать только на своём проекте Compose: сообщение уходит в настоящую тему. Проверка — `make failed-replay-test` (временная тема и служебные объекты, затем уборка).
+
 ### 23.5 Бакеты, сроки и права
 
 Бакеты создаёт `minio-init` (`infrastructure/init/minio/init.sh`); политики — `infrastructure/config/minio/policies/`, сроки —
@@ -1575,7 +1582,7 @@ mc cat local/failed-events/<ключ объекта>                            
 
 | Бакет | Что | Срок бакета (ILM) | Учётка |
 |---|---|---|---|
-| `failed-events` | объекты ошибок; создан с Object Lock (включается только при создании бакета) | 180 суток (`MINIO_EXPIRE_FAILED_EVENTS_DAYS`) | `failed-events-processor`: `PutObject`, `GetObject` на `failed-events/*` |
+| `failed-events` | объекты ошибок; создан с Object Lock (включается только при создании бакета), режим GOVERNANCE по умолчанию на `FAILED_EVENTS_LOCK_DAYS` суток | 180 суток (`MINIO_EXPIRE_FAILED_EVENTS_DAYS`) | `failed-events-processor`: `PutObject`, `GetObject` на `failed-events/*` |
 | `mimir-blocks` | блоки метрик Mimir | 380 суток (Mimir — 365) | `mimir` — свой бакет |
 | `loki-chunks` | чанки и индекс Loki | 100 суток (Loki — 90) | `loki` — свой бакет |
 | `tempo-traces` | блоки трейсов Tempo | 21 сутки (Tempo — 14) | `tempo` — свой бакет |
@@ -1583,6 +1590,11 @@ mc cat local/failed-events/<ключ объекта>                            
 
 Учётка к чужому бакету или префиксу получает 403 (проверяет `make minio-check`). Образ — `pgsty/minio` с закреплённым тегом
 (ADR-0015); бакет `failed-events`, созданный раньше без Object Lock, `minio-init` не переделывает и сообщает об этом.
+
+**Запрет удаления (ADR-0019).** Каждый новый объект `failed-events` защищён режимом GOVERNANCE на `FAILED_EVENTS_LOCK_DAYS` суток (по умолчанию 180, как срок ILM):
+версию не удалит ни процессор (у него нет права), ни администратор без обхода режима. Администратор снимает защиту осознанно:
+`mc rm --bypass --version-id <id> local/failed-events/<ключ>`. Правило применяется к объектам, записанным после его включения (`minio-init` задаёт его при каждом
+запуске); проверка — `make minio-check`.
 
 ### 23.6 Копии баз и восстановление
 
@@ -1609,7 +1621,9 @@ mc cat local/failed-events/<ключ объекта>                            
 * Поиск через `mc find --metadata` перебирает объекты; скорость на объёме за полгода не измерялась.
 * Повторная публикация сборщиком одного исходного сообщения даёт второй объект (раздел 23.2).
 * `make clean` и `docker compose down -v` удаляют тома вместе с архивом ошибок и копиями; `make down` тома оставляет.
-* Возврат объекта в исходную тему (`make failed-replay`) и режим Object Lock `GOVERNANCE` — необязательная часть (ADR-0019), не реализованы.
+* Возврат объекта (`make failed-replay`) точечный и повторяемый: защиты от повторной публикации нет, ответственность — у оператора. Каскад обработчиков не берётся (ADR-0019).
+* Режим GOVERNANCE защищает объекты, записанные после включения правила, и снимается администратором (`--bypass`); что произойдёт на границе срока при совпадающих
+  ILM и блокировке (180 суток), не проверялось.
 
 ### 23.8 Чем реализация отличается от иллюстративных примеров исходной постановки
 
@@ -1639,6 +1653,8 @@ mc cat local/failed-events/<ключ объекта>                            
   на паузе дольше `max.poll.interval`: группа стабильна, объект появляется после снятия паузы), `ItFailedEventsRestartTest`
   (перечитывание темы не создаёт новых версий), `ItFailedEventsTraceTest` (`s3.put-object` — дочерний спан слушателя).
 * Путь «сборщик → объект» — `ItFailedEventToObjectTest` в events-collector-service и device-collector-service.
+* Возврат объекта: `make failed-replay-test` (`scripts/replay-test.sh`): байты `key` и `value` с `0x00`, `0x0a`, `0xff`, заголовки, `x-replayed-from`, повтор,
+  неизвестный ключ (код 2), нечитаемая запись (код 3). Запрет удаления — в `make minio-check` (96 проверок).
 * Числа последнего прогона `check`: unit — 48, интеграционные — 8, покрытие строк — 96,6 %.
 * `./gradlew :services:failed-events-processor:check` — все тесты и порог покрытия 70 %; `make fep-quick-check` — проверка
   поднятого стенда.

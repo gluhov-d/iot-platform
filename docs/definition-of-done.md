@@ -404,6 +404,13 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
   `make clickhouse-restore` («База данных», бэкап).
 - `make shard-backup` остаётся для локальной копии: тот же скрипт `shard-backup.sh` вызывает и `make shard-backup` (локальная копия), и backup-runner (копия в MinIO); второй реализации нет (ADR-0017).
 
+Дополнительная часть задания (необязательная, ADR-0019):
+
+- [ ] Команда `make failed-replay KEY=<ключ объекта>` возвращает одно сообщение в исходную тему: байты `key` и `value` без пересериализации, `traceparent` и прочие
+  заголовки сохранены, добавлен заголовок `x-replayed-from`; `make failed-replay-test` проходит (`services/failed-events-processor/scripts/replay-test.sh`).
+- [ ] Бакет `failed-events`: версии и Object Lock в режиме GOVERNANCE на `FAILED_EVENTS_LOCK_DAYS` суток по умолчанию; удаление версии учёткой процессора и
+  администратором без обхода режима отклоняется, `make minio-check` проходит.
+
 Снимки для сдачи (задача T077) лежат в `docs/screenshots/`, перечень — в README, раздел 16: панели Grafana (failed-events-processor,
 MinIO, оба сборщика), логи процессора в Loki, содержимое бакетов (`mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups`), пример
 объекта ошибки. Сквозная трасса от события в `events` до `s3.put-object` — отдельным снимком после проверки на стенде.

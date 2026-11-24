@@ -38,7 +38,7 @@
 | Корректность Compose | `make check` |
 | Стенд: поднять / выключить (тома остаются) | `make up` / `make down` |
 | Проверки стенда | `make check-local`, `make dcs-quick-check`, `make ds-quick-check`, `make fep-quick-check` |
-| MinIO и наблюдаемость | `make minio-check`, `make obs-check` |
+| MinIO и наблюдаемость | `make minio-check`, `make obs-check`, `make failed-replay-test` (`make failed-replay KEY=…` публикует в настоящую тему — только на своём стенде) |
 | Копии баз | `make backup`, `make backup-list`; `make backup-check CONFIRM=yes` удаляет данные шардов и ClickHouse проекта Compose — только под своим `COMPOSE_PROJECT_NAME` |
 | Схемы avros без публикации | `make avros-check` |
 
