@@ -1,0 +1,103 @@
+{
+  "type": "record",
+  "name": "FailedEvent",
+  "namespace": "com.github.gluhov.iotplatform.events.avro",
+  "doc": "Сообщение, которое сервис платформы не смог обработать: исходное сообщение без изменений и описание ошибки. Тема failed-events, ключ сообщения - <sourceTopic>-<sourcePartition>-<sourceOffset>. С версии 1.4.0.",
+  "fields": [
+    {
+      "name": "sourceService",
+      "type": "string",
+      "doc": "Сервис, который не смог обработать сообщение: events-collector-service или device-collector-service."
+    },
+    {
+      "name": "sourceTopic",
+      "type": "string",
+      "doc": "Тема исходного сообщения."
+    },
+    {
+      "name": "sourcePartition",
+      "type": "int",
+      "doc": "Раздел исходного сообщения."
+    },
+    {
+      "name": "sourceOffset",
+      "type": "long",
+      "doc": "Смещение исходного сообщения в разделе."
+    },
+    {
+      "name": "sourceTimestamp",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Время записи исходного сообщения в Kafka. Одно и то же у всех повторных публикаций одного исходного сообщения: из него строится дата в ключе объекта."
+    },
+    {
+      "name": "failedAt",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Время ошибки: момент, когда сборщик отказался от сообщения."
+    },
+    {
+      "name": "errorCode",
+      "type": {
+        "type": "enum",
+        "name": "ErrorCode",
+        "doc": "Единый справочник кодов ошибок платформы. Новый символ добавляется в конец списка: старый читатель получит UNKNOWN.",
+        "symbols": ["UNKNOWN", "DESERIALIZATION_FAILED", "VALIDATION_FAILED", "STORAGE_UNAVAILABLE", "PROCESSING_FAILED"],
+        "default": "UNKNOWN"
+      },
+      "default": "UNKNOWN",
+      "doc": "Код ошибки."
+    },
+    {
+      "name": "errorType",
+      "type": {
+        "type": "enum",
+        "name": "ErrorType",
+        "doc": "TRANSIENT - попытки исчерпаны, сообщение само по себе могло быть верным. PERMANENT - сообщение не обработать никогда.",
+        "symbols": ["TRANSIENT", "PERMANENT"],
+        "default": "PERMANENT"
+      },
+      "default": "PERMANENT",
+      "doc": "Тип ошибки."
+    },
+    {
+      "name": "description",
+      "type": "string",
+      "doc": "Класс и сообщение корневой причины, не длиннее 2000 символов. Без стека."
+    },
+    {
+      "name": "traceId",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Идентификатор трассы: null, если у входящего сообщения трассы не было."
+    },
+    {
+      "name": "key",
+      "type": ["null", "bytes"],
+      "default": null,
+      "doc": "Байты ключа исходного сообщения без изменений, null - ключа не было."
+    },
+    {
+      "name": "value",
+      "type": ["null", "bytes"],
+      "default": null,
+      "doc": "Байты значения исходного сообщения без изменений (с заголовком Schema Registry), null - значения не было."
+    },
+    {
+      "name": "headers",
+      "type": {"type": "map", "values": "bytes"},
+      "default": {},
+      "doc": "Заголовки исходного сообщения (traceparent и прочие) без служебных заголовков Spring и обработки ошибок."
+    },
+    {
+      "name": "attempts",
+      "type": "int",
+      "default": 1,
+      "doc": "Сколько раз сборщик пытался обработать сообщение: 1 - постоянная ошибка, N - исчерпаны попытки."
+    },
+    {
+      "name": "deviceId",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Идентификатор устройства, если сообщение удалось разобрать до ошибки: поиск объекта по устройству."
+    }
+  ]
+}

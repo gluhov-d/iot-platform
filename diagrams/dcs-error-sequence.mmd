@@ -1,4 +1,4 @@
-%% device-collector-service: ошибки - невалидное сообщение, недоступный шард, недоступная DLT
+%% device-collector-service: ошибки — невалидное сообщение, недоступный шард, недоступный failed-events
 sequenceDiagram
     autonumber
     participant K as Kafka (devices)
@@ -7,17 +7,33 @@ sequenceDiagram
     participant S as DeviceRegistryService
     participant P as ShardingSphere-Proxy
     participant DB as PostgreSQL shard_N
-    participant D as Kafka (devices-dlt)
+    participant D as Kafka (failed-events)
 
     K->>L: poll
+    L->>L: RawKeepingDeserializer: исходные байты key и value (без копии и пересериализации) → заголовки записи x-raw-key, x-raw-value, до разбора Avro
 
-    alt не Avro / нет схемы
-        L->>H: DeserializationException (ErrorHandlingDeserializer)
-        Note over H: не повторяется. Schema Registry недоступен (сеть, 5xx) -<br/>повтор без ограничения, в devices-dlt не уходит
+    alt Schema Registry недоступен (сеть, 5xx)
+        L->>H: DeserializationException - временная
+        break повтор без ограничения числа попыток, FailedEvent не создаётся
+            Note over H,K: offset не подтверждается, сообщение не теряется
+        end
+    else не Avro / схема не найдена
+        L->>H: DeserializationException - не разобрано
+        H->>D: FailedEvent DESERIALIZATION_FAILED, key и value — исходные байты из x-raw-key, x-raw-value, sourceTopic, sourcePartition, sourceOffset
+        D-->>H: ack
+        H->>K: commit offset после публикации FailedEvent
+        break сообщение обработано, дальше схема не идёт
+            Note over H,K: FailedEvent опубликован, смещение подтверждено
+        end
     else невалидное сообщение
         L->>S: process(record)
         S-->>H: InvalidDeviceInfoException<br/>(ключ ≠ deviceId ≠ device.deviceId, пустые tenantId/deviceType, emittedAtMs ≤ 0)
-        Note over H: не повторяется
+        H->>D: FailedEvent VALIDATION_FAILED, key и value — исходные байты из x-raw-key, x-raw-value, attempts = 1
+        D-->>H: ack
+        H->>K: commit offset после публикации FailedEvent
+        break сообщение обработано, дальше схема не идёт
+            Note over H,K: FailedEvent опубликован, смещение подтверждено
+        end
     else шард недоступен / таймаут
         L->>S: process(record)
         S->>P: BEGIN · SELECT … FOR UPDATE
@@ -29,20 +45,24 @@ sequenceDiagram
         P-->>S: data_source_name = shard_N (маршрут без обращения к узлу,<br/>значение - литералом: параметр PREVIEW Proxy 5.5.3 не учитывает)
         Note over S: devices_shard_route_fail_total{shard=shard_N, reason=connection|timeout|routing}++<br/>devices_processing_errors_total{reason=storage}++ (каждая попытка)<br/>лог status=FAILED, shard, errorClass, errorMessage
         S-->>H: DeviceNotStoredException
-        loop ещё 2 попытки: пауза ≈1 с, затем ≈2 с (экспонента + случайный разброс)
+        loop повторы до DEVICES_MAX_ATTEMPTS попыток, пауза по DEVICES_RETRY_INTERVAL с ростом DEVICES_RETRY_MULTIPLIER
             H->>L: повтор той же записи
             L->>S: process(record)
             S-->>H: ошибка
         end
+        H->>D: FailedEvent STORAGE_UNAVAILABLE, key и value — исходные байты из x-raw-key, x-raw-value, attempts = DEVICES_MAX_ATTEMPTS, traceId
+        alt публикация FailedEvent успешна
+            D-->>H: ack
+            H->>K: commit offset (commitRecovered=true), раздел обрабатывается дальше
+            Note over H: devices_messages_failed_total{reason}++, failed_events_published_total{error_code, error_type}++,<br/>лог status=FAILED_EVENT, shard
+            break сообщение обработано, дальше схема не идёт
+                Note over H,K: смещение подтверждено
+            end
+        else failed-events недоступна
+            D--xH: ошибка
+            break смещение не подтверждается
+                Note over H,K: сообщение будет обработано снова, не теряется
+            end
+        end
     end
-
-    H->>D: DeadLetterPublishingRecoverer: DeviceInfo (Avro) или исходные байты (не десериализовалось)<br/>+ заголовки kafka_dlt-*, тот же номер раздела
-    alt запись в DLT успешна
-        D-->>H: ack
-        H->>K: commit offset (commitRecovered=true) - раздел обрабатывается дальше
-        Note over H: devices_messages_failed_total{reason}++, devices_dlt_published_total{reason}++,<br/>лог status=DLT, shard
-    else DLT недоступна
-        D--xH: ошибка
-        Note over H,K: offset не подтверждается - сообщение будет обработано снова, не теряется
-    end
-    Note over K,D: Сообщения других устройств, в том числе на другом шарде, ждут только паузы повторов.<br/>После восстановления шарда сообщения из devices-dlt можно вернуть в devices - журнал отсечёт применённые
+    Note over K,D: Сообщения других устройств, в том числе на другом шарде, ждут только паузы повторов.<br/>Возврат объекта из failed-events — необязательная фаза (FR-024), в эту схему не входит

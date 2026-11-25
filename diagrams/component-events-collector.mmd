@@ -5,14 +5,14 @@ flowchart LR
     subgraph kafka["Kafka 4.2 (KRaft)"]
         events[["events<br/>ключ deviceId · 3 раздела <br/>cleanup.policy=delete"]]
         devices[["devices<br/>ключ deviceId · 3 раздела <br/>cleanup.policy=delete"]]
-        eventsDlt[["events-dlt<br/>3 раздела · cleanup.policy=delete"]]
+        failed[["failed-events<br/>ключ sourceTopic-sourcePartition-sourceOffset · 3 раздела<br/>cleanup.policy=delete"]]
     end
-    sr[("Schema Registry 8.2<br/>DeviceEvent · DeviceInfo · FULL")]
+    sr[("Schema Registry 8.2<br/>DeviceEvent · DeviceInfo · FULL_TRANSITIVE")]
 
     subgraph svc["events-collector-service (N реплик, одна consumer group)"]
         direction TB
         listener["KafkaEventListener<br/>adapter.in.kafka"]
-        errors["DefaultErrorHandler<br/>+ DeadLetterPublishingRecoverer<br/>невалидное — сразу; сбой ClickHouse — N попыток<br/>(пауза растёт, со случайным разбросом)"]
+        errors["DefaultErrorHandler<br/>+ FailedEventRecoverer (ConsumerRecordRecoverer)<br/>невалидное — сразу; сбой ClickHouse — N попыток<br/>(пауза растёт, со случайным разбросом)<br/>FailedEvent синхронно, смещение — после ack"]
         job["OutboxPublisherJob<br/>adapter.in.scheduler"]
         ingest["EventIngestionService<br/>+ DeviceEventValidator<br/>+ DeviceEventMapper"]
         publish["OutboxPublishingService"]
@@ -22,7 +22,7 @@ flowchart LR
         lease["RedisLeaseService"]
         store["RedisPublishedDeviceStore"]
         kprod["KafkaDeviceInfoProducer"]
-        metrics["MetricsFacade"]
+        metrics["MetricsFacade<br/>failed.events.published{error_code, error_type}"]
 
         listener --> ingest
         listener -. "исключение" .-> errors
@@ -36,6 +36,7 @@ flowchart LR
         publish --> auditRepo
         ingest -.-> metrics
         publish -.-> metrics
+        errors -.-> metrics
     end
 
     subgraph ch["ClickHouse 26.2 · iot_platform"]
@@ -53,9 +54,9 @@ flowchart LR
 
     subgraph obs["Наблюдаемость (профиль observability)"]
         alloy["Grafana Alloy"]
-        prom["Prometheus"]
-        loki["Loki"]
-        tempo["Tempo"]
+        mimir[("Mimir")]
+        loki[("Loki")]
+        tempo[("Tempo")]
         grafana["Grafana"]
     end
 
@@ -74,15 +75,15 @@ flowchart LR
     store -. "адрес master" .-> rsentinel
     store -- "HSET только после ack Kafka" --> kFingerprint
     kprod -- "DeviceInfo (Avro), только изменения" --> devices
-    errors -- "DeviceEvent (Avro) или исходные байты ·<br/>kafka_dlt-* · затем commit offset" --> eventsDlt
+    errors -- "FailedEvent (Avro) с исходными байтами и traceId ·<br/>затем commit offset" --> failed
     devices --> downstream
 
     alloy -- "/actuator/prometheus, все экземпляры" --> svc
-    alloy -- "remote write" --> prom
+    alloy -- "remote write" --> mimir
     svc -- "stdout JSON-логи" --> alloy
     svc -- "OTLP HTTP :4320" --> alloy
     alloy --> loki
     alloy --> tempo
-    grafana --> prom
+    grafana --> mimir
     grafana --> loki
     grafana --> tempo
