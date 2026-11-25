@@ -248,7 +248,7 @@
 - [X] T076 `analyze`: проход `/speckit-analyze` (Spec Kit) и ручная сверка — дописать в `analyze-report.md` проход «после реализации» (FR-001…FR-023)
 - [X] T077 **ЧЕЛОВЕК** Снимки для сдачи: новые панели Grafana, сквозная трасса от события в `events` до `s3.put-object`, содержимое бакетов (объект ошибки, `mimir-blocks`,
   `loki-chunks`, `tempo-traces`, `backups`) — каталог `docs/screenshots/` (если принят в репозитории), ссылка в PR
-- [ ] T078 **ЧЕЛОВЕК** На стенде владельца после принятия PR: `make down`, `make up` (удалит темы `events-dlt`, `devices-dlt` вместе с данными — убедиться, что они не нужны), приёмка на Mac
+- [X] T078 **ЧЕЛОВЕК** На стенде владельца после принятия PR: `make down`, `make up` (удалит темы `events-dlt`, `devices-dlt` вместе с данными — убедиться, что они не нужны), приёмка на Mac
   по Checkpoint фаз; образ `pgsty/minio` запускается на arm64 macOS-хоста (R22)
 
 **Checkpoint** ([Mac] для `make up` и проверок стенда): `make check`; `./gradlew :services:events-collector-service:check :services:device-collector-service:check :services:failed-events-processor:check`;
@@ -292,8 +292,11 @@
 (Dockerfile подпроектов, режимы `100755` у новых скриптов, переменные Compose без значений по умолчанию, жёстких значений в
 `failed-events-processor.yaml` нет, PNG рядом с `.mmd` не старее); конституция (тесты на настоящей инфраструктуре, порог 70 %, версия 1.2.0).
 
-Не проверено, ждёт приёмки на стенде владельца (T078): цикл «копия → удаление → восстановление» (`make backup-check CONFIRM=yes`, FR-021),
-`make avros-check`, `make up` на чистом стенде (FR-001, FR-022), срабатывание копий по расписанию (FR-020).
+Приёмка на стенде владельца (T078) выполнена 2026-11-25: `make down`, `make up`; `make backup-check CONFIRM=yes` — PASS 34, FAIL 0 (FR-020, FR-021);
+`check-local`, `dcs-quick-check`, `ds-quick-check`, `fep-quick-check`, `minio-check`, `obs-check` (профиль observability поднимался на время проверки) — проходят.
+`make avros-check` после релиза не проходит по замыслу (FR-001 подтверждён через `avros-publish` и Schema Registry). При приёмке найден и исправлен N11
+(права `device_reader` после `shard-restore`). Сквозная трасса ошибки подтверждена снимком `docs/screenshots/tempo-trace-failed-events.png` (трасса `2727c49060e6eaf27e87d2093a7ecc16`, 5 спанов:
+`events process` → `validate` → `failed-events send` → `failed-events-processor` → `s3.put-object`).
 
 ## Dependencies & Execution Order
 

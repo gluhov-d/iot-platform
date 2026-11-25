@@ -106,7 +106,8 @@ MinIO становится общим хранилищем: в нём живут
   `headers`), `sourceTopic`, `sourcePartition`, `sourceOffset`, `sourceTimestamp`, `sourceService`, `failedAt`, `errorCode`,
   `errorType`, `description`, `traceId`, а сверх минимума — `attempts` и `deviceId` (как используются — data-model.md).
   Совместимость FULL_TRANSITIVE; avros 1.4.0 опубликован в Nexus, subject `failed-events-value` зарегистрирован.
-  *Проверка*: `make avros-check` проходит; последняя версия `failed-events-value` в Schema Registry содержит все поля;
+  *Проверка*: до публикации `make avros-check` проходит (после релиза он сообщает «Версия … уже опубликована», README 10); после неё — версия 1.4.0
+  в Nexus (`avros-publish`: «схемы совпадают») и последняя версия `failed-events-value` в Schema Registry содержит все поля;
   сообщение со значением `errorCode`, которого нет в схеме читателя, читается как `UNKNOWN`.
 - **FR-002**: Коды ошибок платформы — enum `ErrorCode` в схеме (`UNKNOWN`, `DESERIALIZATION_FAILED`, `VALIDATION_FAILED`,
   `STORAGE_UNAVAILABLE`, `PROCESSING_FAILED`); тип — `ErrorType` (`TRANSIENT`, `PERMANENT`). Других справочников в сервисах нет.
