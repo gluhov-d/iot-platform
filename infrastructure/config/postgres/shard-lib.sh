@@ -106,6 +106,17 @@ sql_in() {
 primary_sql() { sql_in "postgres-shard-$1" "$1" "$2"; }
 replica_sql() { sql_in "postgres-shard-$1-replica" "$1" "$2"; }
 
+# Право чтения device_reader на devices шарда $1. Копия снимается без прав (--no-privileges), а миграция V3, которая
+# выдаёт это право, во восстановленной базе уже применена: без выдачи Proxy не видит таблицу в devices_read,
+# device-service отвечает 503. Роль создаёт shard-replication-init - вызывать после него; нет роли или права - ошибка.
+# Выдача - то же, что делает V3
+grant_reader_access() {
+  primary_sql "$1" "GRANT USAGE ON SCHEMA public TO device_reader; GRANT SELECT ON devices TO device_reader" > /dev/null \
+    || { echo "[FAIL] shard_$1: device_reader не получила право чтения (роль создаёт shard-replication-init)" >&2; return 1; }
+  [[ "$(primary_sql "$1" "SELECT has_table_privilege('device_reader', 'devices', 'select')")" == "t" ]] \
+    || { echo "[FAIL] shard_$1: у device_reader нет SELECT на devices" >&2; return 1; }
+}
+
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
 # Ждёт healthy у контейнеров сервиса

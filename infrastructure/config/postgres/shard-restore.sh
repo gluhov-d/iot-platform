@@ -13,6 +13,8 @@
 #   2. device-collector-service и ShardingSphere-Proxy останавливаются: в шарды никто не пишет;
 #   3. каждый шард: контейнеры шарда и его реплики и их тома удаляются, поднимается чистый шард,
 #      pg_restore из копии (одной транзакцией: ошибка - пустая база, а не половина данных);
+#      копия без прав (--no-privileges), поэтому право чтения device_reader выдаётся заново после shard-replication-init (роль создаёт он;
+#      миграция V3 во восстановленной базе уже применена), до реплик: они получают права вместе с pg_basebackup;
 #      число строк и версия схемы сверяются с manifest;
 #   4. shard-replication-init заново создаёт роль replicator и слоты (слоты жили в удалённых томах),
 #      реплики снимают новый pg_basebackup с восстановленных шардов и догоняют их;
@@ -20,7 +22,7 @@
 #      у раздела, где коммитов к тому моменту не было, - к началу раздела) и сверяются с Kafka: сообщения,
 #      обработанные после копии, сервис обработает снова - журнал processed_device_events отсекает повторы,
 #      реестр догоняет тему devices (пока сообщения в ней есть: тема хранит их KAFKA_DEVICES_RETENTION_MS, ADR-0011);
-#   6. Proxy запускается заново (метаданные таблиц он читает при старте): устройства из manifest читаются через него;
+#   6. Proxy запускается заново (метаданные таблиц он читает при старте): устройства из manifest читаются через него и от имени учётной записи чтения device-service (база devices_read);
 #   7. запускается device-collector-service.
 # Состояние реестра после восстановления - на момент копии плюс то, что сервис дочитает из Kafka.
 set -euo pipefail
@@ -195,6 +197,7 @@ done
 echo "==> replicas: replicator role, slots, new pg_basebackup"
 quiet "${COMPOSE[@]}" run -T --rm --no-deps shard-replication-init
 for i in "${SHARDS[@]}"; do
+  grant_reader_access "${i}" || exit 1
   quiet "${COMPOSE[@]}" up -d --wait --no-deps "postgres-shard-${i}-replica"
 done
 for i in "${SHARDS[@]}"; do
@@ -240,6 +243,14 @@ else
     [[ "${found}" == "1" ]] || { echo "[FAIL] device ${id} is not readable through Proxy (count=${found})" >&2; exit 1; }
   done
   echo "    ${#ids[@]} devices read through Proxy"
+  # Тем же путём читает device-service: база devices_read (реплики) от имени device_reader
+  echo "==> read restored devices through ShardingSphere-Proxy as the device-service reader (devices_read)"
+  proxy_read_sql="${ROOT_DIR}/infrastructure/config/shardingsphere/proxy-read-sql.sh"
+  for id in "${ids[@]}"; do
+    found="$("${proxy_read_sql}" -tA -c "SELECT count(*) FROM devices WHERE device_id = '${id}'" 2>&1)" || found="${found:-error}"
+    [[ "${found}" == "1" ]] || { echo "[FAIL] device ${id} is not readable through devices_read (${found})" >&2; exit 1; }
+  done
+  echo "    ${#ids[@]} devices read through devices_read"
 fi
 
 echo "==> start device-collector-service"
