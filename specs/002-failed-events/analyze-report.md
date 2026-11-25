@@ -72,9 +72,9 @@
 | FR-017 | выполнено | сервиса, тома и переменных Prometheus нет (`grep`); `obs-check`: запросы дашбордов — 200, `up{job}` в Mimir | — |
 | FR-018 | выполнено | на стенде после нагрузки: Mimir 7, Loki 152, Tempo 81 объект в своих бакетах | перезапуск компонентов в этом проходе не проверялся |
 | FR-019 | выполнено | дашборды `failed-events-processor` и «MinIO» в `infrastructure/config/grafana/dashboards/`; `obs-check`: все запросы — 200; снимки панелей в `docs/screenshots/` | — |
-| FR-020 | выполнено частично | `make backup`: копии PostgreSQL и ClickHouse с manifest в `backups/postgres/`, `backups/clickhouse/` | срабатывание по расписанию `BACKUP_SCHEDULE` не наблюдалось |
-| FR-021 | **не подтверждено** | порядок шагов описан (README 23.6, quickstart); ранее прототипом проверены `pg_restore` и `RESTORE DATABASE` по компонентам (R17, R18) | цикл «копия → удаление → восстановление» (`make backup-check CONFIRM=yes`) в этом проходе не выполнялся: удаляет данные; остаётся для T078 |
-| FR-022 | выполнено частично | Dockerfile в два этапа (JDK → JRE), без `latest` и `.env` в Git; `make check` проходит | `make up` целиком на чистом стенде не доходил до конца: `avros-up` падал с `HTTP 000`, Nexus перезапускался (N6); сервисы поднимались `up --no-deps` |
+| FR-020 | выполнено | `make backup`: копии PostgreSQL и ClickHouse с manifest в `backups/postgres/`, `backups/clickhouse/`; `make backup-check` владельца (2026-11-25): копии по расписанию `* * * * *` появились, из двух одновременных запусков один отказал (код 75), SHA-256 дампов в MinIO равен manifest | — |
+| FR-021 | выполнено частично | `make backup-check CONFIRM=yes` владельца (2026-11-25, PASS 33, FAIL 1): после удаления данные восстановлены из MinIO и равны manifest (шарды: устройства 94 и 86, `processed_device_events` 122 и 120; ClickHouse 255, 257, 199 строк), позиции группы device-collector возвращены (`0:81,1:87,2:75`); `make clickhouse-restore` прошёл | `make shard-restore FROM=minio` завершился ошибкой на последнем шаге, подъёме сервисов: `avros-publish` получил `HTTP 000` от перезапускавшегося Nexus (N6); после правки ожидания Nexus прогон не повторялся |
+| FR-022 | выполнено частично | Dockerfile в два этапа (JDK → JRE), без `latest` и `.env` в Git; `make check` проходит | `make up` целиком на чистом стенде не доходил до конца: `avros-up` падал с `HTTP 000`, Nexus убивался по нехватке памяти (N6); ожидание Nexus добавлено, но `make up` на чистом стенде после него не запускался |
 | FR-023 | выполнено | `check` трёх сервисов зелёный (см. «Основания»); IT доводят ошибку до объекта (`ItFailedEventToObjectTest`), нечитаемые байты, повторная доставка, недоступный MinIO; `fep-quick-check` на стенде | — |
 
 SC-001…SC-005 — по тем же основаниям, что FR-007, FR-009, FR-011, FR-012, FR-014…FR-016, FR-023.
@@ -88,7 +88,7 @@ SC-001…SC-005 — по тем же основаниям, что FR-007, FR-009
 | N3 | Inconsistency | MEDIUM | ADR-0014, spec FR-007 и строка 24, data-model.md, `fep-error-to-minio-sequence.mmd`, `ArchiveService` | Перечень метаданных объекта расходился: `source-topic` — в spec FR-007, data-model и коде, но не в ADR-0014 и spec (строка 24); у нечитаемой записи в диаграмме пропал `x-amz-meta-kind` | Исправлено документами (`a64c332`, `94fe2c0`); код не менялся |
 | N4 | Inconsistency | MEDIUM | spec.md, Independent Test | Пример ключа объекта в прежней схеме (`events-collector-service/…/VALIDATION_FAILED/…`) | Исправлено (`a64c332`) |
 | N5 | Inconsistency | MEDIUM | `sequence-ingest.mmd` | Отказ публикации `FailedEvent` описан одной общей заметкой, а не веткой у каждой из четырёх публикаций (замечание 4 ревью PR #6 к `dcs-operations-sequence`) | Исправлено (`1ddaaec`) |
-| N6 | Risk | MEDIUM | стенд, `iot-nexus` | Nexus перезапускается (счётчик дошёл до 8), `make up` падал на `avros-up` с `HTTP 000`; причина не установлена | Открыто: приёмка T078 — на стенде с памятью Docker не меньше 7 ГБ (README 10); при повторе — `docker logs iot-nexus` |
+| N6 | Risk | MEDIUM | стенд, `iot-nexus` | Nexus перезапускается (счётчик дошёл до 8), `make up` падал на `avros-up` с `HTTP 000`; причина установлена (2026-11-25): ядро виртуальной машины Docker Desktop убивает `java` Nexus по нехватке памяти (`dmesg`: `Out of memory: Killed process (java)`, `global_oom`; свободно 190 МБ из 5,9 ГБ, контейнеры заняли 5,5 ГБ), в логе Nexus нет штатной остановки, перезапуск по `restart` занимает 35-40 с; в это время порт закрыт | Смягчено: `avros-publish` ждёт ответа Nexus до 180 с (`avros/scripts/http-wait.sh`, тест `http-wait-test.sh`). Причина остаётся: приёмка T078 — на стенде с памятью Docker не меньше 7 ГБ (README 10); реального перезапуска Nexus во время `make up` не проверяли |
 | N7 | Risk | LOW | стенд Docker Desktop | При 5,8 ГБ памяти Docker и запущенном Nexus проверки стенда (`check-local`, `ds-quick-check`, `backup`) падали по тайм-аутам; после остановки Nexus проходили | Принято: README 10 называет ≥ 7 ГБ с профилями |
 | D1 | Documentation | LOW | spec.md FR-003 (*Проверка*) | `git grep -i -E 'dlt|dead.?letter'` вне `specs/` и `docs/adr/` не пуст: `README.md` и `docs/definition-of-done.md` описывают удаление DLT, `infrastructure/init/kafka/init-topics.sh` удаляет прежние темы (требует T006) | Исправлено: проверка сужена до `services`, `avros`, `diagrams`, `infrastructure/config` (там пусто), остальные упоминания названы в spec (`e674824`) |
 | D3 | Documentation | LOW | `docs/adr/0002-device-info-operation.md` (строка 18), `specs/001-device-service/{spec.md (FR-015, строка 11), plan.md, tasks.md}` | Документы предыдущей фичи по-прежнему называют `devices-dlt`; DoD (раздел «Обработка ошибок и архив») оговаривает замену | Исправлено: `devices-dlt` заменён на `failed-events` в четырёх местах (`e674824`); `git grep devices-dlt` по `docs/adr` и `specs/001-device-service` пуст |
@@ -99,13 +99,11 @@ SC-001…SC-005 — по тем же основаниям, что FR-007, FR-009
 восстановлении) — см. FR-021.
 
 **Coverage Summary:** FR-001…FR-023 имеют задачи и реализацию; кодом и тестами подтверждены все 23. Стендом подтверждены FR-005, FR-007, FR-011, FR-012,
-FR-014…FR-019 и FR-023 (`fep-quick-check`); не подтверждены полностью — FR-021 (цикл восстановления) и частично FR-001 (`make avros-check`),
-FR-020 (расписание), FR-022 (`make up` на чистом стенде).
+FR-014…FR-019 и FR-023 (`fep-quick-check`); не подтверждены полностью — FR-021 (цикл восстановления: данные восстановлены, подъём сервисов после `shard-restore` не прошёл из-за N6) и FR-022 (`make up` на чистом стенде), частично FR-001 (`make avros-check`).
 
 **Metrics:** критических находок 0; открытых HIGH 0; открытых MEDIUM 1 (N6); LOW 2 (N7, D2); D1 и D3 исправлены.
 
-**Next Actions:** T077 (снимки — приложены в `docs/screenshots/`) и T078 (приёмка на стенде владельца: `make up`, `make backup-check CONFIRM=yes` — закрывает FR-021 и
-FR-022) выполняет человек; P9 (T079–T082) — раздел «Дополнительно» задания, необязателен и в результат converge по основной части не входит (ADR-0019); выполнена, см. «Проход P9».
+**Next Actions:** T077 выполнена (снимки в `docs/screenshots/`); T078 (приёмка на стенде владельца: `make up` на чистом стенде, повтор `make backup-check CONFIRM=yes` после правки ожидания Nexus — закрывает FR-021 и FR-022) выполняет человек; P9 (T079–T082) — раздел «Дополнительно» задания, необязателен и в результат converge по основной части не входит (ADR-0019); выполнена, см. «Проход P9».
 
 ## Проход P9: возврат объекта и Object Lock (T079–T082)
 

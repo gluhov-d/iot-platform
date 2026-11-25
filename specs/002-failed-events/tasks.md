@@ -246,7 +246,7 @@
 - [X] T075 Конституция: «Технологии» — Mimir/Loki/Tempo/Grafana, MinIO; версия 1.2.0 — `.specify/memory/constitution.md`; `AGENTS.md` — таблица команд (`make minio-check`,
   `fep-quick-check`, `backup-check`, `obs-check`) — `AGENTS.md`
 - [X] T076 `analyze`: проход `/speckit-analyze` (Spec Kit) и ручная сверка — дописать в `analyze-report.md` проход «после реализации» (FR-001…FR-023)
-- [ ] T077 **ЧЕЛОВЕК** Снимки для сдачи: новые панели Grafana, сквозная трасса от события в `events` до `s3.put-object`, содержимое бакетов (объект ошибки, `mimir-blocks`,
+- [X] T077 **ЧЕЛОВЕК** Снимки для сдачи: новые панели Grafana, сквозная трасса от события в `events` до `s3.put-object`, содержимое бакетов (объект ошибки, `mimir-blocks`,
   `loki-chunks`, `tempo-traces`, `backups`) — каталог `docs/screenshots/` (если принят в репозитории), ссылка в PR
 - [ ] T078 **ЧЕЛОВЕК** На стенде владельца после принятия PR: `make down`, `make up` (удалит темы `events-dlt`, `devices-dlt` вместе с данными — убедиться, что они не нужны), приёмка на Mac
   по Checkpoint фаз; образ `pgsty/minio` запускается на arm64 macOS-хоста (R22)

@@ -19,6 +19,8 @@ ARTIFACT_PATH="com/github/gluhov/iotplatform/avros"
 
 # shellcheck source=schema-subjects.sh
 source "$(dirname "${BASH_SOURCE[0]}")/schema-subjects.sh"
+# shellcheck source=http-wait.sh
+source "$(dirname "${BASH_SOURCE[0]}")/http-wait.sh"
 subjects="$(schema_subjects "${EVENTS_TOPIC}" "${DEVICES_TOPIC}" "${FAILED_EVENTS_TOPIC}")"
 
 cd /workspace
@@ -30,7 +32,8 @@ echo "==> avros ${version}, Nexus ${NEXUS_URL}"
 
 if [[ "${version}" != *-SNAPSHOT ]]; then
   base="${NEXUS_URL}/repository/maven-releases/${ARTIFACT_PATH}/${version}"
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${base}/avros-${version}.pom" || true)"
+  # Nexus мог быть перезапущен (убит по нехватке памяти): ждём ответа, а не падаем на первой проверке
+  code="$(http_code_wait "${base}/avros-${version}.pom")"
   case "${code}" in
     200)
       tmp="$(mktemp -d)"
