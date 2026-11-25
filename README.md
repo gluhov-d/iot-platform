@@ -948,6 +948,7 @@ kafka-exporter. Дашборд «IoT Platform — failed-events-processor» (`fa
 | `tempo-trace-failed-events.png` | сквозной трейс ошибки: `events process` → `validate` → `failed-events send` (events-collector-service) → `failed-events process` → `s3.put-object` (failed-events-processor) |
 | `grafana-minio.png` | дашборд MinIO: объём и число объектов по бакетам, запросы S3, ошибки 4xx и 5xx |
 | `loki-failed-events-processor-logs.png` | логи процессора в Loki: `{service="failed-events-processor"} \| json` |
+| `minio-bucket-failed-events.png` | бакет `failed-events` в консоли MinIO: объект `2026/11/25/failed-events-1-0.json`, метаданные `error-code`, `source-service`, `source-topic`, `trace-id`, режим Governance до `2027-05-24` |
 | `minio-bucket-mimir-blocks.png`, `minio-bucket-loki-chunks.png`, `minio-bucket-tempo-traces.png` | бакеты данных наблюдаемости в консоли MinIO: блоки Mimir, чанки Loki, трассы Tempo |
 | `minio-bucket-backups-postgres.png`, `minio-bucket-backups-clickhouse.png` | бакет `backups`: копия шардов PostgreSQL (`shard_N.dump`, `manifest.txt`) и копия ClickHouse |
 | `failed-events-object-example.json` | пример объекта ошибки из бакета `failed-events` (`2026/11/23/failed-events-0-113.json`): все поля `FailedEvent`, байты `key` и `value` в base64, блок `archive` |

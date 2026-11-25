@@ -412,5 +412,5 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
   администратором без обхода режима отклоняется, `make minio-check` проходит.
 
 Снимки для сдачи (задача T077) лежат в `docs/screenshots/`, перечень — в README, раздел 16: панели Grafana (failed-events-processor,
-MinIO, оба сборщика), логи процессора в Loki, содержимое бакетов (`mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups`), пример
+MinIO, оба сборщика), логи процессора в Loki, содержимое бакетов (`failed-events` с объектом ошибки и его метаданными, `mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups`), пример
 объекта ошибки. Сквозная трасса от события в `events` до `s3.put-object` — отдельным снимком после проверки на стенде.
