@@ -566,7 +566,11 @@ hostname контейнера.
 
 ## 10. Запуск инфраструктуры
 
-Нужны Docker (Compose v2) и ≥ 5 ГБ памяти для базового стенда — около 1 ГБ из них занимает Nexus (≥ 7 ГБ с профилями).
+Нужны Docker (Compose v2) и **не меньше 8 ГБ памяти** для Docker Desktop (Settings → Resources): базовый стенд с device-service ×2, Keycloak и
+failed-events-processor занимает около 5,5 ГБ, профиль `observability` добавляет около 1 ГБ, Nexus — до 0,9 ГБ. Проверено на 8,2 ГБ и 4 ядрах: стенд с профилем
+observability и Nexus работает, свободно не меньше 1,9 ГБ. На 5,9 ГБ ядро виртуальной машины убивает Nexus (OOM-killer; признак — рост `RestartCount`
+и `Out of memory: Killed process … (java)` в `dmesg`), а `make up` падает на `avros-publish` с `HTTP 000`; `avros-publish` ждёт Nexus до 180 с, но память это не заменяет.
+Ядер хватает 4, но при старте стенда load доходит до 12 и проверки здоровья Kafka и ClickHouse могут не уложиться в 15 с (подождите 2–3 минуты); 6–7 ядер комфортнее.
 
 ```bash
 cp .env.example .env          # при необходимости поменяйте пароли и порты
