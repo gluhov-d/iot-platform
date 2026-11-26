@@ -224,6 +224,10 @@ public abstract class AbstractItTest {
                 Map.entry("FAILED_EVENTS_S3_CONNECT_TIMEOUT", "2s"),
                 Map.entry("FAILED_EVENTS_S3_API_CALL_TIMEOUT", "8s"),
                 Map.entry("FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT", "4s"),
+                // Клиент Schema Registry - как в .env.example (R25)
+                Map.entry("FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS", "1000"),
+                Map.entry("FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS", "5000"),
+                Map.entry("FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES", "0"),
                 Map.entry("FAILED_EVENTS_BUCKET", BUCKET),
                 Map.entry("MANAGEMENT_OTLP_ENDPOINT", "http://localhost:4318/v1/traces"));
     }

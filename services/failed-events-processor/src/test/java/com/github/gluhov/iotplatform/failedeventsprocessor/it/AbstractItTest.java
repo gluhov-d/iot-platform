@@ -138,6 +138,10 @@ public abstract class AbstractItTest {
         registry.add("FAILED_EVENTS_S3_CONNECT_TIMEOUT", () -> "2s");
         registry.add("FAILED_EVENTS_S3_API_CALL_TIMEOUT", () -> "8s");
         registry.add("FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT", () -> "4s");
+        // Клиент Schema Registry - как в .env.example (R25)
+        registry.add("FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS", () -> "1000");
+        registry.add("FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS", () -> "5000");
+        registry.add("FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES", () -> "0");
         registry.add("FAILED_EVENTS_BUCKET", () -> BUCKET);
         // Экспорт трасс идёт в спаны в памяти (бин InMemorySpanExporter); адрес OTLP нужен только для свойства
         registry.add("MANAGEMENT_OTLP_ENDPOINT", () -> "http://localhost:4318/v1/traces");

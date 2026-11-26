@@ -40,6 +40,10 @@ final class FailedEventsProcessorContext {
                         "FAILED_EVENTS_S3_CONNECT_TIMEOUT", "2s",
                         "FAILED_EVENTS_S3_API_CALL_TIMEOUT", "8s",
                         "FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT", "4s",
+                        // Клиент Schema Registry - как в .env.example (R25)
+                        "FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS", "1000",
+                        "FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS", "5000",
+                        "FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES", "0",
                         "FAILED_EVENTS_BUCKET", bucket,
                         "MANAGEMENT_OTLP_ENDPOINT", "http://localhost:4318/v1/traces",
                         // Автоконфигурации JDBC и Redis есть только на classpath сборщика (в продуктивном

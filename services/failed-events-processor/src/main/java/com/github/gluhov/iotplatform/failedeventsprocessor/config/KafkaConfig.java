@@ -62,8 +62,9 @@ public class KafkaConfig {
         unlimited.setMaxInterval(retry.maxInterval().toMillis());
         unlimited.setMaxElapsedTime(Long.MAX_VALUE);
         // Повторы без предела: архив недоступен или отказал, Schema Registry временно недоступен
-        DefaultErrorHandler handler = new DefaultErrorHandler(pacedRecoverer(unreadableRecorder, unlimited), unlimited,
-                new ContainerPausingBackOffHandler(pauseService));
+        // Классификация перечитывается на каждом сбое (R28): таймаут и 404 схемы приходят одинаково
+        DefaultErrorHandler handler = new ReclassifyingErrorHandler(pacedRecoverer(unreadableRecorder, unlimited),
+                unlimited, new ContainerPausingBackOffHandler(pauseService));
         // Ошибку разбора по умолчанию не повторяют: решает backOffFor (временная - повтор, остальное - unreadable)
         handler.removeClassification(DeserializationException.class);
         handler.setBackOffFunction((record, exception) -> backOffFor(exception, unlimited));

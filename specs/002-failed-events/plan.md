@@ -91,6 +91,7 @@ infrastructure/config/backup-runner/{Dockerfile,entrypoint.sh,backup-postgres.sh
 | В восстановитель пришла ошибка без `DeserializationException` (`ClassCastException` и другие неповторяемые по умолчанию) | объект `unreadable` с исходными байтами из `x-raw-*` |
 | Schema Registry недоступен при чтении `failed-events` | повторы без объекта, смещение не подтверждается |
 | Schema Registry принимает соединение и не отвечает | тайм-аут клиента Registry (`FAILED_EVENTS_SCHEMA_REGISTRY_*`) → временная ошибка, повторы без объекта, группа `Stable` |
+| Первый сбой записи — таймаут Registry, затем 404 схемы | классификация перечитывается на каждом сбое (R28) → объект `unreadable`, повторы прекращаются |
 | MinIO недоступен или медленный | тайм-аут вызова, повтор с растущей паузой, дальше не читает, группа `Stable` |
 | `412` на запись | объект уже есть — `outcome=duplicate`, смещение |
 | Другая ошибка S3 (`403`, `5xx`) | повтор, `failed.events.archive.errors{reason}`, смещение не подтверждается |

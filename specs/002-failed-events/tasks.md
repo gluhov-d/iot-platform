@@ -7,7 +7,7 @@
 незавершённых задач. Тест пишется раньше кода, который он проверяет, и сначала падает. **ЧЕЛОВЕК** — шаг выполняет
 человек: агент останавливается и ждёт. `(Rn)` — задача проверяет предположение research.md: не подтвердилось — остановиться и
 сообщить. Решения со статусом «Проверено» в research.md (R1–R15, R17, R19) в задачах записаны как требования; «Частично» и
-«Предположение» (R16, R18, R20–R23) проверяют задачи с пометкой `(Rn)`.
+«Предположение» (R16, R18, R20–R23, R28) проверяют задачи с пометкой `(Rn)`.
 
 **Место выполнения.** По умолчанию — VPS. Задачи с пометкой `[Mac]` нужны полному стенду (observability, снимки, приёмка, e2e, arm64) и выполняются на стенде владельца (macOS-хост, arm64).
 
@@ -287,105 +287,115 @@
 процессора без тайм-аутов и с повторами по умолчанию при `max.poll.interval.ms` = 30 с. Решение человека (2026-11-26): исходные байты — обёрткой,
 как у сборщиков (R24); заголовки — новое поле `headerList` в avros 1.5.0, `headers` остаётся (R26); ILM — `NoncurrentVersionExpiration` и
 `ExpiredObjectDeleteMarker`, проверка статически и разовым прогоном со сроками в 1 сутки (R27); тайм-ауты — свои переменные процессора,
-сборщики не трогаются (R25). Решения — spec.md, Session 2026-11-26; ADR-0013, ADR-0018, ADR-0019.
+сборщики не трогаются (R25). Решения — spec.md, Session 2026-11-26; ADR-0013, ADR-0018, ADR-0019. При реализации блока A найден шестой дефект (R28): запись, первый сбой которой — таймаут
+Schema Registry, остаётся в повторах и после ответа 404 (`DefaultErrorHandler` выбирает `BackOff` один раз на запись), — решается T087–T088.
 
-Порядок и коммиты: блок A (замечание 5) → блок B (1 и 2) → блок C (4) → блок D (3); один блок — один коммит (коммитит человек). T094 запускается,
-как только готова T093: разовый прогон идёт до 4 суток и не задерживает блок D. Тест пишется до кода и сначала падает на прежнем коде — это
-и проверка `(Rn)`. До T098 сервисы собираются против avros 1.5.0 из локального репозитория (AGENTS.md, «Сборка и проверка»).
-`docker-compose.yaml` и `.env.example` правят T086, T093 по порядку; Makefile — T094.
+Порядок и коммиты: блок A (замечание 5) → блок B (1 и 2) → блок C (4) → блок D (3); один блок — один коммит (коммитит человек). T096 запускается,
+как только готова T095: разовый прогон идёт до 4 суток и не задерживает блок D. Тест пишется до кода и сначала падает на прежнем коде — это
+и проверка `(Rn)`. До T100 сервисы собираются против avros 1.5.0 из локального репозитория (AGENTS.md, «Сборка и проверка»).
+`docker-compose.yaml` и `.env.example` правят T086, T095 по порядку; Makefile — T096.
 
-Блок A — тайм-ауты клиента Schema Registry (замечание 5):
+Блок A — тайм-ауты клиента Schema Registry (замечание 5) и повтор записи после временного сбоя (R28):
 
-- [ ] T084 (R25) IT зависшего Registry: прежнюю паузу 20 с заменить паузой `docker pause` 40 с (больше `FAILED_EVENTS_MAX_POLL_INTERVAL_MS` = 30 с),
+- [X] T084 (R25) IT зависшего Registry: прежнюю паузу 20 с заменить паузой `docker pause` 40 с (больше `FAILED_EVENTS_MAX_POLL_INTERVAL_MS` = 30 с),
   тест `givenRegistryHungLongerThanMaxPollInterval_whenProcessed_thenGroupStableNoObjectAndParsedAfterUnpause`: всё время паузы группа `Stable`, смещение
   не движется, объекта нет; после снятия паузы запись разобрана штатно. Сначала прогнать на прежнем коде — тест должен упасть (группа теряет разделы);
   не упал — остановиться и сообщить — `FEPT/it/ItFailedEventsOutageTest.java` (FR-009, FR-010; R25)
-- [ ] T085 [P] Unit: свойства `schema.registry.http.connect.timeout.ms`, `schema.registry.http.read.timeout.ms`, `schema.registry.max.retries` берутся из
+- [X] T085 [P] Unit: свойства `schema.registry.http.connect.timeout.ms`, `schema.registry.http.read.timeout.ms`, `schema.registry.max.retries` берутся из
   `FAILED_EVENTS_SCHEMA_REGISTRY_*`; бюджет цикла опроса из plan.md («Ограничения») для значений `.env.example` меньше `FAILED_EVENTS_MAX_POLL_INTERVAL_MS` —
   `FEPT/config/FailedEventsProcessorConfigTest.java` (FR-009; R25)
-- [ ] T086 Конфигурация: три свойства клиента в `spring.kafka.properties` (как `schema.registry.http.*` в `services/device-service/src/main/resources/application.yaml`),
+- [X] T086 Конфигурация: три свойства клиента в `spring.kafka.properties` (как `schema.registry.http.*` в `services/device-service/src/main/resources/application.yaml`),
   только ссылки на переменные; переменные `FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS=1000`, `…_READ_TIMEOUT_MS=5000`, `…_MAX_RETRIES=0` — в `.env.example`
   (с комментарием про бюджет) и в `environment` процессора без значений по умолчанию; те же свойства — во втором контексте процессора в IT сборщиков и в IT
   процессора — `FEP/src/main/resources/failed-events-processor.yaml`, `.env.example`, `INF/docker-compose.yaml`, `FEPT/it/AbstractItTest.java`,
   `ECST/it/FailedEventsProcessorContext.java`, `DCST/it/AbstractItTest.java` (FR-009, FR-022; R25)
 
+- [X] T087 (R28) Unit обработчика ошибок: сначала временный сбой записи (`DeserializationException` с `SocketTimeoutException`), затем та же запись
+  (то же смещение) — `DeserializationException` с `RestClientException` 404 → восстановитель вызван после второго сбоя, повторов больше нет; временный сбой,
+  повторённый подряд, остаётся в повторах; сначала 404 → сразу восстановитель. Сначала прогнать на прежнем коде — тест второго сценария должен упасть
+  (запись остаётся в повторах); не упал — остановиться и сообщить — `FEPT/config/FailedEventsErrorHandlerTest.java` (FR-010; R28)
+- [X] T088 (R28) Код: обработчик ошибок процессора перечитывает классификацию на каждом сбое — подкласс `DefaultErrorHandler`, переопределяющий `handleRemaining`:
+  нечитаемая запись без временной причины (`KafkaErrorClassifier`) сразу идёт в восстановитель, в обход состояния трекера повторов; остальное — как прежде;
+  бин собирает `KafkaConfig`. Затем весь класс `ItFailedEventsOutageTest` зелёный (старый IT паузы Registry 20 с при `FAILED_EVENTS_SCHEMA_REGISTRY_*` = 1000/5000/0
+  и T084 в одном прогоне) — `FEPJ/config/KafkaConfig.java`, `FEPJ/config/ReclassifyingErrorHandler.java`, `FEPT/it/ItFailedEventsOutageTest.java` (FR-009, FR-010; R28)
+
 Блок B — исходные байты записи `failed-events` (замечания 1 и 2):
 
-- [ ] T087 [P] Unit восстановителя: ошибка без `DeserializationException` (`ClassCastException`) — `key` и `value` объекта из `x-raw-key`, `x-raw-value`;
+- [ ] T089 [P] Unit восстановителя: ошибка без `DeserializationException` (`ClassCastException`) — `key` и `value` объекта из `x-raw-key`, `x-raw-value`;
   ключ `C3 28 FF` — побайтно; заголовки `x-raw-*` и `spring*` в объект не попадают — `FEPT/adapter/in/kafka/UnreadableRecorderTest.java` (FR-010; R24)
-- [ ] T088 [P] Unit слушателя: значение не `FailedEvent` — нечитаемая запись (исключение разбора, обработчик ошибок отдаёт её в восстановитель без повторов),
+- [ ] T090 [P] Unit слушателя: значение не `FailedEvent` — нечитаемая запись (исключение разбора, обработчик ошибок отдаёт её в восстановитель без повторов),
   архив не вызывается — `FEPT/adapter/in/kafka/FailedEventListenerTest.java`, `FEPT/config/KafkaConfigTest.java` (FR-010; R24)
-- [ ] T089 (R24) IT: корректный Avro другого типа (`DeviceEvent`, схема зарегистрирована в Registry теста) в `failed-events` — объект `unreadable`, `value`
+- [ ] T091 (R24) IT: корректный Avro другого типа (`DeviceEvent`, схема зарегистрирована в Registry теста) в `failed-events` — объект `unreadable`, `value`
   побайтно равно отправленным байтам, смещение подтверждено; в `givenInvalidUtf8Key_whenProcessed_thenUnreadableObjectCreatedAndOffsetCommitted` проверку
   наличия ключа заменить побайтным сравнением с отправленным массивом `C3 28 FF`. Оба сценария сначала падают на прежнем коде —
   `FEPT/it/ItFailedEventsProcessorTest.java` (FR-010; R24)
-- [ ] T090 Код: `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` в процессоре (по образцу `ECSJ/config/`, свой пакет), делегаты в
+- [ ] T092 Код: `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` в процессоре (по образцу `ECSJ/config/`, свой пакет), делегаты в
   `failed-events-processor.yaml` — как в `ECS/src/main/resources/application.yaml` (`spring.deserializer.*.delegate.class` → обёртка, `raw.*.delegate.class` →
   строгий UTF-8 и `KafkaAvroDeserializer`); `UnreadableRecorder` берёт байты только из `x-raw-key`, `x-raw-value` и исключает их из заголовков; слушатель
   проверяет `instanceof FailedEvent` — `FEPJ/config/RawKeepingDeserializer.java`, `FEPJ/config/StrictUtf8StringDeserializer.java`,
   `FEP/src/main/resources/failed-events-processor.yaml`, `FEPJ/adapter/in/kafka/UnreadableRecorder.java`, `FEPJ/adapter/in/kafka/FailedEventListener.java`
   (FR-010; R24)
-- [ ] T091 [P] Диаграммы: обёртка с `x-raw-key`, `x-raw-value` в процессоре, ветка «не `FailedEvent`» → `unreadable` (`break`), `UnreadableRecorder` в
+- [ ] T093 [P] Диаграммы: обёртка с `x-raw-key`, `x-raw-value` в процессоре, ветка «не `FailedEvent`» → `unreadable` (`break`), `UnreadableRecorder` в
   `adapter.in.kafka`; перерендер PNG рядом — `diagrams/fep-error-to-minio-sequence.mmd`, `diagrams/component-failed-events-processor.mmd` (FR-010)
 
 Блок C — ILM версионного бакета (замечание 4):
 
-- [ ] T092 Проверка правил в `make minio-check`: у `failed-events` есть `Expiration.Days` = `MINIO_EXPIRE_FAILED_EVENTS_DAYS`,
+- [ ] T094 Проверка правил в `make minio-check`: у `failed-events` есть `Expiration.Days` = `MINIO_EXPIRE_FAILED_EVENTS_DAYS`,
   `NoncurrentVersionExpiration.NoncurrentDays` = `MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS` и `ExpiredObjectDeleteMarker` (`mc ilm rule ls --json`); на прежних
   правилах проверка падает — `INF/config/minio/check.sh` (FR-016; R27)
-- [ ] T093 (R27) Правила: правило 1 — `Expiration.Days` + `NoncurrentVersionExpiration`, правило 2 — `Expiration.ExpiredObjectDeleteMarker`; подстановка
+- [ ] T095 (R27) Правила: правило 1 — `Expiration.Days` + `NoncurrentVersionExpiration`, правило 2 — `Expiration.ExpiredObjectDeleteMarker`; подстановка
   `MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS=1` в init (переменная — в `.env.example` и в `environment` `minio-init`); `mc ilm import` на бакете с lock
   принимает правила, повторный init не дублирует — `INF/config/minio/ilm/failed-events.json`, `INF/init/minio/init.sh`, `.env.example`, `INF/docker-compose.yaml`
   (FR-016; R27)
-- [ ] T094 (R27) Разовый прогон удаления версий: `ilm-expiry-check.sh start` — одноразовый контейнер `pgsty/minio` того же тега со своим именем и томом,
-  бакет с lock (GOVERNANCE, 1 сутки) и версиями, правила T093 со сроками 1/1, один объект; печатает время и что проверять. `verify` — объект исчез из `mc ls`
+- [ ] T096 (R27) Разовый прогон удаления версий: `ilm-expiry-check.sh start` — одноразовый контейнер `pgsty/minio` того же тега со своим именем и томом,
+  бакет с lock (GOVERNANCE, 1 сутки) и версиями, правила T095 со сроками 1/1, один объект; печатает время и что проверять. `verify` — объект исчез из `mc ls`
   И из `mc ls --versions` (оба условия отдельно, первое без второго — провал), затем уборка контейнера и тома. Цель `make minio-ilm-expiry-check STEP=start|verify` —
   `INF/config/minio/ilm-expiry-check.sh` (100755), `Makefile` (FR-016; R27)
-- [ ] T095 (R27) Через 2–4 суток после T094: `make minio-ilm-expiry-check STEP=verify`; результат (время записи, пометки, удаления версии и пометки, вывод
+- [ ] T097 (R27) Через 2–4 суток после T096: `make minio-ilm-expiry-check STEP=verify`; результат (время записи, пометки, удаления версии и пометки, вывод
   обеих команд) — в research.md, «Результаты проверок на стенде», статус R27 по факту. Версии не удалены — остановиться и сообщить —
   `specs/002-failed-events/research.md` (FR-016; R27)
 
 Блок D — заголовки списком (замечание 3):
 
-- [ ] T096 Контракт: `FailedEvent` дословно из [failed-event.avsc](contracts/failed-event.avsc) (поле `headerList`, запись `SourceHeader`), версия avros `1.5.0` —
+- [ ] T098 Контракт: `FailedEvent` дословно из [failed-event.avsc](contracts/failed-event.avsc) (поле `headerList`, запись `SourceHeader`), версия avros `1.5.0` —
   `AV/avro/failed-event.avsc`, `AV/build.gradle.kts` (FR-001)
-- [ ] T097 [Mac] (R26) Совместимость без публикации: `make avros-check` — код 0; `./gradlew :avros:build` генерирует `SourceHeader` (FR-001; R26)
-- [ ] T098 **ЧЕЛОВЕК** (необратимо: версия в Nexus не перезаписывается) Опубликовать avros 1.5.0 (`make avros-up`) и зарегистрировать схемы
+- [ ] T099 [Mac] (R26) Совместимость без публикации: `make avros-check` — код 0; `./gradlew :avros:build` генерирует `SourceHeader` (FR-001; R26)
+- [ ] T100 **ЧЕЛОВЕК** (необратимо: версия в Nexus не перезаписывается) Опубликовать avros 1.5.0 (`make avros-up`) и зарегистрировать схемы
   (`make schemas-register`); `curl -s localhost:8081/subjects/failed-events-value/versions/latest` содержит `headerList` (FR-001)
-- [ ] T099 [P] Unit ECS: заголовки `tag`=`a`, `tag`=`b`, `nullable` без значения, `traceparent` → `headerList` из четырёх записей в том же порядке (`nullable` —
+- [ ] T101 [P] Unit ECS: заголовки `tag`=`a`, `tag`=`b`, `nullable` без значения, `traceparent` → `headerList` из четырёх записей в том же порядке (`nullable` —
   `value = null`), служебные исключены; `headers` (`map`) — как в 1.4.0 — `ECST/adapter/out/kafka/FailedEventRecovererTest.java` (FR-005; R26)
-- [ ] T100 [P] Unit DCS: то же — `DCST/adapter/out/kafka/FailedEventRecovererTest.java` (FR-005; R26)
-- [ ] T101 Код сборщиков: `headerList` по порядку со всеми заголовками кроме служебных, включая `null`; avros `1.5.0` —
+- [ ] T102 [P] Unit DCS: то же — `DCST/adapter/out/kafka/FailedEventRecovererTest.java` (FR-005; R26)
+- [ ] T103 Код сборщиков: `headerList` по порядку со всеми заголовками кроме служебных, включая `null`; avros `1.5.0` —
   `ECSJ/adapter/out/kafka/FailedEventRecoverer.java`, `DCSJ/adapter/out/kafka/FailedEventRecoverer.java`, `ECS/build.gradle.kts`, `DCS/build.gradle.kts` (FR-005)
-- [ ] T102 [P] Unit процессора: JSON `schemaVersion: 2`, `headers` — массив `[{name, value}]` в порядке `headerList` с повторами и `null`; при `headerList = null` —
+- [ ] T104 [P] Unit процессора: JSON `schemaVersion: 2`, `headers` — массив `[{name, value}]` в порядке `headerList` с повторами и `null`; при `headerList = null` —
   из `headers`; `unreadable` — все заголовки записи по порядку; запись 1.4.0 читается схемой 1.5.0 (`headerList = null`), запись 1.5.0 — схемой 1.4.0 —
   `FEPT/domain/service/ArchiveServiceTest.java`, `FEPT/adapter/in/kafka/FailedEventListenerTest.java`, `FEPT/adapter/in/kafka/UnreadableRecorderTest.java`,
   `FEPT/contract/FailedEventContractTest.java` (FR-001, FR-007, FR-010; R26)
-- [ ] T103 Код процессора: `HeaderEntry` (имя, байты или `null`) в домене, `List<HeaderEntry>` в `FailedRecord` и `UnreadableRecord`, перенос из `headerList`
+- [ ] T105 Код процессора: `HeaderEntry` (имя, байты или `null`) в домене, `List<HeaderEntry>` в `FailedRecord` и `UnreadableRecord`, перенос из `headerList`
   (запасной — `headers`), JSON `schemaVersion: 2`; avros `1.5.0` — `FEPJ/domain/model/HeaderEntry.java`, `FEPJ/domain/model/FailedRecord.java`,
   `FEPJ/domain/model/UnreadableRecord.java`, `FEPJ/domain/service/ArchiveService.java`, `FEPJ/adapter/in/kafka/FailedEventListener.java`,
   `FEPJ/adapter/in/kafka/UnreadableRecorder.java`, `FEP/build.gradle.kts` (FR-007, FR-010)
-- [ ] T104 IT сборщиков: сообщение с заголовками `tag`=`a`, `tag`=`b`, `nullable` без значения и ошибкой → в объекте MinIO массив `headers` с теми же тремя
+- [ ] T106 IT сборщиков: сообщение с заголовками `tag`=`a`, `tag`=`b`, `nullable` без значения и ошибкой → в объекте MinIO массив `headers` с теми же тремя
   записями в том же порядке — `ECST/it/ItFailedEventToObjectTest.java`, `DCST/it/ItFailedEventToObjectTest.java` (FR-005, FR-007, FR-023)
-- [ ] T105 Возврат: `Replay.java` публикует заголовки массива по порядку (повторы, `null` — как есть) и читает объекты `schemaVersion: 1`; `replay-test.sh` —
+- [ ] T107 Возврат: `Replay.java` публикует заголовки массива по порядку (повторы, `null` — как есть) и читает объекты `schemaVersion: 1`; `replay-test.sh` —
   объект с двумя `tag` и `nullable` возвращается с тем же списком заголовков плюс `x-replayed-from`, объект `schemaVersion: 1` возвращается —
   `FEP/scripts/Replay.java`, `FEP/scripts/replay-test.sh` (FR-024)
-- [ ] T106 [P] Документы и диаграммы: README (контракт 1.5.0 и `headerList`, формат объекта `schemaVersion: 2`, правила ILM `failed-events`, переменные блоков A и C),
+- [ ] T108 [P] Документы и диаграммы: README (контракт 1.5.0 и `headerList`, формат объекта `schemaVersion: 2`, правила ILM `failed-events`, переменные блоков A и C),
   `diagrams/fep-error-to-minio-sequence.mmd` (`headerList`) с перерендером PNG; `grep -rn '1\.4\.0' README.md services/*/build.gradle.kts` — только исторические
   упоминания — `README.md`, `diagrams/fep-error-to-minio-sequence.mmd` (FR-001, FR-005, FR-016)
 
 Завершение:
 
-- [ ] T107 [Mac] Checkpoint на стенде владельца — `./gradlew :services:failed-events-processor:check :services:events-collector-service:check
+- [ ] T109 [Mac] Checkpoint на стенде владельца — `./gradlew :services:failed-events-processor:check :services:events-collector-service:check
   :services:device-collector-service:check`; `make up`; `make check-local dcs-quick-check fep-quick-check minio-check failed-replay-test` (FR-009, FR-010, FR-016, FR-023, FR-024)
-- [ ] T108 `/speckit-converge` по `spec.md`, `plan.md`, `tasks.md` после T095 и T107; результат — в «Результат converge» (проход 3)
+- [ ] T110 `/speckit-converge` по `spec.md`, `plan.md`, `tasks.md` после T097 и T109; результат — в «Результат converge» (проход 3)
 
-**Checkpoint**: три `check` проходят (числа тестов и покрытие — из отчётов сборки); `make minio-check` с правилами версий проходит; T095 записан в research.md;
+**Checkpoint**: три `check` проходят (числа тестов и покрытие — из отчётов сборки); `make minio-check` с правилами версий проходит; T097 записан в research.md;
 `make failed-replay-test` возвращает заголовки с повторами и `null` побайтно.
 
 ## Результат converge
 
-Статус: не Converged — снят ревью реализации PR #7 (2026-11-26), открыта Phase 11 (T084–T108). Прежний статус: Converged по FR-001…FR-023 и FR-024, FR-025, проход 2026-11-23, ветка `fifth-module`.
+Статус: не Converged — снят ревью реализации PR #7 (2026-11-26), открыта Phase 11 (T084–T110). Прежний статус: Converged по FR-001…FR-023 и FR-024, FR-025, проход 2026-11-23, ветка `fifth-module`.
 Нерешённые проверки на стенде владельца названы ниже.
 
 | Проход | Находки | Итог |
@@ -409,7 +419,7 @@
 - P1 → всё остальное (T004 нужен сборщикам и процессору, потому что Nexus отдаёт avros 1.4.0).
 - P2 ‖ P3 ‖ P4 ‖ P5 — разные файлы; unit не требуют стенда. IT сборщиков (P3, P4: T013, T023, T012) — после P5 (процессор вторым контекстом, R23); IT процессора — в P5 (Testcontainers).
 - P6 после P2 (бакеты и учётки), P7 после P6 (backup-runner использует MinIO и ClickHouse), P8 после P3–P7, P9 после P8.
-- P11 (ревью PR #7) после converge P1–P9: блоки A → B → C → D; T094 — сразу после T093, T095 — через 2–4 суток; T099–T105 — после T098 (человек) или против локальной сборки avros 1.5.0.
+- P11 (ревью PR #7) после converge P1–P9: блоки A → B → C → D; T096 — сразу после T095, T097 — через 2–4 суток; T101–T107 — после T100 (человек) или против локальной сборки avros 1.5.0.
 - Тяжёлый Docker (стенд, IT) — по очереди, под общим `flock` на lock-файле Docker-запусков.
 
 ## Implementation Strategy

@@ -8,6 +8,11 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     properties:
       schema.registry.url: ${SCHEMA_REGISTRY_URL}
+      # Клиент Schema Registry: зависший Registry не должен держать опрос дольше max.poll.interval.ms (R25).
+      # Бюджет цикла опроса - в .env.example
+      schema.registry.http.connect.timeout.ms: ${FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS}
+      schema.registry.http.read.timeout.ms: ${FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS}
+      schema.registry.max.retries: ${FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES}
     consumer:
       group-id: ${FAILED_EVENTS_CONSUMER_GROUP}
       # Смещение подтверждается вручную: только после записи объекта (или 412 - дубликат)
