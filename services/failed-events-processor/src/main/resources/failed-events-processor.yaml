@@ -24,8 +24,11 @@ spring:
       key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
-        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
-        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # Обёртка сохраняет сырые байты до разбора (x-raw-key, x-raw-value); делегаты - ниже (R24)
+        spring.deserializer.key.delegate.class: com.github.gluhov.iotplatform.failedeventsprocessor.config.RawKeepingDeserializer
+        spring.deserializer.value.delegate.class: com.github.gluhov.iotplatform.failedeventsprocessor.config.RawKeepingDeserializer
+        raw.key.delegate.class: com.github.gluhov.iotplatform.failedeventsprocessor.config.StrictUtf8StringDeserializer
+        raw.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
         # SpecificRecord (FailedEvent из avros), а не GenericRecord
         specific.avro.reader: true
         # Тайм-аут опроса: больше, чем повторы записи в архив (R6)

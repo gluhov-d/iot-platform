@@ -1,18 +1,27 @@
 package com.github.gluhov.iotplatform.failedeventsprocessor.config;
 
+import com.github.gluhov.iotplatform.failedeventsprocessor.adapter.in.kafka.FailedEventListener;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveDeniedException;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveUnavailableException;
+import com.github.gluhov.iotplatform.failedeventsprocessor.domain.service.ArchiveService;
+import com.github.gluhov.iotplatform.failedeventsprocessor.support.MetricsFacade;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.errors.SerializationException;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.util.backoff.BackOff;
 import org.springframework.util.backoff.ExponentialBackOff;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
+import java.time.Clock;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.Mockito.mock;
 
 /**
  * Решение о повторе (R6, R7): нечитаемая запись - без повторов (объект unreadable), временная ошибка
@@ -64,6 +73,22 @@ class KafkaConfigTest {
         ArchiveDeniedException ex = new ArchiveDeniedException("Access Denied", null);
 
         assertThat(KafkaConfig.backOffFor(ex, UNLIMITED)).isSameAs(UNLIMITED);
+    }
+
+    /**
+     * Значение не FailedEvent: исключение, которое бросает сам слушатель, классифицируется как нечитаемая запись
+     * без временной причины - без повторов, сразу в восстановитель (unreadable).
+     */
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void givenValueNotFailedEvent_whenListenerThrows_thenNoRetriesToRecoverer() {
+        FailedEventListener listener = new FailedEventListener(mock(ArchiveService.class),
+                new MetricsFacade(new SimpleMeterRegistry()), Clock.systemUTC());
+        ConsumerRecord notFailedEvent = new ConsumerRecord<>("failed-events", 1, 9L, "k", "не FailedEvent");
+
+        Throwable thrown = catchThrowable(() -> listener.onMessage(notFailedEvent, mock(Acknowledgment.class)));
+
+        assertThat(KafkaConfig.backOffFor(thrown, UNLIMITED)).isSameAs(KafkaConfig.NO_RETRIES);
     }
 
     private static DeserializationException deserialization(Throwable cause) {

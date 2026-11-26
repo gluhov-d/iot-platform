@@ -8,6 +8,8 @@ import com.github.gluhov.iotplatform.failedeventsprocessor.support.MetricsFacade
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.support.serializer.DeserializationException;
@@ -44,7 +46,7 @@ class UnreadableRecorderTest {
         UnreadableRecorder recorder = new UnreadableRecorder(new ArchiveService(archive),
                 new MetricsFacade(new SimpleMeterRegistry()));
 
-        recorder.accept(record("failed-events-key", null), deserializationFailure(RAW_VALUE, false));
+        recorder.accept(record("failed-events-key", RAW_VALUE), deserializationFailure(RAW_VALUE, false));
 
         assertThat(keys).containsExactly("2026/11/21/failed-events-1-8.json");
         JsonNode doc = JSON.readTree(bodies.getFirst());
@@ -103,15 +105,83 @@ class UnreadableRecorderTest {
                 .isEqualTo(1.0);
     }
 
+    /**
+     * Ошибка без DeserializationException (ClassCastException: корректный Avro другого типа). Байты берутся только из
+     * x-raw-key и x-raw-value, служебные заголовки Spring и x-raw-* в объект не попадают.
+     */
+    @Test
+    void givenClassCastFailureWithRawHeaders_whenRecovered_thenKeyAndValueByteExactFromRawHeaders() throws Exception {
+        byte[] rawKey = {(byte) 0xC3, 0x28, (byte) 0xFF};
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("x-raw-key", rawKey);
+        headers.add("x-raw-value", RAW_VALUE);
+        headers.add("traceparent", new byte[]{1, 2});
+        headers.add("springDeserializerExceptionValue", new byte[]{9});
+        List<byte[]> bodies = new ArrayList<>();
+        FailedEventArchive archive = (key, body, metadata) -> {
+            bodies.add(body);
+            return PutOutcome.CREATED;
+        };
+        UnreadableRecorder recorder = new UnreadableRecorder(new ArchiveService(archive),
+                new MetricsFacade(new SimpleMeterRegistry()));
+
+        recorder.accept(recordWith(null, headers), new ClassCastException("DeviceEvent cannot be cast to FailedEvent"));
+
+        JsonNode doc = JSON.readTree(bodies.getFirst());
+        assertThat(doc.get("kind").asString()).isEqualTo("unreadable");
+        assertThat(Base64.getDecoder().decode(doc.get("key").asString())).isEqualTo(rawKey);
+        assertThat(Base64.getDecoder().decode(doc.get("value").asString())).isEqualTo(RAW_VALUE);
+        assertThat(doc.get("reason").asString()).startsWith("ClassCastException");
+    }
+
+    /** Заголовки объекта - только пользовательские: x-raw-* и springDeserializerException* исключены. */
+    @Test
+    void givenRawAndSpringHeaders_whenRecovered_thenOnlyUserHeadersInObject() throws Exception {
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("x-raw-key", new byte[]{1});
+        headers.add("x-raw-value", RAW_VALUE);
+        headers.add("springDeserializerExceptionKey", new byte[]{2});
+        headers.add("springDeserializerExceptionValue", new byte[]{3});
+        headers.add("traceparent", new byte[]{4, 5});
+        List<byte[]> bodies = new ArrayList<>();
+        FailedEventArchive archive = (key, body, metadata) -> {
+            bodies.add(body);
+            return PutOutcome.CREATED;
+        };
+        UnreadableRecorder recorder = new UnreadableRecorder(new ArchiveService(archive),
+                new MetricsFacade(new SimpleMeterRegistry()));
+
+        recorder.accept(recordWith(null, headers), new ClassCastException("cast"));
+
+        JsonNode objectHeaders = JSON.readTree(bodies.getFirst()).get("headers");
+        assertThat(objectHeaders.size()).isEqualTo(1);
+        assertThat(objectHeaders.has("traceparent")).isTrue();
+        assertThat(objectHeaders.has("x-raw-key")).isFalse();
+        assertThat(objectHeaders.has("x-raw-value")).isFalse();
+    }
+
     private static DeserializationException deserializationFailure(byte[] data, boolean isKey) {
         return new DeserializationException("не разобрано", data, isKey,
                 new SerializationException("Unknown magic byte!"));
     }
 
-    /** Запись failed-events: ключ - строка, значение не разобрано (null), как после ErrorHandlingDeserializer. */
+    /**
+     * Запись failed-events как после обёртки RawKeepingDeserializer: сырые байты значения - в x-raw-value, ключа - в
+     * x-raw-key (ключ строкой, если он валиден). Значение объекта не разобрано (null).
+     */
     private static ConsumerRecord<String, Object> record(String key, byte[] rawValue) {
+        RecordHeaders headers = new RecordHeaders();
+        if (key != null) {
+            headers.add("x-raw-key", key.getBytes(StandardCharsets.UTF_8));
+        }
+        if (rawValue != null) {
+            headers.add("x-raw-value", rawValue);
+        }
+        return recordWith(key, headers);
+    }
+
+    private static ConsumerRecord<String, Object> recordWith(String key, Headers headers) {
         return new ConsumerRecord<>("failed-events", 1, 8L, RECORD_TIME.toEpochMilli(), TimestampType.CREATE_TIME,
-                key == null ? 0 : key.length(), rawValue == null ? 0 : rawValue.length,
-                key, null, new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+                key == null ? 0 : key.length(), 0, key, null, headers, Optional.empty());
     }
 }

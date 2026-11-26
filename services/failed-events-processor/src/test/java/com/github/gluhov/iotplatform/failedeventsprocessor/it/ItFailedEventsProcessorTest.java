@@ -1,5 +1,8 @@
 package com.github.gluhov.iotplatform.failedeventsprocessor.it;
 
+import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
+import io.confluent.kafka.serializers.KafkaAvroSerializer;
+import io.confluent.kafka.serializers.subject.TopicRecordNameStrategy;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -7,6 +10,7 @@ import tools.jackson.databind.JsonNode;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -80,7 +84,44 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
         JsonNode doc = readJson(key);
         assertThat(doc.get("kind").asString()).isEqualTo("unreadable");
         assertThat(Base64.getDecoder().decode(doc.get("value").asString())).containsExactly(0x01, 0x02, 0x03);
-        assertThat(doc.get("key").isNull()).isFalse();
+        assertThat(Base64.getDecoder().decode(doc.get("key").asString()))
+                .containsExactly((byte) 0xC3, 0x28, (byte) 0xFF);
+    }
+
+    /**
+     * Корректный Avro другого типа (DeviceEvent) в failed-events: слушатель получает не FailedEvent, без
+     * DeserializationException. Объект unreadable несёт байты записи побайтно, смещение подтверждено (R24).
+     * Схема DeviceEvent лежит под отдельным subject (TopicRecordNameStrategy): версии failed-events-value не меняются.
+     */
+    @Test
+    void givenValidAvroOfOtherType_whenProcessed_thenUnreadableObjectWithByteExactValueAndOffsetCommitted()
+            throws Exception {
+        byte[] sentValue = deviceEventBytes();
+        RecordMetadata sent = sendRaw("device-" + nextSourceOffset(), sentValue);
+
+        awaitCommitted(sent);
+
+        String key = objectKey(sent);
+        awaitObject(key);
+        JsonNode doc = readJson(key);
+        assertThat(doc.get("kind").asString()).isEqualTo("unreadable");
+        assertThat(Base64.getDecoder().decode(doc.get("value").asString())).isEqualTo(sentValue);
+    }
+
+    /** Байты DeviceEvent как их пишет KafkaAvroSerializer (магический байт, id схемы, Avro). */
+    private static byte[] deviceEventBytes() {
+        DeviceEvent event = DeviceEvent.newBuilder()
+                .setEventId("evt-1")
+                .setDeviceId("dev-42")
+                .setTimestampMs(1_797_000_000_000L)
+                .setEventType("TELEMETRY")
+                .build();
+        try (KafkaAvroSerializer serializer = new KafkaAvroSerializer()) {
+            serializer.configure(Map.of(
+                    "schema.registry.url", schemaRegistryUrl(),
+                    "value.subject.name.strategy", TopicRecordNameStrategy.class.getName()), false);
+            return serializer.serialize(FAILED, event);
+        }
     }
 
     @Test

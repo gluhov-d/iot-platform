@@ -321,21 +321,21 @@ Schema Registry, остаётся в повторах и после ответа
 
 Блок B — исходные байты записи `failed-events` (замечания 1 и 2):
 
-- [ ] T089 [P] Unit восстановителя: ошибка без `DeserializationException` (`ClassCastException`) — `key` и `value` объекта из `x-raw-key`, `x-raw-value`;
+- [X] T089 [P] Unit восстановителя: ошибка без `DeserializationException` (`ClassCastException`) — `key` и `value` объекта из `x-raw-key`, `x-raw-value`;
   ключ `C3 28 FF` — побайтно; заголовки `x-raw-*` и `spring*` в объект не попадают — `FEPT/adapter/in/kafka/UnreadableRecorderTest.java` (FR-010; R24)
-- [ ] T090 [P] Unit слушателя: значение не `FailedEvent` — нечитаемая запись (исключение разбора, обработчик ошибок отдаёт её в восстановитель без повторов),
+- [X] T090 [P] Unit слушателя: значение не `FailedEvent` — нечитаемая запись (исключение разбора, обработчик ошибок отдаёт её в восстановитель без повторов),
   архив не вызывается — `FEPT/adapter/in/kafka/FailedEventListenerTest.java`, `FEPT/config/KafkaConfigTest.java` (FR-010; R24)
-- [ ] T091 (R24) IT: корректный Avro другого типа (`DeviceEvent`, схема зарегистрирована в Registry теста) в `failed-events` — объект `unreadable`, `value`
+- [X] T091 (R24) IT: корректный Avro другого типа (`DeviceEvent`, схема зарегистрирована в Registry теста) в `failed-events` — объект `unreadable`, `value`
   побайтно равно отправленным байтам, смещение подтверждено; в `givenInvalidUtf8Key_whenProcessed_thenUnreadableObjectCreatedAndOffsetCommitted` проверку
   наличия ключа заменить побайтным сравнением с отправленным массивом `C3 28 FF`. Оба сценария сначала падают на прежнем коде —
   `FEPT/it/ItFailedEventsProcessorTest.java` (FR-010; R24)
-- [ ] T092 Код: `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` в процессоре (по образцу `ECSJ/config/`, свой пакет), делегаты в
+- [X] T092 Код: `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` в процессоре (по образцу `ECSJ/config/`, свой пакет), делегаты в
   `failed-events-processor.yaml` — как в `ECS/src/main/resources/application.yaml` (`spring.deserializer.*.delegate.class` → обёртка, `raw.*.delegate.class` →
   строгий UTF-8 и `KafkaAvroDeserializer`); `UnreadableRecorder` берёт байты только из `x-raw-key`, `x-raw-value` и исключает их из заголовков; слушатель
   проверяет `instanceof FailedEvent` — `FEPJ/config/RawKeepingDeserializer.java`, `FEPJ/config/StrictUtf8StringDeserializer.java`,
   `FEP/src/main/resources/failed-events-processor.yaml`, `FEPJ/adapter/in/kafka/UnreadableRecorder.java`, `FEPJ/adapter/in/kafka/FailedEventListener.java`
   (FR-010; R24)
-- [ ] T093 [P] Диаграммы: обёртка с `x-raw-key`, `x-raw-value` в процессоре, ветка «не `FailedEvent`» → `unreadable` (`break`), `UnreadableRecorder` в
+- [X] T093 [P] Диаграммы: обёртка с `x-raw-key`, `x-raw-value` в процессоре, ветка «не `FailedEvent`» → `unreadable` (`break`), `UnreadableRecorder` в
   `adapter.in.kafka`; перерендер PNG рядом — `diagrams/fep-error-to-minio-sequence.mmd`, `diagrams/component-failed-events-processor.mmd` (FR-010)
 
 Блок C — ILM версионного бакета (замечание 4):

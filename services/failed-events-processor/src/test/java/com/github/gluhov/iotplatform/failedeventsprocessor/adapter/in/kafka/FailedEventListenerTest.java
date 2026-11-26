@@ -120,6 +120,27 @@ class FailedEventListenerTest {
         verify(ack, never()).acknowledge();
     }
 
+    /**
+     * Значение - корректный Avro другого типа (не FailedEvent): слушатель сам проверяет тип и бросает ошибку разбора,
+     * без ClassCastException при вызове. Архив не вызывается, смещение не подтверждается.
+     */
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void givenValueNotFailedEvent_whenListen_thenDeserializationExceptionNotArchivedNotAcknowledged() {
+        ArchiveService archive = mock(ArchiveService.class);
+        Acknowledgment ack = mock(Acknowledgment.class);
+        FailedEventListener listener = new FailedEventListener(archive,
+                new MetricsFacade(new SimpleMeterRegistry()), CLOCK);
+        ConsumerRecord notFailedEvent = new ConsumerRecord<>("failed-events", 1, 9L, "k",
+                "не FailedEvent");
+
+        assertThatThrownBy(() -> listener.onMessage(notFailedEvent, ack))
+                .isInstanceOf(org.springframework.kafka.support.serializer.DeserializationException.class);
+
+        verify(archive, never()).archive(any(FailedRecord.class), any(ArchiveCoordinates.class));
+        verify(ack, never()).acknowledge();
+    }
+
     private static FailedEvent event() {
         return FailedEvent.newBuilder()
                 .setSourceService("events-collector-service")

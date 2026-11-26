@@ -9,12 +9,12 @@ flowchart LR
 
     subgraph svc["failed-events-processor (до 3 реплик, одна consumer group)"]
         direction TB
-        listener["FailedEventListener<br/>adapter.in.kafka<br/>ErrorHandlingDeserializer · Avro FailedEvent<br/>max.poll.records=1 · manual ack"]
+        listener["FailedEventListener<br/>adapter.in.kafka<br/>ErrorHandlingDeserializer → RawKeepingDeserializer (x-raw-key, x-raw-value)<br/>значение не FailedEvent → нечитаемая запись<br/>max.poll.records=1 · manual ack"]
         service["ArchiveService<br/>domain.service<br/>тело — JSON со всеми полями FailedEvent<br/>(байты ключа, значения и заголовков — base64)<br/>ключ объекта строит ArchiveKey"]
         model["FailedRecord · ArchiveKey<br/>domain.model<br/>ArchiveKey: yyyy/MM/dd/failed-events-p-o.json по разделу, смещению<br/>и времени записи failed-events — одинаков для читаемой и нечитаемой записи"]
         port["FailedEventArchive<br/>domain.port"]
         s3["S3FailedEventArchive<br/>adapter.out.s3 (порт FailedEventArchive)<br/>PutObject If-None-Match: * · x-amz-meta-*<br/>apiCallTimeout 8 с · apiCallAttemptTimeout 4 с<br/>412 — объект уже записан"]
-        unreadable["UnreadableRecorder<br/>domain.service<br/>тело unreadable — байты, причина; ключ объекта тот же ArchiveKey,<br/>смещение подтверждается после записи"]
+        unreadable["UnreadableRecorder<br/>adapter.in.kafka<br/>тело unreadable — байты из x-raw-key и x-raw-value, причина; ключ объекта тот же ArchiveKey,<br/>смещение подтверждается после записи"]
         errors["DefaultErrorHandler<br/>бесконечный ExponentialBackOff (max 10 с)<br/>+ ContainerPausingBackOffHandler<br/>MinIO недоступен — повтор, смещение не подтверждается"]
         metrics["MetricsFacade (support)<br/>failed.events.archived{source_service, error_code, outcome}<br/>таймер s3.put-object, ошибки записи"]
         tracing["Спан s3.put-object (Observation, тег bucket)<br/>дочерний спан слушателя той же трассы"]
@@ -24,7 +24,7 @@ flowchart LR
         service --> port
         port -.-> s3
         unreadable --> port
-        listener -. "нечитаемо" .-> unreadable
+        listener -. "не FailedEvent или ошибка разбора" .-> unreadable
         listener -. "исключение" .-> errors
         service -.-> metrics
         s3 -.-> tracing

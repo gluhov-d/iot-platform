@@ -39,12 +39,11 @@ public class FailedEventListener {
 
     @KafkaListener(id = "failed-events-processor", topics = "${KAFKA_FAILED_EVENTS_TOPIC}",
             groupId = "${FAILED_EVENTS_CONSUMER_GROUP}")
-    public void onMessage(ConsumerRecord<String, FailedEvent> record, Acknowledgment ack) {
-        FailedEvent event = record.value();
-        if (event == null) {
-            // Контейнер (checkDeserExWhenValueNull) передаёт сюда null только вместе с причиной разбора.
-            // Исключение уходит в обработчик ошибок: он решает про повтор или unreadable (UnreadableRecorder).
-            throw new DeserializationException("Значение записи failed-events не разобрано", null, false, null);
+    public void onMessage(ConsumerRecord<String, Object> record, Acknowledgment ack) {
+        // Тип значения проверяет сам слушатель: корректный Avro другого типа и ошибка разбора (null) - нечитаемая запись.
+        // Исключение уходит в обработчик ошибок: он решает про повтор или unreadable (UnreadableRecorder).
+        if (!(record.value() instanceof FailedEvent event)) {
+            throw new DeserializationException("Значение записи failed-events не FailedEvent", null, false, null);
         }
         FailedRecord failed = toRecord(event);
         PutOutcome outcome;
