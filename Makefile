@@ -40,7 +40,7 @@ WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli minio-check obs-check topics check check-local test integration-test coverage \
+        psql redis-cli clickhouse-cli minio-check minio-ilm-expiry-check obs-check topics check check-local test integration-test coverage \
         avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release fep-quick-check failed-replay failed-replay-test schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
@@ -198,6 +198,9 @@ redis-cli: ## Открыть redis-cli к текущему основному у
 
 minio-check: ## Проверить MinIO: права учёток по бакетам и префиксам, сроки ILM, Object Lock и условную запись в failed-events (config/minio/check.sh)
 	@COMPOSE_CMD="$(COMPOSE)" $(INFRA_DIR)/config/minio/check.sh
+
+minio-ilm-expiry-check: ## Разовая проверка удаления версий ILM (R27): STEP=start поднимает одноразовый MinIO, STEP=verify проверяет и убирает его (config/minio/ilm-expiry-check.sh)
+	@case "$(STEP)" in start|verify) $(INFRA_DIR)/config/minio/ilm-expiry-check.sh $(STEP) ;; *) echo "Использование: make minio-ilm-expiry-check STEP=start|verify" >&2; exit 1 ;; esac
 
 obs-check: ## Проверить наблюдаемость: источники Grafana, все PromQL дашбордов, up{job}, объекты Mimir, Loki и Tempo в MinIO (config/observability/check.sh)
 	@COMPOSE_CMD="$(COMPOSE) --profile observability" $(INFRA_DIR)/config/observability/check.sh

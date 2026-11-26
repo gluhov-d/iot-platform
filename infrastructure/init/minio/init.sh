@@ -26,6 +26,7 @@ die() { echo "[minio-init] ОШИБКА: $*" >&2; exit 1; }
 : "${MINIO_BUCKET_TEMPO:?MINIO_BUCKET_TEMPO не задан}"
 : "${MINIO_BUCKET_BACKUPS:?MINIO_BUCKET_BACKUPS не задан}"
 : "${MINIO_EXPIRE_FAILED_EVENTS_DAYS:?MINIO_EXPIRE_FAILED_EVENTS_DAYS не задан}"
+: "${MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS:?MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS не задан}"
 : "${MINIO_EXPIRE_BACKUPS_DAYS:?MINIO_EXPIRE_BACKUPS_DAYS не задан}"
 : "${MINIO_EXPIRE_MIMIR_DAYS:?MINIO_EXPIRE_MIMIR_DAYS не задан}"
 : "${MINIO_EXPIRE_LOKI_DAYS:?MINIO_EXPIRE_LOKI_DAYS не задан}"
@@ -59,8 +60,9 @@ subst() {
   printf '%s' "${_so}${_st}"
 }
 
-# render ШАБЛОН [ДНИ]: текст шаблона с подставленными бакетами и сроком ILM.
-# "__EXPIRE_DAYS__" в кавычках становится числом (JSON), голый токен - строкой (ID правила)
+# render ШАБЛОН [ДНИ] [ДНИ_ВЕРСИЙ]: текст шаблона с подставленными бакетами и сроками ILM.
+# "__EXPIRE_DAYS__" в кавычках становится числом (JSON), голый токен - строкой (ID правила).
+# ДНИ_ВЕРСИЙ - срок прежних версий (только шаблон failed-events, R27)
 render() {
   _rd=$(cat "$1")
   _rd=$(subst __BUCKET_FAILED_EVENTS__ "$FAILED_EVENTS_BUCKET" "$_rd")
@@ -70,6 +72,8 @@ render() {
   _rd=$(subst __BUCKET_BACKUPS__ "$MINIO_BUCKET_BACKUPS" "$_rd")
   _rd=$(subst '"__EXPIRE_DAYS__"' "${2:-}" "$_rd")
   _rd=$(subst __EXPIRE_DAYS__ "${2:-}" "$_rd")
+  _rd=$(subst '"__NONCURRENT_DAYS__"' "${3:-}" "$_rd")
+  _rd=$(subst __NONCURRENT_DAYS__ "${3:-}" "$_rd")
   printf '%s\n' "$_rd"
 }
 
@@ -118,11 +122,11 @@ ensure_bucket "$MINIO_BUCKET_TEMPO"
 ensure_bucket "$MINIO_BUCKET_BACKUPS"
 
 # --- 2. ILM (mc ilm import заменяет правила бакета целиком: повтор не дублирует) -------------------
-ilm() { # бакет дни шаблон
-  render "$CONFIG/ilm/$3.json" "$2" | mc ilm import "local/$1" >/dev/null || die "не задан ILM для $1"
+ilm() { # бакет дни шаблон [дни_версий]
+  render "$CONFIG/ilm/$3.json" "$2" "${4:-}" | mc ilm import "local/$1" >/dev/null || die "не задан ILM для $1"
   say "ILM $1: срок $2 дн."
 }
-ilm "$FAILED_EVENTS_BUCKET" "$MINIO_EXPIRE_FAILED_EVENTS_DAYS" failed-events
+ilm "$FAILED_EVENTS_BUCKET" "$MINIO_EXPIRE_FAILED_EVENTS_DAYS" failed-events "$MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS"
 ilm "$MINIO_BUCKET_BACKUPS" "$MINIO_EXPIRE_BACKUPS_DAYS" backups
 ilm "$MINIO_BUCKET_MIMIR" "$MINIO_EXPIRE_MIMIR_DAYS" mimir-blocks
 ilm "$MINIO_BUCKET_LOKI" "$MINIO_EXPIRE_LOKI_DAYS" loki-chunks

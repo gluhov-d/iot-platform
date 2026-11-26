@@ -340,14 +340,14 @@ Schema Registry, остаётся в повторах и после ответа
 
 Блок C — ILM версионного бакета (замечание 4):
 
-- [ ] T094 Проверка правил в `make minio-check`: у `failed-events` есть `Expiration.Days` = `MINIO_EXPIRE_FAILED_EVENTS_DAYS`,
+- [X] T094 Проверка правил в `make minio-check`: у `failed-events` есть `Expiration.Days` = `MINIO_EXPIRE_FAILED_EVENTS_DAYS`,
   `NoncurrentVersionExpiration.NoncurrentDays` = `MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS` и `ExpiredObjectDeleteMarker` (`mc ilm rule ls --json`); на прежних
   правилах проверка падает — `INF/config/minio/check.sh` (FR-016; R27)
-- [ ] T095 (R27) Правила: правило 1 — `Expiration.Days` + `NoncurrentVersionExpiration`, правило 2 — `Expiration.ExpiredObjectDeleteMarker`; подстановка
+- [X] T095 (R27) Правила: правило 1 — `Expiration.Days` + `NoncurrentVersionExpiration`, правило 2 — `Expiration.ExpiredObjectDeleteMarker`; подстановка
   `MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS=1` в init (переменная — в `.env.example` и в `environment` `minio-init`); `mc ilm import` на бакете с lock
   принимает правила, повторный init не дублирует — `INF/config/minio/ilm/failed-events.json`, `INF/init/minio/init.sh`, `.env.example`, `INF/docker-compose.yaml`
   (FR-016; R27)
-- [ ] T096 (R27) Разовый прогон удаления версий: `ilm-expiry-check.sh start` — одноразовый контейнер `pgsty/minio` того же тега со своим именем и томом,
+- [X] T096 (R27) Разовый прогон удаления версий: `ilm-expiry-check.sh start` — одноразовый контейнер `pgsty/minio` того же тега со своим именем и томом,
   бакет с lock (GOVERNANCE, 1 сутки) и версиями, правила T095 со сроками 1/1, один объект; печатает время и что проверять. `verify` — объект исчез из `mc ls`
   И из `mc ls --versions` (оба условия отдельно, первое без второго — провал), затем уборка контейнера и тома. Цель `make minio-ilm-expiry-check STEP=start|verify` —
   `INF/config/minio/ilm-expiry-check.sh` (100755), `Makefile` (FR-016; R27)

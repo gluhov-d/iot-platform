@@ -6,6 +6,19 @@
       "Expiration": {
         "Days": "__EXPIRE_DAYS__"
       },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": "__NONCURRENT_DAYS__"
+      },
+      "Filter": {
+        "Prefix": ""
+      }
+    },
+    {
+      "ID": "expire-delete-markers",
+      "Status": "Enabled",
+      "Expiration": {
+        "ExpiredObjectDeleteMarker": true
+      },
       "Filter": {
         "Prefix": ""
       }

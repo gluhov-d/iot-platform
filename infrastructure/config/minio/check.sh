@@ -25,7 +25,7 @@ for v in MINIO_ROOT_USER MINIO_ROOT_PASSWORD FAILED_EVENTS_BUCKET MINIO_BUCKET_M
   MINIO_BUCKET_TEMPO MINIO_BUCKET_BACKUPS FAILED_EVENTS_S3_ACCESS_KEY FAILED_EVENTS_S3_SECRET_KEY \
   MIMIR_S3_ACCESS_KEY MIMIR_S3_SECRET_KEY LOKI_S3_ACCESS_KEY LOKI_S3_SECRET_KEY TEMPO_S3_ACCESS_KEY \
   TEMPO_S3_SECRET_KEY BACKUP_POSTGRES_S3_ACCESS_KEY BACKUP_POSTGRES_S3_SECRET_KEY BACKUP_CLICKHOUSE_S3_ACCESS_KEY \
-  BACKUP_CLICKHOUSE_S3_SECRET_KEY MINIO_EXPIRE_FAILED_EVENTS_DAYS FAILED_EVENTS_LOCK_DAYS MINIO_EXPIRE_BACKUPS_DAYS MINIO_EXPIRE_MIMIR_DAYS \
+  BACKUP_CLICKHOUSE_S3_SECRET_KEY MINIO_EXPIRE_FAILED_EVENTS_DAYS MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS FAILED_EVENTS_LOCK_DAYS MINIO_EXPIRE_BACKUPS_DAYS MINIO_EXPIRE_MIMIR_DAYS \
   MINIO_EXPIRE_LOKI_DAYS MINIO_EXPIRE_TEMPO_DAYS; do
   eval "_val=\${$v:-}"
   [ -n "$_val" ] || { echo "FAIL  переменная $v не задана"; exit 1; }
@@ -169,7 +169,20 @@ ilm_check() { # бакет дни
     *) fail "ILM $1: ожидали срок $2 дн." ;;
   esac
 }
-ilm_check "$B_FE" "$MINIO_EXPIRE_FAILED_EVENTS_DAYS"
+# failed-events (R27): три действия проверяются отдельно по выводу mc ilm rule ls --json
+_fe_ilm=$(mc ilm rule ls --json "root/$B_FE" 2>&1)
+case "$_fe_ilm" in
+  *"\"Expiration\":{\"Days\":$MINIO_EXPIRE_FAILED_EVENTS_DAYS}"*) pass "ILM $B_FE: Expiration.Days = $MINIO_EXPIRE_FAILED_EVENTS_DAYS" ;;
+  *) fail "ILM $B_FE: нет Expiration.Days = $MINIO_EXPIRE_FAILED_EVENTS_DAYS: $_fe_ilm" ;;
+esac
+case "$_fe_ilm" in
+  *"\"NoncurrentVersionExpiration\":{\"NoncurrentDays\":$MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS}"*) pass "ILM $B_FE: NoncurrentVersionExpiration.NoncurrentDays = $MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS" ;;
+  *) fail "ILM $B_FE: нет NoncurrentVersionExpiration.NoncurrentDays = $MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS: $_fe_ilm" ;;
+esac
+case "$_fe_ilm" in
+  *'"Expiration":{"ExpiredObjectDeleteMarker":true}'*) pass "ILM $B_FE: Expiration.ExpiredObjectDeleteMarker" ;;
+  *) fail "ILM $B_FE: нет Expiration.ExpiredObjectDeleteMarker: $_fe_ilm" ;;
+esac
 ilm_check "$B_MIMIR" "$MINIO_EXPIRE_MIMIR_DAYS"
 ilm_check "$B_LOKI" "$MINIO_EXPIRE_LOKI_DAYS"
 ilm_check "$B_TEMPO" "$MINIO_EXPIRE_TEMPO_DAYS"
