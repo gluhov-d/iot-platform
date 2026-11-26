@@ -42,6 +42,11 @@
 | Копии баз | `make backup`, `make backup-list`; `make backup-check CONFIRM=yes` удаляет данные шардов и ClickHouse проекта Compose — только под своим `COMPOSE_PROJECT_NAME` |
 | Схемы avros без публикации | `make avros-check` |
 
+- Новая версия avros до публикации человеком: сервисы собираются против локальной сборки avros (локальный Maven-репозиторий
+  или одноразовый Nexus), в `build.gradle.kts` — сразу новая версия; адреса локальных репозиториев в репозиторий не попадают.
+- Проверка, которая ждёт часов или суток (сроки ILM), не держит сессию: запустить, сообщить, когда проверять, задачу проверки
+  оставить `[ ]`.
+
 ## Соглашения кода
 
 - Java 25, Spring Boot 4, Gradle Kotlin DSL. Пакеты сервиса: `adapter/in`, `adapter/out`, `domain/{model,port,service,exception}`,
