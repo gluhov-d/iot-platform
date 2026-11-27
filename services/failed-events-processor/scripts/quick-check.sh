@@ -176,7 +176,7 @@ grep -qF -- '"sourceService":"events-collector-service"' <<< "${body}" || fail "
 grep -qF -- '"errorCode":"VALIDATION_FAILED"' <<< "${body}" || fail "errorCode in the object is not VALIDATION_FAILED"
 grep -qF -- "\"key\":\"$(b64 "${EVENT_KEY}")\"" <<< "${body}" || fail "base64(key) in the object differs from the sent key"
 grep -qF -- "\"value\":\"AAAA" <<< "${body}" || fail "value in the object does not start with the Schema Registry magic byte"
-grep -qF -- "\"traceparent\":\"$(b64 "${TRACEPARENT}")\"" <<< "${body}" || fail "header traceparent is missing in the object or differs"
+grep -qF -- "{\"name\":\"traceparent\",\"value\":\"$(b64 "${TRACEPARENT}")\"}" <<< "${body}" || fail "header traceparent is missing in the object or differs"
 ok "key, traceId and traceparent match; value is the original Avro message"
 
 # ------------------------------------------------------------------------------
