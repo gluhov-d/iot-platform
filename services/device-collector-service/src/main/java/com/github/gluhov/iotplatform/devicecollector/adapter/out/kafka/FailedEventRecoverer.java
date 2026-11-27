@@ -9,6 +9,7 @@ import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.ErrorCode;
 import com.github.gluhov.iotplatform.events.avro.ErrorType;
 import com.github.gluhov.iotplatform.events.avro.FailedEvent;
+import com.github.gluhov.iotplatform.events.avro.SourceHeader;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import lombok.extern.slf4j.Slf4j;
@@ -27,7 +28,9 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -95,6 +98,7 @@ public class FailedEventRecoverer implements ConsumerRecordRecoverer {
                 .setKey(key == null ? null : ByteBuffer.wrap(key))
                 .setValue(value == null ? null : ByteBuffer.wrap(value))
                 .setHeaders(copyHeaders(headers))
+                .setHeaderList(headerList(headers))
                 .setAttempts(classification.attempts(deliveryAttempt(headers)))
                 .setDeviceId(deviceIdOf(record))
                 .build();
@@ -159,6 +163,21 @@ public class FailedEventRecoverer implements ConsumerRecordRecoverer {
             copied.put(header.key(), ByteBuffer.wrap(header.value()));
         }
         return copied;
+    }
+
+    /** Все заголовки исходного сообщения по порядку, с повторами и значениями null (с 1.5.0); служебные - как в copyHeaders. */
+    private static List<SourceHeader> headerList(Headers headers) {
+        List<SourceHeader> list = new ArrayList<>();
+        for (Header header : headers) {
+            if (isServiceHeader(header.key())) {
+                continue;
+            }
+            list.add(SourceHeader.newBuilder()
+                    .setName(header.key())
+                    .setValue(header.value() == null ? null : ByteBuffer.wrap(header.value()))
+                    .build());
+        }
+        return list;
     }
 
     private static boolean isServiceHeader(String name) {

@@ -225,6 +225,30 @@ class FailedEventRecovererTest {
         verify(metrics, never()).failedEventPublished(any(), any());
     }
 
+    @Test
+    @DisplayName("Headers as a list: repeated names and a null value kept in source order, service headers left out")
+    void givenRepeatedAndNullableHeaders_whenRecovered_thenHeaderListKeepsOrderAndNulls() {
+        record.headers().add("tag", "a".getBytes(StandardCharsets.UTF_8));
+        record.headers().add("springDeserializerExceptionValue", new byte[]{5});
+        record.headers().add("tag", "b".getBytes(StandardCharsets.UTF_8));
+        record.headers().add("nullable", null);
+        record.headers().add("traceparent", SPAN_PARENT.getBytes(StandardCharsets.US_ASCII));
+        record.headers().add(KafkaHeaders.DELIVERY_ATTEMPT, new byte[]{0, 0, 0, 1});
+
+        recoverer.accept(record, listenerFailure(new InvalidDeviceInfoException("deviceId is blank")));
+
+        FailedEvent event = published();
+        assertThat(event.getHeaderList()).extracting("name")
+                .containsExactly("tag", "tag", "nullable", "traceparent");
+        assertThat(event.getHeaderList()).extracting("value").containsExactly(
+                ByteBuffer.wrap("a".getBytes(StandardCharsets.UTF_8)),
+                ByteBuffer.wrap("b".getBytes(StandardCharsets.UTF_8)),
+                null,
+                ByteBuffer.wrap(SPAN_PARENT.getBytes(StandardCharsets.US_ASCII)));
+        assertThat(event.getHeaders()).containsOnlyKeys("tag", "traceparent");
+        assertThat(event.getHeaders().get("tag")).isEqualTo(ByteBuffer.wrap("b".getBytes(StandardCharsets.UTF_8)));
+    }
+
     private static ListenerExecutionFailedException listenerFailure(Exception cause) {
         return new ListenerExecutionFailedException("listener failed", cause);
     }

@@ -27,7 +27,7 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
         String key = objectKey(sent);
         assertThat(exists(key)).isTrue();
         JsonNode doc = readJson(key);
-        assertThat(doc.get("schemaVersion").asInt()).isEqualTo(1);
+        assertThat(doc.get("schemaVersion").asInt()).isEqualTo(2);
         assertThat(doc.get("sourceService").asString()).isEqualTo("events-collector-service");
         assertThat(doc.get("sourceTopic").asString()).isEqualTo("events");
         assertThat(doc.get("sourceOffset").asLong()).isEqualTo(offset);
@@ -137,6 +137,6 @@ class ItFailedEventsProcessorTest extends AbstractItTest {
         assertThat(doc.get("reason").asString()).isNotBlank();
         assertThat(doc.get("failedEventsOffset").asLong()).isEqualTo(sent.offset());
         assertThat(Base64.getDecoder().decode(doc.get("value").asString())).containsExactly(0x01, 0x02, 0x03);
-        assertThat(doc.get("headers").isObject()).isTrue();
+        assertThat(doc.get("headers").isArray()).isTrue();
     }
 }

@@ -3,6 +3,7 @@ package com.github.gluhov.iotplatform.failedeventsprocessor.adapter.in.kafka;
 import com.github.gluhov.iotplatform.failedeventsprocessor.config.RawKeepingDeserializer;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveDeniedException;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveUnavailableException;
+import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.HeaderEntry;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.UnreadableRecord;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.service.ArchiveService;
 import com.github.gluhov.iotplatform.failedeventsprocessor.support.MetricsFacade;
@@ -13,8 +14,8 @@ import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Восстановитель обработчика ошибок: запись failed-events, которую не удалось разобрать, уходит в архив как
@@ -69,14 +70,14 @@ public class UnreadableRecorder implements ConsumerRecordRecoverer {
     }
 
     /**
-     * Заголовки записи без служебных: заголовки Spring (ошибка разбора хранится в них в виде объекта Java) и сырые
-     * байты x-raw-key, x-raw-value, которые уже вынесены в поля объекта.
+     * Все заголовки записи по порядку, с повторами и значениями null, без служебных: заголовки Spring (ошибка разбора
+     * хранится в них в виде объекта Java) и сырые байты x-raw-key, x-raw-value, которые уже вынесены в поля объекта.
      */
-    private static Map<String, byte[]> headers(ConsumerRecord<?, ?> record) {
-        Map<String, byte[]> headers = new HashMap<>();
+    private static List<HeaderEntry> headers(ConsumerRecord<?, ?> record) {
+        List<HeaderEntry> headers = new ArrayList<>();
         for (Header header : record.headers()) {
             if (!isService(header.key())) {
-                headers.put(header.key(), header.value());
+                headers.add(new HeaderEntry(header.key(), header.value()));
             }
         }
         return headers;

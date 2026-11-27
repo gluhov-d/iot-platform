@@ -47,6 +47,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -194,6 +195,29 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         keys.forEach(key -> assertThat(versionCount(key)).as("одна версия на объект (FR-008)").isEqualTo(1));
     }
 
+    /**
+     * Заголовки исходного сообщения - список: повтор имени, значение null и трасса сохраняются по порядку (R26, FR-005, FR-007).
+     */
+    @Test
+    void givenRepeatedAndNullableHeaders_whenIngested_thenObjectHeadersArrayInOrder() throws Exception {
+        byte[] raw = avroBytes(deviceEvent("   "));
+        List<Header> headers = List.of(
+                new RecordHeader("tag", "a".getBytes(StandardCharsets.UTF_8)),
+                new RecordHeader("tag", "b".getBytes(StandardCharsets.UTF_8)),
+                new RecordHeader("nullable", null),
+                traceparent());
+
+        RecordMetadata source = sendRaw(raw, headers);
+
+        JsonNode doc = awaitObject(source.offset(), "VALIDATION_FAILED");
+        JsonNode objectHeaders = doc.get("headers");
+        assertThat(objectHeaders.isArray()).as("headers - массив с schemaVersion 2").isTrue();
+        assertThat(headerNames(objectHeaders)).containsExactly("tag", "tag", "nullable", "traceparent");
+        assertThat(objectHeaders.get(0).get("value").asText()).isEqualTo(Base64.getEncoder().encodeToString("a".getBytes(StandardCharsets.UTF_8)));
+        assertThat(objectHeaders.get(1).get("value").asText()).isEqualTo(Base64.getEncoder().encodeToString("b".getBytes(StandardCharsets.UTF_8)));
+        assertThat(objectHeaders.get(2).get("value").isNull()).as("nullable без значения - null").isTrue();
+    }
+
     // ------------------------------------------------------------------ сообщения сборщика
 
     private static DeviceEvent deviceEvent(String eventId) {
@@ -298,6 +322,13 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         return (int) s3.listObjectVersionsPaginator(ListObjectVersionsRequest.builder().bucket(BUCKET).prefix(key)
                         .build())
                 .versions().stream().filter(version -> version.key().equals(key)).count();
+    }
+
+    /** Имена заголовков объекта по порядку массива. */
+    private static List<String> headerNames(JsonNode headers) {
+        List<String> names = new ArrayList<>();
+        headers.forEach(header -> names.add(header.get("name").asText()));
+        return names;
     }
 
     private static byte[] bytes(JsonNode doc, String field) {

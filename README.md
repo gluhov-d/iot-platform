@@ -127,7 +127,7 @@ MinIO. Там же лежат данные наблюдаемости (Mimir, Lo
 | Grafana / Mimir / Loki / Tempo / Alloy | 11.2.0 / 3.2.6 / 3.1.1 / 2.6.0 / v1.4.2 |
 | MinIO (`pgsty/minio`) и клиент `mc` (`pgsty/mc`) | RELEASE.2026-08-04T00-00-00Z / RELEASE.2026-11-12T00-00-00Z |
 | AWS SDK for Java v2 (S3, failed-events-processor) | 2.59.7 |
-| Avro-схемы (`avros`, артефакт в Nexus) | 1.4.0 (`FailedEvent`) |
+| Avro-схемы (`avros`, артефакт в Nexus) | 1.5.0 (`FailedEvent`; поле `headerList` с 1.5.0) |
 | kafka-exporter | v1.9.0 |
 | postgres-exporter (шарды и реплики; платформенный экспортёр `postgres` — v0.15.0) | v0.20.1 (v0.15.0 не работает с PostgreSQL 18) |
 | Testcontainers | 2.x (версию задаёт Spring Boot) |
@@ -283,7 +283,7 @@ iot-platform/
 | `avros/avro/device-event.avsc` | `DeviceEvent` | `eventId`, `deviceId`, `timestampMs` (Unix ms), `eventType`; необязательные, `default: null`: `device` (`DeviceSnapshot`), `sourceSystem`, `payload` |
 | `avros/avro/device-info.avsc` | `DeviceInfo` | `deviceId`, `emittedAtMs` (время публикации); `eventType` (`DeviceUpsertEventType`, `default: SNAPSHOT`); необязательные: `eventId`, `eventTimeMs`, `device` (`DeviceSnapshot`), `operation` (`OperationType`, с 1.3.0; `null` по умолчанию) |
 | `avros/avro/device-snapshot.avsc` | `DeviceSnapshot` | данные устройства: `deviceId`, `tenantId`, `deviceType`, `status` (`DeviceStatus`), `settings`, `sensors`, `attributes`; необязательные: `ownerId`, `serialNumber`, `manufacturer`, `model`, `firmwareVersion`, `name`, `osName`, `osVersion`, `registeredAtMs`, `lastSeenAtMs` |
-| `avros/avro/failed-event.avsc` | `FailedEvent` (с 1.4.0) | `sourceService`, `sourceTopic`, `sourcePartition`, `sourceOffset`, `sourceTimestamp`, `failedAt`, `errorCode` (`ErrorCode`, `default: UNKNOWN`), `errorType` (`ErrorType`, `default: PERMANENT`), `description`, `attempts`; необязательные: `traceId`, `key` и `value` (исходные байты), `headers`, `deviceId` (раздел 23) |
+| `avros/avro/failed-event.avsc` | `FailedEvent` (с 1.4.0; `headerList` с 1.5.0) | `sourceService`, `sourceTopic`, `sourcePartition`, `sourceOffset`, `sourceTimestamp`, `failedAt`, `errorCode` (`ErrorCode`, `default: UNKNOWN`), `errorType` (`ErrorType`, `default: PERMANENT`), `description`, `attempts`; необязательные: `traceId`, `key` и `value` (исходные байты), `headers` (устарело с 1.5.0, для читателей 1.4.0), `headerList` (с 1.5.0: заголовки по порядку, с повторами и `null`), `deviceId` (раздел 23) |
 
 Версии: `1.0.0` — схемы приёма событий; `1.1.0` — снимок устройства (`DeviceSnapshot`, блок `device` в `DeviceEvent`
 и `DeviceInfo`); `1.2.0` — имя, операционная система и её версия (`name`, `osName`, `osVersion`); `1.3.0` — `operation` в `DeviceInfo`
@@ -1485,7 +1485,7 @@ failed-events-processor → PutObject If-None-Match: * → MinIO, бакет fai
 * Ключ сообщения в теме — `<тема>-<раздел>-<смещение>` исходного сообщения. Тема `failed-events`: 3 раздела, `cleanup.policy=delete`,
   срок хранения 14 суток (`KAFKA_FAILED_EVENTS_RETENTION_MS`): процессор, простоявший дольше, теряет необработанные записи.
 
-Контракт — `avros/avro/failed-event.avsc` (версия 1.4.0, subject `failed-events-value`, совместимость `FULL_TRANSITIVE`).
+Контракт — `avros/avro/failed-event.avsc` (версия 1.5.0, subject `failed-events-value`, совместимость `FULL_TRANSITIVE`). С 1.5.0 поле `headerList` — все заголовки исходного сообщения по порядку, с повторами и значениями `null`, без служебных (`spring*`, `kafka_*`, `x-raw-key`, `x-raw-value`). Поле `headers` (map) оставлено для читателей 1.4.0: по одному значению на имя, без `null`. Запись 1.4.0 читается схемой 1.5.0 (`headerList` = `null`), запись 1.5.0 — схемой 1.4.0 (поле `headerList` игнорируется).
 Коды ошибок (`ErrorCode`; новый символ добавляется в конец списка, старый читатель получает `UNKNOWN`):
 
 | Код | Тип | Когда |
@@ -1502,8 +1502,10 @@ failed-events-processor → PutObject If-None-Match: * → MinIO, бакет fai
   время в UTC. Ключ один для читаемой и нечитаемой записи и не меняется при повторной доставке (ADR-0014).
 * **Запись:** `PutObject` с `If-None-Match: *`. Ответ 412 значит «объект уже есть»: запись считается обработанной, смещение
   подтверждается, версия не создаётся. HEAD перед PUT не используется — между двумя экземплярами это гонка.
-* **JSON** содержит все поля `FailedEvent`: время — ISO-8601 UTC, `key`, `value` и значения `headers` — base64 исходных байтов,
-  отсутствующее — `null`; блок `archive` — раздел, смещение и время записи в `failed-events` и момент архивации. Пример — `docs/screenshots/failed-events-object-example.json`.
+* **JSON** (`schemaVersion: 2`) содержит все поля `FailedEvent`: время — ISO-8601 UTC, `key` и `value` — base64 исходных байтов,
+  отсутствующее — `null`; `headers` — массив `{"name", "value"}` в порядке записи, с повторами; `value` — base64 или `null`
+  (заголовок без значения). Объекты `schemaVersion: 1` (заголовки объектом «имя → base64») из прежних записей остаются
+  в бакете до срока, их читает `Replay.java`; блок `archive` — раздел, смещение и время записи в `failed-events` и момент архивации. Пример — `docs/screenshots/failed-events-object-example.json`.
 * **Метаданные объекта** (поиск без чтения тела): `x-amz-meta-error-code`, `-source-service`, `-source-topic`, `-trace-id`
   и `-device-id` (если есть).
 * **Нечитаемая запись самой `failed-events`** (мусор, схема не найдена): в теле `kind = unreadable`, base64 ключа, значения и
@@ -1542,6 +1544,7 @@ docker compose -f infrastructure/docker-compose.yaml exec minio sh -c 'mc alias 
 | `FAILED_EVENTS_S3_CONNECT_TIMEOUT`, `FAILED_EVENTS_S3_API_CALL_TIMEOUT`, `FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT` | тайм-ауты SDK: соединение, вызов, попытка вызова | `2s`, `8s`, `4s` |
 | `FAILED_EVENTS_MAX_POLL_INTERVAL_MS` | срок опроса темы; больше срока вызова S3, иначе потребитель выпадет из группы | `30000` |
 | `FAILED_EVENTS_RETRY_INITIAL_INTERVAL`, `FAILED_EVENTS_RETRY_MAX_INTERVAL`, `FAILED_EVENTS_RETRY_MULTIPLIER` | повтор записи при недоступном MinIO: пауза, предел, рост (без лимита попыток) | `500ms`, `10s`, `2.0` |
+| `FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS`, `FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS`, `FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES` | клиент Schema Registry процессора: тайм-аут соединения, тайм-аут чтения, число повторов клиента | `1000`, `5000`, `0` |
 | `FAILED_EVENTS_CONSUMER_GROUP`, `FAILED_EVENTS_PROCESSOR_PORTS` | группа и диапазон портов | `failed-events-processor`, `8110-8112` |
 
 ### 23.4 Как вызвать ошибку и найти объект
@@ -1575,7 +1578,7 @@ mc cat local/failed-events/<ключ объекта>                            
 
 **Вернуть объект в исходную тему** (дополнительная часть, ADR-0019): `make failed-replay KEY=<ключ объекта>`, например `KEY=2026/11/23/failed-events-0-113.json`.
 Команда читает объект, декодирует из base64 `key`, `value` и заголовки и публикует их в `sourceTopic` без пересериализации (байты те же, `traceparent` и прочие заголовки
-сохранены, раздел выбирает ключ), добавляя заголовок `x-replayed-from` с ключом объекта; объект в MinIO остаётся. Возврат точечный: одна команда — одно сообщение,
+сохранены, раздел выбирает ключ; заголовки — в порядке массива, с повторами, заголовок без значения — как есть; объект `schemaVersion: 1` — по объекту «имя → base64»), добавляя заголовок `x-replayed-from` с ключом объекта; объект в MinIO остаётся. Возврат точечный: одна команда — одно сообщение,
 повторный запуск публикует его ещё раз. Пока причина ошибки не устранена, сообщение снова попадёт в `failed-events`. Коды выхода: 0 — возвращено; 1 — неверные
 аргументы или ошибка публикации; 2 — объекта нет; 3 — нечитаемая запись (`kind = unreadable`): исходного сообщения в ней нет. Работает на поднятом стенде,
 запускать только на своём проекте Compose: сообщение уходит в настоящую тему. Проверка — `make failed-replay-test` (временная тема и служебные объекты, затем уборка).
@@ -1587,7 +1590,7 @@ mc cat local/failed-events/<ключ объекта>                            
 
 | Бакет | Что | Срок бакета (ILM) | Учётка |
 |---|---|---|---|
-| `failed-events` | объекты ошибок; создан с Object Lock (включается только при создании бакета), режим GOVERNANCE по умолчанию на `FAILED_EVENTS_LOCK_DAYS` суток | 180 суток (`MINIO_EXPIRE_FAILED_EVENTS_DAYS`) | `failed-events-processor`: `PutObject`, `GetObject` на `failed-events/*` |
+| `failed-events` | объекты ошибок; создан с Object Lock (включается только при создании бакета), режим GOVERNANCE по умолчанию на `FAILED_EVENTS_LOCK_DAYS` суток | 180 суток (`MINIO_EXPIRE_FAILED_EVENTS_DAYS`); прежние версии — через `MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS` суток после того, как стали прежними (не раньше конца блокировки); пометка удаления без версий — сразу (правила ILM: `Expiration.Days`, `NoncurrentVersionExpiration`, `ExpiredObjectDeleteMarker`) | `failed-events-processor`: `PutObject`, `GetObject` на `failed-events/*` |
 | `mimir-blocks` | блоки метрик Mimir | 380 суток (Mimir — 365) | `mimir` — свой бакет |
 | `loki-chunks` | чанки и индекс Loki | 100 суток (Loki — 90) | `loki` — свой бакет |
 | `tempo-traces` | блоки трейсов Tempo | 21 сутки (Tempo — 14) | `tempo` — свой бакет |

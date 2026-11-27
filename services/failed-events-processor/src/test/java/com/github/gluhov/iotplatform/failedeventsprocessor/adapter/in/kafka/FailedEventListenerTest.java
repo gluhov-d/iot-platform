@@ -3,10 +3,12 @@ package com.github.gluhov.iotplatform.failedeventsprocessor.adapter.in.kafka;
 import com.github.gluhov.iotplatform.events.avro.ErrorCode;
 import com.github.gluhov.iotplatform.events.avro.ErrorType;
 import com.github.gluhov.iotplatform.events.avro.FailedEvent;
+import com.github.gluhov.iotplatform.events.avro.SourceHeader;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveDeniedException;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveUnavailableException;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.ArchiveCoordinates;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.FailedRecord;
+import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.HeaderEntry;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.PutOutcome;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.service.ArchiveService;
 import com.github.gluhov.iotplatform.failedeventsprocessor.support.MetricsFacade;
@@ -21,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +61,7 @@ class FailedEventListenerTest {
         assertThat(record.getValue().errorCode()).isEqualTo("VALIDATION_FAILED");
         assertThat(record.getValue().errorType()).isEqualTo("PERMANENT");
         assertThat(new String(record.getValue().value(), StandardCharsets.UTF_8)).isEqualTo("payload");
-        assertThat(record.getValue().headers()).containsKey("traceparent");
+        assertThat(record.getValue().headers()).extracting(HeaderEntry::name).containsExactly("traceparent");
         assertThat(coords.getValue()).isEqualTo(new ArchiveCoordinates("failed-events", 1, 7L, recordTime, NOW));
         verify(ack).acknowledge();
         assertThat(registry.get("failed.events.archived").tag("outcome", "created").counter().count())
@@ -99,6 +102,57 @@ class FailedEventListenerTest {
         verify(ack, never()).acknowledge();
         assertThat(registry.get("failed.events.archive.errors").tag("reason", "s3_denied")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    /**
+     * Заголовки из headerList (1.5.0) - по порядку, с повторами и значением null; map headers не используется (R26).
+     */
+    @Test
+    void givenHeaderList_whenListen_thenHeadersFromListInOrderWithRepeatsAndNulls() {
+        ArchiveService archive = mock(ArchiveService.class);
+        when(archive.archive(any(FailedRecord.class), any(ArchiveCoordinates.class))).thenReturn(PutOutcome.CREATED);
+        Acknowledgment ack = mock(Acknowledgment.class);
+        FailedEventListener listener = new FailedEventListener(archive,
+                new MetricsFacade(new SimpleMeterRegistry()), CLOCK);
+        FailedEvent withList = FailedEvent.newBuilder(event())
+                .setHeaders(Map.of("tag", ByteBuffer.wrap("b".getBytes(StandardCharsets.UTF_8))))
+                .setHeaderList(List.of(
+                        sourceHeader("tag", "a"),
+                        sourceHeader("tag", "b"),
+                        SourceHeader.newBuilder().setName("nullable").setValue(null).build()))
+                .build();
+
+        listener.onMessage(new ConsumerRecord<>("failed-events", 1, 7L, "k", withList), ack);
+
+        ArgumentCaptor<FailedRecord> record = ArgumentCaptor.forClass(FailedRecord.class);
+        verify(archive).archive(record.capture(), any(ArchiveCoordinates.class));
+        List<HeaderEntry> headers = record.getValue().headers();
+        assertThat(headers).extracting(HeaderEntry::name).containsExactly("tag", "tag", "nullable");
+        assertThat(headers.get(0).value()).isEqualTo("a".getBytes(StandardCharsets.UTF_8));
+        assertThat(headers.get(1).value()).isEqualTo("b".getBytes(StandardCharsets.UTF_8));
+        assertThat(headers.get(2).value()).isNull();
+        verify(ack).acknowledge();
+    }
+
+    /** Запись 1.4.0 (headerList = null): заголовки берутся из map headers, по одному значению на имя. */
+    @Test
+    void givenNoHeaderList_whenListen_thenHeadersFromMap() {
+        ArchiveService archive = mock(ArchiveService.class);
+        when(archive.archive(any(FailedRecord.class), any(ArchiveCoordinates.class))).thenReturn(PutOutcome.CREATED);
+        Acknowledgment ack = mock(Acknowledgment.class);
+        FailedEventListener listener = new FailedEventListener(archive,
+                new MetricsFacade(new SimpleMeterRegistry()), CLOCK);
+
+        listener.onMessage(new ConsumerRecord<>("failed-events", 1, 7L, "k", event()), ack);
+
+        ArgumentCaptor<FailedRecord> record = ArgumentCaptor.forClass(FailedRecord.class);
+        verify(archive).archive(record.capture(), any(ArchiveCoordinates.class));
+        assertThat(record.getValue().headers()).extracting(HeaderEntry::name).containsExactly("traceparent");
+    }
+
+    private static SourceHeader sourceHeader(String name, String value) {
+        return SourceHeader.newBuilder().setName(name)
+                .setValue(ByteBuffer.wrap(value.getBytes(StandardCharsets.UTF_8))).build();
     }
 
     /**

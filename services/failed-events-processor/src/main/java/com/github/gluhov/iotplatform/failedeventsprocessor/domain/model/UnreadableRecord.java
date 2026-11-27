@@ -1,7 +1,7 @@
 package com.github.gluhov.iotplatform.failedeventsprocessor.domain.model;
 
 import java.time.Instant;
-import java.util.Map;
+import java.util.List;
 
 /**
  * Запись failed-events, которую не удалось разобрать как FailedEvent: исходные байты без изменений,
@@ -15,5 +15,5 @@ public record UnreadableRecord(
         String reason,
         byte[] key,
         byte[] value,
-        Map<String, byte[]> headers) {
+        List<HeaderEntry> headers) {
 }

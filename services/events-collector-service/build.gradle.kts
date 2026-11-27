@@ -11,7 +11,7 @@ description = "events-collector-service"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-схем (артефакт avros в Nexus); Avro приходит вместе с ними транзитивно
-val avrosVersion = "1.4.0"
+val avrosVersion = "1.5.0"
 // Версия AWS SDK for Java v2 - как у процессора failed-events (тестовый контекст процессора, R23)
 val awsSdkVersion = "2.59.7"
 // Testcontainers-модуль MinIO - как у процессора (R19)

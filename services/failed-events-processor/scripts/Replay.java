@@ -70,7 +70,16 @@ public class Replay {
         byte[] value = bytes(doc, "value");
         ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(topic, null, key, value);
         JsonNode headers = doc.get("headers");
-        if (headers != null && headers.isObject()) {
+        if (headers != null && headers.isArray()) {
+            // schemaVersion 2: все заголовки по порядку, с повторами; значение null - заголовок без значения, как есть
+            for (JsonNode header : headers) {
+                String name = text(header, "name");
+                if (!REPLAYED_FROM.equals(name)) {
+                    record.headers().add(name, bytes(header, "value"));
+                }
+            }
+        } else if (headers != null && headers.isObject()) {
+            // schemaVersion 1: объект «имя - base64», по одному значению на имя; такие объекты остаются в бакете до срока
             for (Map.Entry<String, JsonNode> e : headers.properties()) {
                 if (!REPLAYED_FROM.equals(e.getKey()) && !e.getValue().isNull()) {
                     record.headers().add(e.getKey(), Base64.getDecoder().decode(e.getValue().asText()));

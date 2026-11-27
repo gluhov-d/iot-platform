@@ -3,14 +3,16 @@ package com.github.gluhov.iotplatform.failedeventsprocessor.domain.service;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.ArchiveCoordinates;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.ArchiveKey;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.FailedRecord;
+import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.HeaderEntry;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.PutOutcome;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.UnreadableRecord;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.port.out.FailedEventArchive;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -19,7 +21,8 @@ import java.util.Map;
  */
 public class ArchiveService {
 
-    private static final int SCHEMA_VERSION = 1;
+    /** Версия документа: 2 - заголовки массивом [{name, value}] в порядке записи; версия 1 читают Replay.java и прежние объекты. */
+    private static final int SCHEMA_VERSION = 2;
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private final FailedEventArchive archive;
@@ -49,11 +52,7 @@ public class ArchiveService {
         doc.put("recordTimestamp", record.recordTimestamp().toString());
         doc.put("key", base64(record.key()));
         doc.put("value", base64(record.value()));
-        Map<String, String> headers = new LinkedHashMap<>();
-        if (record.headers() != null) {
-            record.headers().forEach((name, bytes) -> headers.put(name, base64(bytes)));
-        }
-        doc.put("headers", headers);
+        doc.put("headers", headerArray(record.headers()));
         return JSON.writeValueAsBytes(doc);
     }
 
@@ -74,11 +73,7 @@ public class ArchiveService {
         doc.put("deviceId", record.deviceId());
         doc.put("key", base64(record.key()));
         doc.put("value", base64(record.value()));
-        Map<String, String> headers = new LinkedHashMap<>();
-        if (record.headers() != null) {
-            record.headers().forEach((name, bytes) -> headers.put(name, base64(bytes)));
-        }
-        doc.put("headers", headers);
+        doc.put("headers", headerArray(record.headers()));
         Map<String, Object> archiveBlock = new LinkedHashMap<>();
         archiveBlock.put("failedEventsTopic", coordinates.topic());
         archiveBlock.put("failedEventsPartition", coordinates.partition());
@@ -102,6 +97,20 @@ public class ArchiveService {
             metadata.put("device-id", record.deviceId());
         }
         return metadata;
+    }
+
+    /** Заголовки документа: массив {name, value} в порядке записи, с повторами; value - base64 или null. */
+    private static List<Map<String, Object>> headerArray(List<HeaderEntry> headers) {
+        List<Map<String, Object>> array = new ArrayList<>();
+        if (headers != null) {
+            for (HeaderEntry header : headers) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("name", header.name());
+                entry.put("value", base64(header.value()));
+                array.add(entry);
+            }
+        }
+        return array;
     }
 
     private static String base64(byte[] bytes) {

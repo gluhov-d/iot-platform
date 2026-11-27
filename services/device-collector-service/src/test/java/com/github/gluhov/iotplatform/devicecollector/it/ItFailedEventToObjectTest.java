@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -81,6 +82,32 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         assertThat(s3.headObject(b -> b.bucket(BUCKET).key(archiveKey)).metadata())
                 .containsEntry("error-code", "VALIDATION_FAILED")
                 .containsEntry("source-service", SERVICE);
+    }
+
+    /** Заголовки исходного сообщения - список: повтор имени, значение null и трасса сохраняются по порядку (R26, FR-005, FR-007). */
+    @Test
+    void givenRepeatedAndNullableHeaders_whenFailed_thenObjectHeadersArrayInOrder() throws Exception {
+        String id = deviceOnShard(0);
+        byte[] source = avroBytes(DEVICES, info(id, "evt-obj-2", DeviceUpsertEventType.CREATED, T).build());
+        byte[] key = ("another-key-" + UUID.randomUUID()).getBytes(StandardCharsets.UTF_8);
+        List<Header> headers = List.of(
+                new RecordHeader("tag", "a".getBytes(StandardCharsets.UTF_8)),
+                new RecordHeader("tag", "b".getBytes(StandardCharsets.UTF_8)),
+                new RecordHeader("nullable", null),
+                new RecordHeader("traceparent", TRACEPARENT.getBytes(StandardCharsets.US_ASCII)));
+
+        RecordMetadata sent = sendBytes(key, source, 0, headers);
+
+        String archiveKey = archiveKey("VALIDATION_FAILED", sent);
+        awaitObject(archiveKey);
+        JsonNode objectHeaders = readJson(archiveKey).get("headers");
+        assertThat(objectHeaders.isArray()).as("headers - массив с schemaVersion 2").isTrue();
+        assertThat(headerNames(objectHeaders)).containsExactly("tag", "tag", "nullable", "traceparent");
+        assertThat(Base64.getDecoder().decode(objectHeaders.get(0).get("value").asString()))
+                .isEqualTo("a".getBytes(StandardCharsets.UTF_8));
+        assertThat(Base64.getDecoder().decode(objectHeaders.get(1).get("value").asString()))
+                .isEqualTo("b".getBytes(StandardCharsets.UTF_8));
+        assertThat(objectHeaders.get(2).get("value").isNull()).as("nullable без значения - null").isTrue();
     }
 
     @Test
@@ -297,8 +324,20 @@ class ItFailedEventToObjectTest extends AbstractItTest {
         return Base64.getDecoder().decode(document.get(field).asString());
     }
 
-    /** Байты заголовка исходной записи (объект headers, значения - base64). */
+    /** Байты заголовка исходной записи по имени (headers - массив {name, value}, value - base64 или null). */
     private static byte[] decodeHeader(JsonNode headers, String name) {
-        return Base64.getDecoder().decode(headers.get(name).asString());
+        for (JsonNode header : headers) {
+            if (name.equals(header.get("name").asString())) {
+                return Base64.getDecoder().decode(header.get("value").asString());
+            }
+        }
+        throw new AssertionError("нет заголовка " + name + " в headers");
+    }
+
+    /** Имена заголовков объекта по порядку массива. */
+    private static List<String> headerNames(JsonNode headers) {
+        List<String> names = new ArrayList<>();
+        headers.forEach(header -> names.add(header.get("name").asString()));
+        return names;
     }
 }

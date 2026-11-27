@@ -1,7 +1,7 @@
 package com.github.gluhov.iotplatform.failedeventsprocessor.domain.model;
 
 import java.time.Instant;
-import java.util.Map;
+import java.util.List;
 
 /**
  * Запись failed-events в виде, с которым работает домен: поля FailedEvent без типов Avro.
@@ -20,7 +20,7 @@ public record FailedRecord(
         String traceId,
         byte[] key,
         byte[] value,
-        Map<String, byte[]> headers,
+        List<HeaderEntry> headers,
         int attempts,
         String deviceId) {
 }

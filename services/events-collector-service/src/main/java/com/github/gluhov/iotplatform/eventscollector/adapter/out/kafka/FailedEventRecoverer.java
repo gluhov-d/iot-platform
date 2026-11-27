@@ -4,6 +4,7 @@ import com.github.gluhov.iotplatform.events.avro.DeviceEvent;
 import com.github.gluhov.iotplatform.events.avro.ErrorCode;
 import com.github.gluhov.iotplatform.events.avro.ErrorType;
 import com.github.gluhov.iotplatform.events.avro.FailedEvent;
+import com.github.gluhov.iotplatform.events.avro.SourceHeader;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.EventPersistenceException;
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.InvalidEventException;
 import com.github.gluhov.iotplatform.eventscollector.domain.port.out.CollectorMetrics;
@@ -22,7 +23,9 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -103,6 +106,7 @@ public class FailedEventRecoverer implements ConsumerRecordRecoverer {
                 .setKey(key == null ? null : ByteBuffer.wrap(key))
                 .setValue(value == null ? null : ByteBuffer.wrap(value))
                 .setHeaders(sourceHeaders(headers))
+                .setHeaderList(sourceHeaderList(headers))
                 .setAttempts(attempts)
                 .setDeviceId(record.value() instanceof DeviceEvent parsed ? parsed.getDeviceId() : null)
                 .build();
@@ -152,18 +156,37 @@ public class FailedEventRecoverer implements ConsumerRecordRecoverer {
         return parts.length >= 4 && parts[1].length() == TRACE_ID_LENGTH ? parts[1] : null;
     }
 
-    // Заголовки исходного сообщения без служебных: сырые байты (уже в key/value) и заголовки Spring Kafka
+    // Заголовки исходного сообщения без служебных: сырые байты (уже в key/value) и заголовки Spring Kafka.
+    // Для читателей 1.4.0: по одному значению на имя (последнее), без значений null.
     private static Map<String, ByteBuffer> sourceHeaders(Headers headers) {
         Map<String, ByteBuffer> copied = new LinkedHashMap<>();
         for (Header header : headers) {
-            String name = header.key();
-            if (header.value() == null || RAW_KEY_HEADER.equals(name) || RAW_VALUE_HEADER.equals(name)
-                    || name.startsWith("spring") || name.startsWith("kafka_")) {
+            if (header.value() == null || isServiceHeader(header.key())) {
                 continue;
             }
-            copied.put(name, ByteBuffer.wrap(header.value()));
+            copied.put(header.key(), ByteBuffer.wrap(header.value()));
         }
         return copied;
+    }
+
+    // Все заголовки исходного сообщения по порядку, с повторами и значениями null (с 1.5.0); служебные - как в sourceHeaders
+    private static List<SourceHeader> sourceHeaderList(Headers headers) {
+        List<SourceHeader> list = new ArrayList<>();
+        for (Header header : headers) {
+            if (isServiceHeader(header.key())) {
+                continue;
+            }
+            list.add(SourceHeader.newBuilder()
+                    .setName(header.key())
+                    .setValue(header.value() == null ? null : ByteBuffer.wrap(header.value()))
+                    .build());
+        }
+        return list;
+    }
+
+    private static boolean isServiceHeader(String name) {
+        return RAW_KEY_HEADER.equals(name) || RAW_VALUE_HEADER.equals(name)
+                || name.startsWith("spring") || name.startsWith("kafka_");
     }
 
     private static String headerString(Headers headers, String name) {

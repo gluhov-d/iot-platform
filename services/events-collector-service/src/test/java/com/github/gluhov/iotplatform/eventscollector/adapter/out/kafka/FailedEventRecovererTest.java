@@ -25,6 +25,7 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.serializer.DeserializationException;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -225,6 +226,32 @@ class FailedEventRecovererTest {
                 new ListenerExecutionFailedException("x", new InvalidEventException("bad"))))
                 .hasMessageContaining(FAILED_TOPIC);
         verify(metrics, never()).failedEventPublished(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("Headers as a list: repeated names and a null value kept in source order, service headers left out")
+    void givenRepeatedAndNullableHeaders_whenRecover_thenHeaderListKeepsOrderAndNulls() {
+        RecordHeaders headers = rawHeaders(null, new byte[]{1});
+        headers.add("tag", "a".getBytes(StandardCharsets.UTF_8));
+        headers.add("springDeserializerExceptionValue", new byte[]{5});
+        headers.add("tag", "b".getBytes(StandardCharsets.UTF_8));
+        headers.add("nullable", null);
+        headers.add("traceparent", TRACEPARENT.getBytes(StandardCharsets.US_ASCII));
+        headers.add(KafkaHeaders.DELIVERY_ATTEMPT, intBytes(1));
+
+        recoverer.accept(record(event("evt-1", "dev-1", 1_000L), headers),
+                new ListenerExecutionFailedException("x", new InvalidEventException("bad")));
+
+        FailedEvent event = published();
+        assertThat(event.getHeaderList()).extracting("name")
+                .containsExactly("tag", "tag", "nullable", "traceparent");
+        assertThat(event.getHeaderList()).extracting("value").containsExactly(
+                ByteBuffer.wrap("a".getBytes(StandardCharsets.UTF_8)),
+                ByteBuffer.wrap("b".getBytes(StandardCharsets.UTF_8)),
+                null,
+                ByteBuffer.wrap(TRACEPARENT.getBytes(StandardCharsets.US_ASCII)));
+        assertThat(event.getHeaders()).containsOnlyKeys("tag", "traceparent");
+        assertThat(event.getHeaders().get("tag")).isEqualTo(ByteBuffer.wrap("b".getBytes(StandardCharsets.UTF_8)));
     }
 
     private static ConsumerRecord<Object, Object> record(Object value, RecordHeaders headers) {

@@ -357,30 +357,30 @@ Schema Registry, остаётся в повторах и после ответа
 
 Блок D — заголовки списком (замечание 3):
 
-- [ ] T098 Контракт: `FailedEvent` дословно из [failed-event.avsc](contracts/failed-event.avsc) (поле `headerList`, запись `SourceHeader`), версия avros `1.5.0` —
+- [X] T098 Контракт: `FailedEvent` дословно из [failed-event.avsc](contracts/failed-event.avsc) (поле `headerList`, запись `SourceHeader`), версия avros `1.5.0` —
   `AV/avro/failed-event.avsc`, `AV/build.gradle.kts` (FR-001)
-- [ ] T099 [Mac] (R26) Совместимость без публикации: `make avros-check` — код 0; `./gradlew :avros:build` генерирует `SourceHeader` (FR-001; R26)
-- [ ] T100 **ЧЕЛОВЕК** (необратимо: версия в Nexus не перезаписывается) Опубликовать avros 1.5.0 (`make avros-up`) и зарегистрировать схемы
+- [X] T099 [Mac] (R26) Совместимость без публикации: `make avros-check` — код 0; `./gradlew :avros:build` генерирует `SourceHeader` (FR-001; R26)
+- [X] T100 **ЧЕЛОВЕК** (необратимо: версия в Nexus не перезаписывается) Опубликовать avros 1.5.0 (`make avros-up`) и зарегистрировать схемы
   (`make schemas-register`); `curl -s localhost:8081/subjects/failed-events-value/versions/latest` содержит `headerList` (FR-001)
-- [ ] T101 [P] Unit ECS: заголовки `tag`=`a`, `tag`=`b`, `nullable` без значения, `traceparent` → `headerList` из четырёх записей в том же порядке (`nullable` —
+- [X] T101 [P] Unit ECS: заголовки `tag`=`a`, `tag`=`b`, `nullable` без значения, `traceparent` → `headerList` из четырёх записей в том же порядке (`nullable` —
   `value = null`), служебные исключены; `headers` (`map`) — как в 1.4.0 — `ECST/adapter/out/kafka/FailedEventRecovererTest.java` (FR-005; R26)
-- [ ] T102 [P] Unit DCS: то же — `DCST/adapter/out/kafka/FailedEventRecovererTest.java` (FR-005; R26)
-- [ ] T103 Код сборщиков: `headerList` по порядку со всеми заголовками кроме служебных, включая `null`; avros `1.5.0` —
+- [X] T102 [P] Unit DCS: то же — `DCST/adapter/out/kafka/FailedEventRecovererTest.java` (FR-005; R26)
+- [X] T103 Код сборщиков: `headerList` по порядку со всеми заголовками кроме служебных, включая `null`; avros `1.5.0` —
   `ECSJ/adapter/out/kafka/FailedEventRecoverer.java`, `DCSJ/adapter/out/kafka/FailedEventRecoverer.java`, `ECS/build.gradle.kts`, `DCS/build.gradle.kts` (FR-005)
-- [ ] T104 [P] Unit процессора: JSON `schemaVersion: 2`, `headers` — массив `[{name, value}]` в порядке `headerList` с повторами и `null`; при `headerList = null` —
+- [X] T104 [P] Unit процессора: JSON `schemaVersion: 2`, `headers` — массив `[{name, value}]` в порядке `headerList` с повторами и `null`; при `headerList = null` —
   из `headers`; `unreadable` — все заголовки записи по порядку; запись 1.4.0 читается схемой 1.5.0 (`headerList = null`), запись 1.5.0 — схемой 1.4.0 —
   `FEPT/domain/service/ArchiveServiceTest.java`, `FEPT/adapter/in/kafka/FailedEventListenerTest.java`, `FEPT/adapter/in/kafka/UnreadableRecorderTest.java`,
   `FEPT/contract/FailedEventContractTest.java` (FR-001, FR-007, FR-010; R26)
-- [ ] T105 Код процессора: `HeaderEntry` (имя, байты или `null`) в домене, `List<HeaderEntry>` в `FailedRecord` и `UnreadableRecord`, перенос из `headerList`
+- [X] T105 Код процессора: `HeaderEntry` (имя, байты или `null`) в домене, `List<HeaderEntry>` в `FailedRecord` и `UnreadableRecord`, перенос из `headerList`
   (запасной — `headers`), JSON `schemaVersion: 2`; avros `1.5.0` — `FEPJ/domain/model/HeaderEntry.java`, `FEPJ/domain/model/FailedRecord.java`,
   `FEPJ/domain/model/UnreadableRecord.java`, `FEPJ/domain/service/ArchiveService.java`, `FEPJ/adapter/in/kafka/FailedEventListener.java`,
   `FEPJ/adapter/in/kafka/UnreadableRecorder.java`, `FEP/build.gradle.kts` (FR-007, FR-010)
-- [ ] T106 IT сборщиков: сообщение с заголовками `tag`=`a`, `tag`=`b`, `nullable` без значения и ошибкой → в объекте MinIO массив `headers` с теми же тремя
+- [X] T106 IT сборщиков: сообщение с заголовками `tag`=`a`, `tag`=`b`, `nullable` без значения и ошибкой → в объекте MinIO массив `headers` с теми же тремя
   записями в том же порядке — `ECST/it/ItFailedEventToObjectTest.java`, `DCST/it/ItFailedEventToObjectTest.java` (FR-005, FR-007, FR-023)
 - [ ] T107 Возврат: `Replay.java` публикует заголовки массива по порядку (повторы, `null` — как есть) и читает объекты `schemaVersion: 1`; `replay-test.sh` —
   объект с двумя `tag` и `nullable` возвращается с тем же списком заголовков плюс `x-replayed-from`, объект `schemaVersion: 1` возвращается —
   `FEP/scripts/Replay.java`, `FEP/scripts/replay-test.sh` (FR-024)
-- [ ] T108 [P] Документы и диаграммы: README (контракт 1.5.0 и `headerList`, формат объекта `schemaVersion: 2`, правила ILM `failed-events`, переменные блоков A и C),
+- [X] T108 [P] Документы и диаграммы: README (контракт 1.5.0 и `headerList`, формат объекта `schemaVersion: 2`, правила ILM `failed-events`, переменные блоков A и C),
   `diagrams/fep-error-to-minio-sequence.mmd` (`headerList`) с перерендером PNG; `grep -rn '1\.4\.0' README.md services/*/build.gradle.kts` — только исторические
   упоминания — `README.md`, `diagrams/fep-error-to-minio-sequence.mmd` (FR-001, FR-005, FR-016)
 

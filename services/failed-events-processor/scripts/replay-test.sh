@@ -23,6 +23,7 @@ DAY="$(date -u +%Y/%m/%d)"
 KEY_OK="${DAY}/failed-events-99-${RUN_ID}.json"
 KEY_UNREADABLE="${DAY}/failed-events-98-${RUN_ID}.json"
 KEY_MISSING="${DAY}/failed-events-97-${RUN_ID}.json"
+KEY_LIST="${DAY}/failed-events-96-${RUN_ID}.json"
 BOOTSTRAP="localhost:9092"
 
 step=0
@@ -49,7 +50,7 @@ put_object() {
 kafka_sh() { "${COMPOSE[@]}" exec -T kafka sh -c "$@" < /dev/null; }
 
 cleanup() {
-  for k in "${KEY_OK}" "${KEY_UNREADABLE}"; do
+  for k in "${KEY_OK}" "${KEY_UNREADABLE}" "${KEY_LIST}"; do
     mc_exec rm --versions --bypass --force "local/${BUCKET}/${k}" >/dev/null 2>&1 || true
   done
   kafka_sh "/opt/kafka/bin/kafka-topics.sh --bootstrap-server ${BOOTSTRAP} --delete --topic ${TOPIC}" >/dev/null 2>&1 || true
@@ -76,6 +77,17 @@ object_json() { # $1 - kind-поле (пусто или "kind":"unreadable",)
 EOF
 }
 
+# Объект schemaVersion 2: заголовки массивом в порядке записи, два tag и nullable без значения
+object_json_v2() {
+  cat <<EOF
+{"schemaVersion":2,"sourceService":"events-collector-service","sourceTopic":"${TOPIC}","sourcePartition":0,"sourceOffset":2,
+"sourceTimestamp":"2026-01-01T00:00:00Z","failedAt":"2026-01-01T00:00:01Z","errorCode":"DESERIALIZATION_FAILED","errorType":"PERMANENT",
+"description":"replay-test","attempts":1,"traceId":"4bf92f3577b34da6a3ce929d0e0e4736","deviceId":null,
+"key":"$(hex_to_b64 "${KEY_HEX}")","value":"$(hex_to_b64 "${VALUE_HEX}")",
+"headers":[{"name":"tag","value":"YQ=="},{"name":"tag","value":"Yg=="},{"name":"nullable","value":null}]}
+EOF
+}
+
 # Сообщения темы: по строке на запись (partition, key, value, заголовки в шестнадцатеричном виде)
 dump_topic() {
   "${SCRIPT_DIR}/replay-tool.sh" dump "${TOPIC}" < /dev/null 2>/dev/null
@@ -91,7 +103,8 @@ kafka_sh "/opt/kafka/bin/kafka-topics.sh --bootstrap-server ${BOOTSTRAP} --creat
   || fail "тема не создана"
 object_json "" > "${WORK_DIR}/ok.json";                          put_object "${KEY_OK}" "${WORK_DIR}/ok.json"
 object_json '"kind":"unreadable",' > "${WORK_DIR}/unreadable.json"; put_object "${KEY_UNREADABLE}" "${WORK_DIR}/unreadable.json"
-ok "объекты ${KEY_OK}, ${KEY_UNREADABLE}"
+object_json_v2 > "${WORK_DIR}/list.json";                          put_object "${KEY_LIST}" "${WORK_DIR}/list.json"
+ok "объекты ${KEY_OK}, ${KEY_UNREADABLE}, ${KEY_LIST}"
 
 next "Возврат объекта: байты key и value, заголовки, x-replayed-from"
 [[ -x "${SCRIPT_DIR}/replay.sh" && -x "${SCRIPT_DIR}/replay-tool.sh" ]] || fail "нет исполняемых replay.sh и replay-tool.sh (T080)"
@@ -124,5 +137,14 @@ rc=0; "${SCRIPT_DIR}/replay.sh" "${KEY_UNREADABLE}" >/dev/null 2>&1 || rc=$?
 [[ "${rc}" == "3" ]] || fail "ожидался код 3, получен ${rc}"
 [[ "$(dump_topic | wc -l | tr -d ' ')" == "2" ]] || fail "в теме появилось лишнее сообщение"
 ok "код 3"
+
+next "Объект schemaVersion 2: заголовки по порядку, с повторами и null, x-replayed-from"
+"${SCRIPT_DIR}/replay.sh" "${KEY_LIST}" >"${WORK_DIR}/replay3.out" 2>&1 || { cat "${WORK_DIR}/replay3.out" >&2; fail "replay.sh завершился с ошибкой"; }
+dump_topic > "${WORK_DIR}/dump3.txt"
+[[ "$(wc -l < "${WORK_DIR}/dump3.txt" | tr -d ' ')" == "3" ]] || { cat "${WORK_DIR}/dump3.txt" >&2; fail "в теме должно быть три сообщения"; }
+last="$(tail -n 1 "${WORK_DIR}/dump3.txt")"
+[[ "${last}" == *" h.tag=61 h.tag=62 h.nullable=- "* ]] || fail "заголовки не по порядку или без повторов/null: ${last}"
+[[ "${last}" == *"h.x-replayed-from=$(ascii_hex "${KEY_LIST}")"* ]] || fail "нет заголовка x-replayed-from с ключом объекта"
+ok "tag=a, tag=b, nullable без значения - по порядку; x-replayed-from = ключ объекта"
 
 echo "==> All checks passed"

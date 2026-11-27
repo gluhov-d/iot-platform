@@ -11,7 +11,7 @@ description = "failed-events-processor"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-схем (артефакт avros в Nexus): FailedEvent берётся из неё
-val avrosVersion = "1.4.0"
+val avrosVersion = "1.5.0"
 // Версия AWS SDK for Java v2: одна на весь модуль, через BOM
 val awsSdkVersion = "2.59.7"
 // Testcontainers-модуль MinIO (R19): версия задана явно

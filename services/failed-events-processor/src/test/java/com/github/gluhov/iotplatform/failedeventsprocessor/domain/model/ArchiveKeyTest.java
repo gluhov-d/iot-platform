@@ -3,7 +3,7 @@ package com.github.gluhov.iotplatform.failedeventsprocessor.domain.model;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.Map;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,7 +24,7 @@ class ArchiveKeyTest {
     void givenUnreadableAndReadableOfSameRecord_whenKey_thenSameKey() {
         // Одна запись failed-events: сначала нечитаемая (схема не найдена), после восстановления схемы - разобранная
         UnreadableRecord unreadable = new UnreadableRecord("failed-events", 1, 8L, RECORD_TIME,
-                "SerializationException: Unknown magic byte!", null, new byte[]{1, 2, 3}, Map.of());
+                "SerializationException: Unknown magic byte!", null, new byte[]{1, 2, 3}, List.of());
         ArchiveCoordinates readable = new ArchiveCoordinates("failed-events", 1, 8L, RECORD_TIME,
                 Instant.parse("2026-11-22T09:00:00Z"));
 

@@ -1,10 +1,12 @@
 package com.github.gluhov.iotplatform.failedeventsprocessor.adapter.in.kafka;
 
 import com.github.gluhov.iotplatform.events.avro.FailedEvent;
+import com.github.gluhov.iotplatform.events.avro.SourceHeader;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveDeniedException;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.exception.ArchiveUnavailableException;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.ArchiveCoordinates;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.FailedRecord;
+import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.HeaderEntry;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.model.PutOutcome;
 import com.github.gluhov.iotplatform.failedeventsprocessor.domain.service.ArchiveService;
 import com.github.gluhov.iotplatform.failedeventsprocessor.support.MetricsFacade;
@@ -17,8 +19,8 @@ import org.springframework.stereotype.Component;
 import java.nio.ByteBuffer;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Приём failed-events. Смещение подтверждается только после успешной записи объекта (или 412 - дубликат).
@@ -63,8 +65,6 @@ public class FailedEventListener {
     }
 
     private static FailedRecord toRecord(FailedEvent event) {
-        Map<String, byte[]> headers = new HashMap<>();
-        event.getHeaders().forEach((name, bytes) -> headers.put(name, bytes(bytes)));
         return new FailedRecord(
                 event.getSourceService(),
                 event.getSourceTopic(),
@@ -78,9 +78,25 @@ public class FailedEventListener {
                 event.getTraceId(),
                 bytes(event.getKey()),
                 bytes(event.getValue()),
-                headers,
+                headersOf(event),
                 event.getAttempts(),
                 event.getDeviceId());
+    }
+
+    /**
+     * Заголовки записи: headerList (1.5.0) - все заголовки по порядку, с повторами и null; у записи 1.4.0 headerList = null,
+     * тогда - map headers (по одному значению на имя, без null, R26).
+     */
+    private static List<HeaderEntry> headersOf(FailedEvent event) {
+        List<HeaderEntry> headers = new ArrayList<>();
+        if (event.getHeaderList() != null) {
+            for (SourceHeader header : event.getHeaderList()) {
+                headers.add(new HeaderEntry(header.getName(), bytes(header.getValue())));
+            }
+            return headers;
+        }
+        event.getHeaders().forEach((name, value) -> headers.add(new HeaderEntry(name, bytes(value))));
+        return headers;
     }
 
     private static byte[] bytes(ByteBuffer buffer) {

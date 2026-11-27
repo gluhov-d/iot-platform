@@ -155,9 +155,38 @@ class UnreadableRecorderTest {
 
         JsonNode objectHeaders = JSON.readTree(bodies.getFirst()).get("headers");
         assertThat(objectHeaders.size()).isEqualTo(1);
-        assertThat(objectHeaders.has("traceparent")).isTrue();
-        assertThat(objectHeaders.has("x-raw-key")).isFalse();
-        assertThat(objectHeaders.has("x-raw-value")).isFalse();
+        assertThat(objectHeaders.get(0).get("name").asString()).isEqualTo("traceparent");
+    }
+
+    /** Все заголовки записи по порядку, с повторами и значением null (R26); служебные исключены. */
+    @Test
+    void givenRepeatedAndNullableHeaders_whenRecovered_thenObjectHeadersArrayInOrder() throws Exception {
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("x-raw-key", new byte[]{1});
+        headers.add("x-raw-value", RAW_VALUE);
+        headers.add("tag", "a".getBytes(StandardCharsets.UTF_8));
+        headers.add("springDeserializerExceptionValue", new byte[]{9});
+        headers.add("tag", "b".getBytes(StandardCharsets.UTF_8));
+        headers.add("nullable", null);
+        headers.add("traceparent", new byte[]{4, 5});
+        List<byte[]> bodies = new ArrayList<>();
+        FailedEventArchive archive = (key, body, metadata) -> {
+            bodies.add(body);
+            return PutOutcome.CREATED;
+        };
+        UnreadableRecorder recorder = new UnreadableRecorder(new ArchiveService(archive),
+                new MetricsFacade(new SimpleMeterRegistry()));
+
+        recorder.accept(recordWith(null, headers), new ClassCastException("cast"));
+
+        JsonNode doc = JSON.readTree(bodies.getFirst());
+        assertThat(doc.get("schemaVersion").asInt()).isEqualTo(2);
+        JsonNode objectHeaders = doc.get("headers");
+        assertThat(objectHeaders.isArray()).isTrue();
+        List<String> names = new ArrayList<>();
+        objectHeaders.forEach(header -> names.add(header.get("name").asString()));
+        assertThat(names).containsExactly("tag", "tag", "nullable", "traceparent");
+        assertThat(objectHeaders.get(2).get("value").isNull()).isTrue();
     }
 
     private static DeserializationException deserializationFailure(byte[] data, boolean isKey) {

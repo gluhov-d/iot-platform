@@ -28,7 +28,7 @@ sequenceDiagram
             EC->>CO: повтор INSERT device_outbox
             CH--xEC: ошибка (device_events или device_outbox)
         end
-        EC->>FK: FailedEvent (Avro): исходные key и value (байты из x-raw-key, x-raw-value), sourceTopic, sourcePartition, sourceOffset, sourceTimestamp, headers, traceId текущего спана, attempts = N, STORAGE_UNAVAILABLE, TRANSIENT
+        EC->>FK: FailedEvent (Avro): исходные key и value (байты из x-raw-key, x-raw-value), sourceTopic, sourcePartition, sourceOffset, sourceTimestamp, headerList (все заголовки по порядку, с повторами и null), headers (для читателей 1.4.0), traceId текущего спана, attempts = N, STORAGE_UNAVAILABLE, TRANSIENT
         alt публикация FailedEvent недоступна (тайм-аут send().get)
             FK--xEC: ошибка
             break смещение events не подтверждается
@@ -58,7 +58,7 @@ sequenceDiagram
             end
         end
     else FailedEvent прочитан
-        FP->>FP: ArchiveService: тело — JSON со всеми полями FailedEvent (sourceService, errorCode, sourceTopic, sourcePartition, sourceOffset — в теле и в метаданных)
+        FP->>FP: ArchiveService: тело — JSON schemaVersion 2 со всеми полями FailedEvent (sourceService, errorCode, sourceTopic, sourcePartition, sourceOffset — в теле и в метаданных), заголовки — массив {name, value} из headerList по порядку
         FP->>M: PutObject (тот же ключ объекта), If-None-Match: *, x-amz-meta-error-code, source-service, device-id, trace-id
         alt объект создан
             M-->>FP: 200 OK
