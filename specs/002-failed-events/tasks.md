@@ -377,7 +377,7 @@ Schema Registry, остаётся в повторах и после ответа
   `FEPJ/adapter/in/kafka/UnreadableRecorder.java`, `FEP/build.gradle.kts` (FR-007, FR-010)
 - [X] T106 IT сборщиков: сообщение с заголовками `tag`=`a`, `tag`=`b`, `nullable` без значения и ошибкой → в объекте MinIO массив `headers` с теми же тремя
   записями в том же порядке — `ECST/it/ItFailedEventToObjectTest.java`, `DCST/it/ItFailedEventToObjectTest.java` (FR-005, FR-007, FR-023)
-- [ ] T107 Возврат: `Replay.java` публикует заголовки массива по порядку (повторы, `null` — как есть) и читает объекты `schemaVersion: 1`; `replay-test.sh` —
+- [X] T107 Возврат: `Replay.java` публикует заголовки массива по порядку (повторы, `null` — как есть) и читает объекты `schemaVersion: 1`; `replay-test.sh` —
   объект с двумя `tag` и `nullable` возвращается с тем же списком заголовков плюс `x-replayed-from`, объект `schemaVersion: 1` возвращается —
   `FEP/scripts/Replay.java`, `FEP/scripts/replay-test.sh` (FR-024)
 - [X] T108 [P] Документы и диаграммы: README (контракт 1.5.0 и `headerList`, формат объекта `schemaVersion: 2`, правила ILM `failed-events`, переменные блоков A и C),
@@ -386,7 +386,7 @@ Schema Registry, остаётся в повторах и после ответа
 
 Завершение:
 
-- [ ] T109 [Mac] Checkpoint на стенде владельца — `./gradlew :services:failed-events-processor:check :services:events-collector-service:check
+- [X] T109 [Mac] Checkpoint на стенде владельца — `./gradlew :services:failed-events-processor:check :services:events-collector-service:check
   :services:device-collector-service:check`; `make up`; `make check-local dcs-quick-check fep-quick-check minio-check failed-replay-test` (FR-009, FR-010, FR-016, FR-023, FR-024)
 - [ ] T110 `/speckit-converge` по `spec.md`, `plan.md`, `tasks.md` после T097 и T109; результат — в «Результат converge» (проход 3)
 

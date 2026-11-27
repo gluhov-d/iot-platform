@@ -721,7 +721,7 @@ services/events-collector-service/scripts/check-local.sh     # или make check
 ./gradlew :services:db-migrator:test
 ```
 
-events-collector-service — 148 тестов, device-collector-service — 157 (раздел 19.8), failed-events-processor — 48 (раздел 23.9), device-service — 100 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
+events-collector-service — 149 тестов, device-collector-service — 158 (раздел 19.8), failed-events-processor — 63 (раздел 23.9), device-service — 100 (раздел 22), db-migrator — отдельные unit-тесты (по отчёту сборки). Числа — из отчётов сборки последнего прогона.
 Сообщения журнала проверяются через `support/LogCapture` (Logback `ListAppender` со снимком MDC на момент записи).
 Ключевые сценарии events-collector-service:
 
@@ -792,8 +792,8 @@ events-collector-service — 148 тестов, device-collector-service — 157 
   что её взял другой экземпляр.
 
 Покрытие строк (JaCoCo, unit + integration): порог 70 % у events-collector-service, device-collector-service,
-failed-events-processor и device-service (`check` падает ниже порога); на последнем прогоне `check` — 97,6 %, 96,4 % и
-96,6 % (events-collector-service, device-collector-service, failed-events-processor); отчёт —
+failed-events-processor и device-service (`check` падает ниже порога); на последнем прогоне `check` — 97,6 %, 96,6 % и
+97,3 % (events-collector-service, device-collector-service, failed-events-processor); отчёт —
 `services/<сервис>/build/reports/jacoco/test/html/index.html`.
 Avro-классы приходят из `avros` и в отчёт не входят; код Lombok исключён из отчёта.
 
@@ -955,7 +955,7 @@ kafka-exporter. Дашборд «IoT Platform — failed-events-processor» (`fa
 | `minio-bucket-failed-events.png` | бакет `failed-events` в консоли MinIO: объект `2026/11/25/failed-events-1-0.json`, метаданные `error-code`, `source-service`, `source-topic`, `trace-id`, режим Governance до `2027-05-24` |
 | `minio-bucket-mimir-blocks.png`, `minio-bucket-loki-chunks.png`, `minio-bucket-tempo-traces.png` | бакеты данных наблюдаемости в консоли MinIO: блоки Mimir, чанки Loki, трассы Tempo |
 | `minio-bucket-backups-postgres.png`, `minio-bucket-backups-clickhouse.png` | бакет `backups`: копия шардов PostgreSQL (`shard_N.dump`, `manifest.txt`) и копия ClickHouse |
-| `failed-events-object-example.json` | пример объекта ошибки из бакета `failed-events` (`2026/11/23/failed-events-0-113.json`): все поля `FailedEvent`, байты `key` и `value` в base64, блок `archive` |
+| `failed-events-object-example.json` | пример объекта ошибки `schemaVersion: 2` из бакета `failed-events` (`2026/11/27/failed-events-0-4.json`, стенд, `make fep-quick-check`): все поля `FailedEvent`, байты `key` и `value` в base64, `headers` массивом, блок `archive` |
 
 Снимать при идущей нагрузке (например, несколько раз `make check-local`), иначе панели без трафика пусты.
 
@@ -1139,7 +1139,7 @@ GitHub показывает `.mmd` сразу; в IntelliJ IDEA — плагин
 
 ### 19.8 Тесты
 
-* Unit (157): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
+* Unit (158): `DeviceRegistryServiceTest` (исходы `APPLIED`/`STALE`/`DUPLICATE`, транзакция), `DeviceInfoValidatorTest`,
   `DeviceInfoMapperTest`, `DeviceInfoListenerTest` (ack только после записи), `KafkaConfigTest` (невалидное —
   сразу в `failed-events`; сбой хранилища — повторы и `failed-events`; публикация не удалась — не подтверждено; паузы 1 с и 2 с),
   `FailedEventRecovererTest` (коды и типы ошибок, исходные байты, публикация не удалась — исключение и ни одной метрики),
@@ -1663,6 +1663,6 @@ mc cat local/failed-events/<ключ объекта>                            
 * Путь «сборщик → объект» — `ItFailedEventToObjectTest` в events-collector-service и device-collector-service.
 * Возврат объекта: `make failed-replay-test` (`scripts/replay-test.sh`): байты `key` и `value` с `0x00`, `0x0a`, `0xff`, заголовки, `x-replayed-from`, повтор,
   неизвестный ключ (код 2), нечитаемая запись (код 3). Запрет удаления — в `make minio-check` (96 проверок).
-* Числа последнего прогона `check`: unit — 48, интеграционные — 8, покрытие строк — 96,6 %.
+* Числа последнего прогона `check`: unit — 63, интеграционные — 10, покрытие строк — 97,3 %.
 * `./gradlew :services:failed-events-processor:check` — все тесты и порог покрытия 70 %; `make fep-quick-check` — проверка
   поднятого стенда.
