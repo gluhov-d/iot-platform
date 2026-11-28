@@ -1,0 +1,33 @@
+%% router-manager: опрос без команды. Повторный опрос отвечает Redis, до PostgreSQL не доходит (FR-006, FR-012)
+sequenceDiagram
+    autonumber
+    participant R as Роутер (router-emulator)
+    participant RM as router-manager (любой экземпляр)
+    participant RD as Redis master (адрес от Sentinel)
+    participant PG as PostgreSQL iot_commands
+
+    R->>RM: PollCommand() + x-router-id, -ts, -nonce, -key-id, -sig
+    RM->>RM: K_r = HMAC(K_master[key-id], router_id), подпись метода, роутера, времени, nonce и тела, окно ±60 с
+    break подпись неверна, ключ неизвестен или время вне окна
+        RM-->>R: UNAUTHENTICATED (причина — только в логе)
+    end
+    RM->>RD: SET router:sig:v1:{routerId}:{sig} 1 NX PX 120000
+    break подпись уже принята (повтор)
+        RM-->>R: UNAUTHENTICATED
+    end
+    Note over RM,RD: Redis недоступен — проверка повтора пропускается,<br/>router_manager_replay_check_skipped_total +1
+    RM->>RD: GET router:cmd:none:v1:{routerId}
+    alt запись «нет команды» есть
+        RD-->>RM: 1
+        RM-->>R: OK без command — запроса в базу нет (router_manager_polls_total{source=cache})
+    else записи нет
+        RD-->>RM: nil
+        RM->>RD: GET router:cmd:gen:v1:{routerId}
+        RD-->>RM: поколение g (или пусто)
+        RM->>PG: UPDATE … WHERE command_id = (SELECT … status NEW … FOR UPDATE SKIP LOCKED) RETURNING
+        PG-->>RM: 0 строк
+        RM->>RD: Lua: SET none PX ROUTER_NEG_CACHE_TTL, только если gen == g
+        Note over RM,RD: Поколение изменилось (команду создали во время опроса) — запись не делается,<br/>следующий опрос пойдёт в базу и получит команду
+        RM-->>R: OK без command (router_manager_polls_total{source=db})
+    end
+    Note over R,PG: Redis недоступен: все четыре обращения к Redis пропускаются по тайм-ауту (100 мс),<br/>опрос идёт в базу и отвечает штатно, ошибки — router_manager_cache_errors_total

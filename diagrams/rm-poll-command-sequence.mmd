@@ -1,0 +1,41 @@
+%% router-manager: опрос с командой и ответ роутера. Выдача ровно один раз при двух экземплярах (FR-006, FR-007, FR-009)
+sequenceDiagram
+    autonumber
+    participant R as Роутер (router-emulator)
+    participant RM as router-manager (экземпляр 1)
+    participant RM2 as router-manager (экземпляр 2)
+    participant RD as Redis master (адрес от Sentinel)
+    participant PG as PostgreSQL iot_commands
+
+    R->>RM: PollCommand() + подпись HMAC
+    RM->>RM: проверка подписи и SET NX повтора — как в rm-poll-empty-sequence
+    break подпись неверна или повтор
+        RM-->>R: UNAUTHENTICATED
+    end
+    RM->>RD: GET router:cmd:none:v1:{routerId}
+    RD-->>RM: nil (запись удалена при создании)
+    RM->>RD: GET router:cmd:gen:v1:{routerId}
+    RM->>PG: UPDATE … SET status SENT, sent_at = now()<br/>WHERE command_id = (SELECT … ORDER BY created_at, command_id<br/>LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING …, more_pending
+    Note over RM2,PG: Одновременный опрос того же роутера через экземпляр 2 пропускает<br/>заблокированную строку (SKIP LOCKED) — одну команду дважды не получить
+    PG-->>RM: команда SENT, more_pending
+    RM-->>R: OK, RouterCommand (command_id, REBOOT), more_pending
+    Note over R,RM2: Ответ потерялся по дороге — команда остаётся SENT и повторно не выдаётся,<br/>через ROUTER_COMMAND_SENT_TIMEOUT её переведёт проход зависших (rm-stuck-command-sequence)
+    opt more_pending = true
+        R->>RM2: PollCommand() сразу, не дожидаясь интервала — следующая команда по порядку
+    end
+    R->>R: выполнение команды
+    R->>RM2: ReportResult(command_id, SUCCESS или FAILED, message) + подпись HMAC
+    RM2->>PG: UPDATE … SET status, finished_at, failure_reason ROUTER_FAILED при отказе<br/>WHERE command_id, router_id и status SENT
+    alt 1 строка
+        PG-->>RM2: SUCCESS / FAILED
+        RM2-->>R: OK, status, applied = true
+    else 0 строк
+        RM2->>PG: SELECT status
+        alt итог уже есть (повтор или ответ после TIMEOUT)
+            RM2-->>R: OK, текущий статус, applied = false — итог не меняется
+        else команда NEW
+            RM2-->>R: FAILED_PRECONDITION
+        else чужая или несуществующая
+            RM2-->>R: NOT_FOUND
+        end
+    end
