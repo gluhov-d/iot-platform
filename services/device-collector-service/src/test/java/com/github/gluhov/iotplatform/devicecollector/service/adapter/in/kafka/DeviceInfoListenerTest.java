@@ -97,7 +97,7 @@ class DeviceInfoListenerTest {
     }
 
     @Test
-    @DisplayName("Invalid: rejected, shard unknown, offset not acknowledged here (devices-dlt does it)")
+    @DisplayName("Invalid: rejected, shard unknown, offset not acknowledged here (failed-events does it)")
     void givenInvalid_whenConsume_thenRejected() {
         when(useCase.process(any(), any(), any())).thenThrow(new InvalidDeviceInfoException("deviceId is blank"));
 

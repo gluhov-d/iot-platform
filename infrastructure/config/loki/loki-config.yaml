@@ -7,13 +7,20 @@ server:
   grpc_server_max_send_msg_size: 16777216
   log_level: warn
 
+# Значения подставляются из окружения контейнера (-config.expand-env=true); значений по умолчанию нет.
+# Чанки и индекс - в бакете MinIO loki-chunks (учётка видит только его, ADR-0015); локальный том - WAL и рабочие каталоги.
+# Параметра flush_on_shutdown в Loki 3.1.1 нет (research.md R14): при остановке данные из памяти восстанавливает WAL.
 common:
   instance_addr: 127.0.0.1
   path_prefix: /loki
   storage:
-    filesystem:
-      chunks_directory: /loki/chunks
-      rules_directory: /loki/rules
+    s3:
+      endpoint: minio:9000
+      bucketnames: ${MINIO_BUCKET_LOKI}
+      access_key_id: ${LOKI_S3_ACCESS_KEY}
+      secret_access_key: ${LOKI_S3_SECRET_KEY}
+      s3forcepathstyle: true
+      insecure: true
   replication_factor: 1
   ring:
     kvstore:
@@ -23,20 +30,26 @@ schema_config:
   configs:
     - from: 2024-01-01
       store: tsdb
-      object_store: filesystem
+      object_store: s3
       schema: v13
       index:
         prefix: index_
         period: 24h
 
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/index_cache
+
 limits_config:
-  retention_period: 168h
+  # Срок хранения логов; срок бакета в ILM больше (100 суток против 90): система удаляет первой
+  retention_period: ${LOKI_RETENTION_PERIOD}
   reject_old_samples: false
   allow_structured_metadata: true
 
 compactor:
   working_directory: /loki/compactor
-  delete_request_store: filesystem
+  delete_request_store: s3
   retention_enabled: true
 
 ruler:

@@ -1,0 +1,5 @@
+# Профиль docker: процессор в контейнере стенда. Все подключения задаются переменными окружения compose.
+spring:
+  config:
+    activate:
+      on-profile: docker

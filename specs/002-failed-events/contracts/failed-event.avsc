@@ -2,7 +2,7 @@
   "type": "record",
   "name": "FailedEvent",
   "namespace": "com.github.gluhov.iotplatform.events.avro",
-  "doc": "Сообщение, которое сервис платформы не смог обработать: исходное сообщение без изменений и описание ошибки. Тема failed-events, ключ сообщения - <sourceTopic>-<sourcePartition>-<sourceOffset>. С версии 1.4.0.",
+  "doc": "Сообщение, которое сервис платформы не смог обработать: исходное сообщение без изменений и описание ошибки. Тема failed-events, ключ сообщения - <sourceTopic>-<sourcePartition>-<sourceOffset>. С версии 1.4.0; headerList - с 1.5.0.",
   "fields": [
     {
       "name": "sourceService",
@@ -85,7 +85,24 @@
       "name": "headers",
       "type": {"type": "map", "values": "bytes"},
       "default": {},
-      "doc": "Заголовки исходного сообщения (traceparent и прочие) без служебных заголовков Spring и обработки ошибок."
+      "doc": "Устарело с 1.5.0, оставлено для читателей 1.4.0: заголовки исходного сообщения без служебных, по одному значению на имя (последнее), без заголовков со значением null. Полный набор - headerList."
+    },
+    {
+      "name": "headerList",
+      "type": ["null", {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "SourceHeader",
+          "doc": "Заголовок исходного сообщения Kafka: имя и значение как есть.",
+          "fields": [
+            {"name": "name", "type": "string", "doc": "Имя заголовка."},
+            {"name": "value", "type": ["null", "bytes"], "default": null, "doc": "Байты значения без изменений, null - у заголовка не было значения."}
+          ]
+        }
+      }],
+      "default": null,
+      "doc": "С 1.5.0. Все заголовки исходного сообщения без служебных, в исходном порядке, с повторяющимися именами и значениями null. null - запись старого писателя (1.4.0): заголовки только в headers; пустой массив - заголовков не было."
     },
     {
       "name": "attempts",

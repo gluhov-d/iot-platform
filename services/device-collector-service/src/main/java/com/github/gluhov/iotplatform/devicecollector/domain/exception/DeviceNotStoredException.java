@@ -2,7 +2,7 @@ package com.github.gluhov.iotplatform.devicecollector.domain.exception;
 
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StorageFailureReason;
 
-/** Устройство не записано: транзакция на шарде не выполнена. Повторы, затем devices-dlt. */
+/** Устройство не записано: транзакция на шарде не выполнена. Повторы, затем failed-events. */
 public class DeviceNotStoredException extends RuntimeException {
     private final String shard;
     private final StorageFailureReason reason;

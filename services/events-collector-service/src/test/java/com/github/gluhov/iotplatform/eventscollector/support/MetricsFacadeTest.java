@@ -22,6 +22,7 @@ class MetricsFacadeTest {
         metricsFacade.publishFailed();
         metricsFacade.publishSkipped();
         metricsFacade.pendingCount(42);
+        metricsFacade.failedEventPublished("STORAGE_UNAVAILABLE", "TRANSIENT");
 
         // outbox_candidate_total переименовывается в outbox_candidate_created_total в prometheus.yaml
         assertThat(registry.scrape())
@@ -31,6 +32,7 @@ class MetricsFacadeTest {
                 .contains("outbox_publish_success_total 1.0")
                 .contains("outbox_publish_fail_total 1.0")
                 .contains("outbox_publish_skipped_total 1.0")
-                .contains("outbox_pending_count 42.0");
+                .contains("outbox_pending_count 42.0")
+                .contains("failed_events_published_total{error_code=\"STORAGE_UNAVAILABLE\",error_type=\"TRANSIENT\"} 1.0");
     }
 }

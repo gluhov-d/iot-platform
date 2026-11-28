@@ -16,9 +16,11 @@ DS_PROJ       := :services:device-service
 # device-service-client (клиент API device-service)
 DS_CLIENT_DIR  := $(ROOT_DIR)/services/device-service-client
 DS_CLIENT_PROJ := :services:device-service-client
+# failed-events-processor (архив ошибок в MinIO)
+FEP_DIR       := $(ROOT_DIR)/services/failed-events-processor
 
 # Профили Compose: пусто - базовый стенд;
-#	make up PROFILES=observability		- плюс Prometheus/Grafana/Loki/Tempo/Alloy
+#	make up PROFILES=observability		- плюс Mimir/Grafana/Loki/Tempo/Alloy
 #	make up PROFILES=tools	- плюс Kafka UI
 #	make up PROFILES="observability platform" - плюс окружение модуля
 PROFILES ?=
@@ -31,12 +33,15 @@ compose_env = $$($(COMPOSE) config --environment | sed -n 's/^$(1)=//p')
 # Одноразовые задачи: должны завершиться с кодом 0.
 # Все остальные сервисы из compose считаются долгоживущими и обязаны стать healthy.
 INIT_SERVICES := kafka-init minio-init nexus-init avros-publish schema-register clickhouse-init shard-replication-init db-migrator
+# Долгоживущие сервисы без healthcheck (в образе нет shell, curl и wget): достаточно состояния running;
+# их готовность проверяют скрипты (mimir - make obs-check)
+NO_HEALTHCHECK_SERVICES := mimir
 WAIT_TIMEOUT ?= 300
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-obs nexus-up registry-up down stop start restart ps logs health urls pull build clean reset kafka-reset \
-        psql redis-cli clickhouse-cli topics check check-local test integration-test coverage \
-        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release schemas-register schemas
+        psql redis-cli clickhouse-cli minio-check minio-ilm-expiry-check obs-check topics check check-local test integration-test coverage \
+        avros-up avros-check avros-release avros-bootstrap proxy-sql shard-of replication-status shard-backup shard-restore backup backup-list clickhouse-restore backup-check dcs-test dcs-it dcs-coverage dcs-quick-check ds-test ds-it ds-coverage ds-quick-check ds-client-check ds-client-release fep-quick-check failed-replay failed-replay-test schemas-register schemas
 
 ## ----------------------------------------------------------------- Справка
 help: ## Показать список команд
@@ -89,7 +94,7 @@ clean: ## Удалить контейнеры всех профилей вмес
 
 reset: clean up ## Полный пересоздание окружения с нуля
 
-KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service device-collector-service
+KAFKA_SERVICES := kafka kafka-init schema-registry kafka-exporter events-collector-service device-collector-service failed-events-processor
 
 kafka-reset: ## Пересоздать только том Kafka (сообщения, офсеты и схемы будут потеряны)
 	@echo "!!! Будут удалены ВСЕ данные Kafka: сообщения во всех топиках, офсеты"
@@ -134,7 +139,7 @@ wait: ## Дождаться, пока все сервисы станут healthy
 	    else \
 	      case "$$state/$$health" in \
 	      	running/healthy) ;; \
-	     	running/) failed="$$failed $$s(нет healthcheck)" ;; \
+	     	running/) [[ " $(NO_HEALTHCHECK_SERVICES) " == *" $$s "* ]] || failed="$$failed $$s(нет healthcheck)" ;; \
 	    	exited/*|dead/*) failed="$$failed $$s($$state)" ;; \
 	   		*) pending="$$pending $$s" ;; \
 	   	  esac; \
@@ -167,12 +172,12 @@ urls: ## Показать адреса всех сервисов
 	echo "  Kafka UI                  http://localhost:$$(v KAFKA_UI_PORT)"; \
 	echo "  --- профиль observability"; \
 	echo "  Grafana                   http://localhost:$$(v GRAFANA_PORT)"; \
-	echo "  Prometheus                http://localhost:$$(v PROMETHEUS_PORT)"; \
+	echo "  Mimir (метрики)           только сеть compose: mimir:$$(v MIMIR_PORT); читает Grafana (источник prometheus)"; \
 	echo "  Loki                      http://localhost:$$(v LOKI_PORT)"; \
 	echo "  Tempo                     http://localhost:$$(v TEMPO_HTTP_PORT)  (OTLP: $$(v TEMPO_OTLP_GRPC_PORT)/$$(v TEMPO_OTLP_HTTP_PORT))"; \
 	echo "  Alloy                     http://localhost:$$(v ALLOY_PORT)"; \
 	echo "  kafka-exporter            http://localhost:$$(v KAFKA_EXPORTER_PORT)/metrics"; \
-	echo "  Proxy и шарды (метрики)   только сеть compose: shardingsphere-proxy:9090, postgres-exporter-shard-N[-replica]:9187 (читает Prometheus)"; \
+	echo "  Proxy и шарды (метрики)   только сеть compose: shardingsphere-proxy:9090, postgres-exporter-shard-N[-replica]:9187 (собирает Alloy)"; \
 	echo "  --- профиль platform"; \
 	echo "  PostgreSQL                postgresql://localhost:$$(v POSTGRES_PORT)/$$(v POSTGRES_DB)"; \
 	echo "  postgres-exporter         http://localhost:$$(v POSTGRES_EXPORTER_PORT)/metrics"; \
@@ -190,6 +195,15 @@ redis-cli: ## Открыть redis-cli к текущему основному у
 	@m=$$($(COMPOSE) exec -T redis-sentinel-1 redis-cli -p 26379 sentinel get-master-addr-by-name $(call compose_env,REDIS_SENTINEL_MASTER) | sed -n 1p | tr -d '\r'); \
 	[ -n "$$m" ] || { echo "!!! Sentinel не знает основной узел"; exit 1; }; \
 	$(COMPOSE) exec redis redis-cli -h "$$m"
+
+minio-check: ## Проверить MinIO: права учёток по бакетам и префиксам, сроки ILM, Object Lock и условную запись в failed-events (config/minio/check.sh)
+	@COMPOSE_CMD="$(COMPOSE)" $(INFRA_DIR)/config/minio/check.sh
+
+minio-ilm-expiry-check: ## Разовая проверка удаления версий ILM (R27): STEP=start поднимает одноразовый MinIO, STEP=verify проверяет и убирает его (config/minio/ilm-expiry-check.sh)
+	@case "$(STEP)" in start|verify) $(INFRA_DIR)/config/minio/ilm-expiry-check.sh $(STEP) ;; *) echo "Использование: make minio-ilm-expiry-check STEP=start|verify" >&2; exit 1 ;; esac
+
+obs-check: ## Проверить наблюдаемость: источники Grafana, все PromQL дашбордов, up{job}, объекты Mimir, Loki и Tempo в MinIO (config/observability/check.sh)
+	@COMPOSE_CMD="$(COMPOSE) --profile observability" $(INFRA_DIR)/config/observability/check.sh
 
 clickhouse-cli: ## Открыть clickhouse-client
 	@$(COMPOSE) exec clickhouse sh -c 'exec clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD"'
@@ -211,8 +225,28 @@ replication-status: ## Репликация шардов: клиенты и сл
 shard-backup: ## Копия каждого шарда с его реплики без остановки сервисов (backups/<время>/, manifest: SHA-256, offset Kafka)
 	@$(INFRA_DIR)/config/postgres/shard-backup.sh
 
-shard-restore: ## УДАЛЯЕТ данные шардов и восстанавливает из копии: make shard-restore CONFIRM=yes [BACKUP=backups/<время>]
-	@$(INFRA_DIR)/config/postgres/shard-restore.sh $(if $(filter yes,$(CONFIRM)),--yes) $(BACKUP)
+shard-restore: ## УДАЛЯЕТ данные шардов и восстанавливает из копии: make shard-restore CONFIRM=yes [BACKUP=backups/<время>] или FROM=minio [BACKUP=<метка>]
+	@$(INFRA_DIR)/config/postgres/shard-restore.sh $(if $(filter yes,$(CONFIRM)),--yes) $(if $(filter minio,$(FROM)),--from-minio) $(BACKUP)
+
+backup: ## Копии PostgreSQL и ClickHouse в MinIO сейчас (то же, что делает cron backup-runner); сбой одной копии не отменяет другую
+	@rc=0; \
+	$(COMPOSE) exec -T backup-runner /opt/backup-runner/backup-postgres.sh || rc=1; \
+	$(COMPOSE) exec -T backup-runner /opt/backup-runner/backup-clickhouse.sh || rc=1; \
+	exit $$rc
+
+backup-list: ## Метки копий в MinIO: backups/postgres/ и backups/clickhouse/ (завершённые - с manifest.txt)
+	@$(COMPOSE) exec -T backup-runner sh -c '. /etc/backup.env; \
+	  MC_HOST_pg="http://$${BACKUP_POSTGRES_S3_ACCESS_KEY}:$${BACKUP_POSTGRES_S3_SECRET_KEY}@minio:9000"; \
+	  MC_HOST_ch="http://$${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}:$${BACKUP_CLICKHOUSE_S3_SECRET_KEY}@minio:9000"; export MC_HOST_pg MC_HOST_ch; \
+	  for kind in postgres:pg clickhouse:ch; do d=$${kind%%:*}; a=$${kind##*:}; echo "== backups/$$d/"; \
+	    mc ls "$$a/$$MINIO_BUCKET_BACKUPS/$$d/" | awk "{print \$$NF}" | tr -d "/" | sort; done'
+
+clickhouse-restore: ## Восстановить базу ClickHouse из копии в MinIO: make clickhouse-restore BACKUP=<метка> [CONFIRM=yes - заменить существующую базу]
+	@[ -n "$(BACKUP)" ] || { echo "Укажите метку копии: make clickhouse-restore BACKUP=<метка> (метки - make backup-list)"; exit 1; }
+	@$(COMPOSE) exec -T $(if $(filter yes,$(CONFIRM)),-e RESTORE_CONFIRM=yes) backup-runner /opt/backup-runner/restore-clickhouse.sh "$(BACKUP)"
+
+backup-check: ## УДАЛЯЕТ данные шардов и ClickHouse проекта и восстанавливает из MinIO: make backup-check CONFIRM=yes (config/backup-runner/check.sh)
+	@COMPOSE_CMD="$(COMPOSE)" BACKUP_CHECK_CONFIRM="$(filter yes,$(CONFIRM))" MAKE="$(MAKE)" $(INFRA_DIR)/config/backup-runner/check.sh
 
 ## ----------------------------------------------------------------- Проверки
 check: ## Проверить корректность docker-compose.yaml
@@ -262,6 +296,17 @@ ds-client-check: ## Сборка и тесты клиента device-service (б
 	@$(GRADLE) $(DS_CLIENT_PROJ):build
 ds-client-release: ## Публикация клиента device-service в Nexus (необратимо: выпущенная версия не перезаписывается)
 	@$(DS_CLIENT_DIR)/scripts/publish.sh
+
+## ----------------------------------------------------------- failed-events-processor (архив ошибок)
+fep-quick-check: ## Быстрая проверка поднятого стенда: ошибки событий, устройств и мусор доходят до объектов в MinIO (scripts/quick-check.sh)
+	@$(FEP_DIR)/scripts/quick-check.sh
+
+failed-replay: ## Вернуть один объект из MinIO в исходную тему: make failed-replay KEY=2026/11/23/failed-events-0-113.json (scripts/replay.sh, ADR-0019)
+	@test -n "$(KEY)" || { echo "Укажите ключ объекта: make failed-replay KEY=<yyyy>/<MM>/<dd>/failed-events-<раздел>-<смещение>.json"; exit 1; }
+	@$(FEP_DIR)/scripts/replay.sh "$(KEY)"
+
+failed-replay-test: ## Проверка возврата на поднятом стенде: байты, заголовки, повтор, неизвестный ключ, нечитаемая запись (scripts/replay-test.sh)
+	@$(FEP_DIR)/scripts/replay-test.sh
 
 ## ----------------------------------------------------------------- avros
 avros-up: ## Собрать и опубликовать avros в Nexus одноразовой задачей compose (make up вызывает сам; нужен nexus-up; Schema Registry поднимется сама)

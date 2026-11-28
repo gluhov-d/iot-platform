@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-__EXPIRE_DAYS__d",
+      "Status": "Enabled",
+      "Expiration": {
+        "Days": "__EXPIRE_DAYS__"
+      },
+      "Filter": {
+        "Prefix": ""
+      }
+    }
+  ]
+}

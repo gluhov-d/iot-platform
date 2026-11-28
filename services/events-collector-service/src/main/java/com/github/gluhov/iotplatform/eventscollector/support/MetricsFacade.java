@@ -20,8 +20,10 @@ public class MetricsFacade implements CollectorMetrics {
     private final Counter publishFail;
     private final Counter publishSkipped;
     private final AtomicLong pending = new AtomicLong();
+    private final MeterRegistry registry;
 
     public MetricsFacade(MeterRegistry registry) {
+        this.registry = registry;
         eventsProcessed = counter(registry, "events.processed", "Successfully processed incoming events");
         eventsPersistFail = counter(registry, "events.persist.fail", "ClickHouse write errors");
         outboxCandidateCreated = counter(registry, "outbox.candidate.created", "Created outbox records");
@@ -66,6 +68,17 @@ public class MetricsFacade implements CollectorMetrics {
     @Override
     public void pendingCount(long value) {
         pending.set(value);
+    }
+
+    // Счётчик регистрируется по набору меток: повторный вызов с теми же метками вернёт тот же счётчик
+    @Override
+    public void failedEventPublished(String errorCode, String errorType) {
+        Counter.builder("failed.events.published")
+                .description("Messages published to failed-events")
+                .tag("error_code", errorCode)
+                .tag("error_type", errorType)
+                .register(registry)
+                .increment();
     }
 
     private static Counter counter(MeterRegistry registry, String name, String description) {

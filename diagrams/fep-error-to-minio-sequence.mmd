@@ -28,7 +28,7 @@ sequenceDiagram
             EC->>CO: повтор INSERT device_outbox
             CH--xEC: ошибка (device_events или device_outbox)
         end
-        EC->>FK: FailedEvent (Avro): исходные key и value (байты из x-raw-key, x-raw-value), sourceTopic, sourcePartition, sourceOffset, sourceTimestamp, headers, traceId текущего спана, attempts = N, STORAGE_UNAVAILABLE, TRANSIENT
+        EC->>FK: FailedEvent (Avro): исходные key и value (байты из x-raw-key, x-raw-value), sourceTopic, sourcePartition, sourceOffset, sourceTimestamp, headerList (все заголовки по порядку, с повторами и null), headers (для читателей 1.4.0), traceId текущего спана, attempts = N, STORAGE_UNAVAILABLE, TRANSIENT
         alt публикация FailedEvent недоступна (тайм-аут send().get)
             FK--xEC: ошибка
             break смещение events не подтверждается
@@ -40,10 +40,10 @@ sequenceDiagram
         end
     end
 
-    FK->>FP: запись failed-events (раздел p, смещение o, время записи t), poll (ErrorHandlingDeserializer)
+    FK->>FP: запись failed-events (раздел p, смещение o, время записи t), poll (ErrorHandlingDeserializer с обёрткой RawKeepingDeserializer, байты в x-raw-key и x-raw-value)
     FP->>FP: ключ объекта, общий для обеих веток: yyyy/MM/dd/failed-events-p-o.json, дата — время записи t в UTC (при повторной доставке p, o и t те же)
-    alt FailedEvent не разобрался (битые байты, схема не найдена)
-        FP->>FP: тело unreadable: kind=unreadable, base64 ключа, значения и заголовков, причина
+    alt значение не FailedEvent (ошибка разбора, схема не найдена, корректный Avro другого типа)
+        FP->>FP: тело unreadable: kind=unreadable, base64 ключа и значения из x-raw-key и x-raw-value, заголовки без служебных, причина
         FP->>M: PutObject (ключ объекта), If-None-Match: *, x-amz-meta-kind=unreadable
         alt MinIO недоступен
             M--xFP: ошибка
@@ -58,7 +58,7 @@ sequenceDiagram
             end
         end
     else FailedEvent прочитан
-        FP->>FP: ArchiveService: тело — JSON со всеми полями FailedEvent (sourceService, errorCode, sourceTopic, sourcePartition, sourceOffset — в теле и в метаданных)
+        FP->>FP: ArchiveService: тело — JSON schemaVersion 2 со всеми полями FailedEvent (sourceService, errorCode, sourceTopic, sourcePartition, sourceOffset — в теле и в метаданных), заголовки — массив {name, value} из headerList по порядку
         FP->>M: PutObject (тот же ключ объекта), If-None-Match: *, x-amz-meta-error-code, source-service, device-id, trace-id
         alt объект создан
             M-->>FP: 200 OK

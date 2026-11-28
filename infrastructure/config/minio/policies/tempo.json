@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "tempo-traces-bucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"],
+      "Resource": ["arn:aws:s3:::__BUCKET_TEMPO__"]
+    },
+    {
+      "Sid": "tempo-traces-objects",
+      "Effect": "Allow",
+      "Action": ["s3:*"],
+      "Resource": ["arn:aws:s3:::__BUCKET_TEMPO__/*"]
+    }
+  ]
+}

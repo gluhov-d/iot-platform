@@ -11,7 +11,11 @@ description = "events-collector-service"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-схем (артефакт avros в Nexus); Avro приходит вместе с ними транзитивно
-val avrosVersion = "1.3.0"
+val avrosVersion = "1.5.0"
+// Версия AWS SDK for Java v2 - как у процессора failed-events (тестовый контекст процессора, R23)
+val awsSdkVersion = "2.59.7"
+// Testcontainers-модуль MinIO - как у процессора (R19)
+val testcontainersMinioVersion = "2.0.3"
 
 java {
     toolchain {
@@ -38,6 +42,12 @@ repositories {
     maven("https://packages.confluent.io/maven/")
 }
 
+dependencyManagement {
+    imports {
+        mavenBom("software.amazon.awssdk:bom:$awsSdkVersion")
+    }
+}
+
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     // Только встроенный сервер для /actuator/*
@@ -59,6 +69,12 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     testImplementation("org.testcontainers:testcontainers-kafka")
     testImplementation("org.testcontainers:testcontainers-clickhouse")
+    testImplementation("org.testcontainers:testcontainers-minio:$testcontainersMinioVersion")
+    // Процессор failed-events как второй Spring-контекст в IT (R23, T012). Его jar выключен (tasks.jar enabled=false),
+    // project-зависимость classpath не даёт - классы и ресурсы берутся из каталогов сборки процессора (см. ниже);
+    // его библиотеки, которых нет у сборщика, объявлены явно (те же версии, что у процессора: AWS SDK из BOM)
+    testImplementation("software.amazon.awssdk:s3")
+    testImplementation("software.amazon.awssdk:apache-client")
     testImplementation("org.awaitility:awaitility")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.5.1")
     testCompileOnly("org.projectlombok:lombok")
@@ -73,6 +89,14 @@ configurations.configureEach {
         selectHighestVersion()
     }
 }
+
+// Классы и ресурсы процессора failed-events (failed-events-processor.yaml) - для зонда второго контекста (R23)
+val failedEventsProcessorBuild = project(":services:failed-events-processor").layout.buildDirectory.get().asFile
+dependencies {
+    testImplementation(files("$failedEventsProcessorBuild/classes/java/main", "$failedEventsProcessorBuild/resources/main"))
+}
+tasks.named("compileTestJava") { dependsOn(":services:failed-events-processor:classes") }
+tasks.withType<Test>().configureEach { dependsOn(":services:failed-events-processor:classes") }
 
 // ---------------------------------------------------------------- Тесты
 // *Test — модульные (без Docker), It*Test — интеграционные (Testcontainers).

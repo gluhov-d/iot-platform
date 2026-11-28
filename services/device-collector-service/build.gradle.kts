@@ -11,9 +11,15 @@ description = "device-collector-service"
 
 val confluentVersion = "8.2.4"
 // Версия Avro-схем (артефакт avros в Nexus); Avro приходит вместе с ними транзитивно
-val avrosVersion = "1.3.0"
+val avrosVersion = "1.5.0"
 // Flyway в тестах (через db-migrator) - той же версии, что и в самом db-migrator, а не из BOM Spring Boot
 extra["flyway.version"] = "12.11.0"
+// Версия AWS SDK for Java v2 - та же, что в процессоре failed-events (тест до объекта в MinIO, R23)
+val awsSdkVersion = "2.59.7"
+// Каталог сборки процессора failed-events (его jar отключён, в тесты сборщика попадают его классы и ресурсы)
+val failedEventsProcessorBuild = project(":services:failed-events-processor").layout.buildDirectory.get().asFile
+// Testcontainers-модуль MinIO - та же версия, что в процессоре (R19)
+val testcontainersMinioVersion = "2.0.3"
 
 java {
     toolchain {
@@ -36,6 +42,12 @@ repositories {
     }
     mavenCentral()
     maven("https://packages.confluent.io/maven/")
+}
+
+dependencyManagement {
+    imports {
+        mavenBom("software.amazon.awssdk:bom:$awsSdkVersion")
+    }
 }
 
 dependencies {
@@ -62,6 +74,12 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers-kafka")
     testImplementation("org.awaitility:awaitility")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.5.1")
+    // Процессор failed-events поднимается вторым контекстом в IT сборщика (R23): архив ошибок - MinIO.
+    // Зависимость project() на процессор не даёт его классов: у процессора отключён jar. Поэтому его каталоги
+    // классов и ресурсов подключаются напрямую (см. ниже), а его библиотеки перечислены здесь явно.
+    testImplementation("org.testcontainers:testcontainers-minio:$testcontainersMinioVersion")
+    testImplementation("software.amazon.awssdk:s3")
+    testImplementation("software.amazon.awssdk:apache-client")
     // Схему шардов в интеграционных тестах готовит тот же db-migrator, что и на стенде.
     // Его slf4j-simple (журнал отдельного контейнера) здесь не нужен: второй провайдер SLF4J вытеснил бы Logback
     testImplementation(project(":services:db-migrator")) {
@@ -70,6 +88,13 @@ dependencies {
     testCompileOnly("org.projectlombok:lombok")
     testAnnotationProcessor("org.projectlombok:lombok")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Каталоги сборки процессора failed-events: классы и ресурсы main (его jar отключён, см. выше)
+    testImplementation(files(failedEventsProcessorBuild.resolve("classes/java/main"), failedEventsProcessorBuild.resolve("resources/main")))
+}
+
+// Классы и ресурсы процессора должны быть собраны раньше тестов сборщика
+tasks.named("compileTestJava") {
+    dependsOn(":services:failed-events-processor:classes")
 }
 
 // ---------------------------------------------------------------- Тесты

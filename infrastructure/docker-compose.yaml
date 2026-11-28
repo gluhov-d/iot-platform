@@ -192,6 +192,11 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      # Named collection backup_s3 (config/clickhouse/config.d/backup_s3.xml): копии BACKUP DATABASE уходят в MinIO,
+      # адрес и ключи берутся отсюда, в тексте запроса их нет (ADR-0017)
+      BACKUP_CLICKHOUSE_S3_URL: "http://minio:9000/${MINIO_BUCKET_BACKUPS}/clickhouse/"
+      BACKUP_CLICKHOUSE_S3_ACCESS_KEY: ${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}
+      BACKUP_CLICKHOUSE_S3_SECRET_KEY: ${BACKUP_CLICKHOUSE_S3_SECRET_KEY}
     ports:
       - "${CLICKHOUSE_HTTP_PORT}:8123"
       - "${CLICKHOUSE_NATIVE_PORT}:9000"
@@ -199,6 +204,8 @@ services:
       - clickhouse-data:/var/lib/clickhouse
       # 01-schema.sh выполняется entrypoint-ом только на пустом томе
       - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
+      - ./config/clickhouse/config.d/backup_s3.xml:/etc/clickhouse-server/config.d/backup_s3.xml:ro
+      - ./config/clickhouse/users.d/backup.xml:/etc/clickhouse-server/users.d/backup.xml:ro
     ulimits:
       nofile:
         soft: 262144
@@ -301,8 +308,8 @@ services:
       KAFKA_BOOTSTRAP: "kafka:${KAFKA_INTERNAL_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      KAFKA_FAILED_EVENTS_RETENTION_MS: ${KAFKA_FAILED_EVENTS_RETENTION_MS}
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
       KAFKA_TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
       KAFKA_DEVICES_RETENTION_MS: ${KAFKA_DEVICES_RETENTION_MS}
@@ -382,7 +389,11 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      FAILED_EVENTS_PUBLISH_TIMEOUT: ${FAILED_EVENTS_PUBLISH_TIMEOUT}
+      FAILED_EVENTS_MAX_BLOCK_MS: ${FAILED_EVENTS_MAX_BLOCK_MS}
+      FAILED_EVENTS_REQUEST_TIMEOUT_MS: ${FAILED_EVENTS_REQUEST_TIMEOUT_MS}
+      FAILED_EVENTS_DELIVERY_TIMEOUT_MS: ${FAILED_EVENTS_DELIVERY_TIMEOUT_MS}
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP}
       CLICKHOUSE_URL: "jdbc:clickhouse://clickhouse:8123"
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
@@ -694,7 +705,11 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      FAILED_EVENTS_PUBLISH_TIMEOUT: ${FAILED_EVENTS_PUBLISH_TIMEOUT}
+      FAILED_EVENTS_MAX_BLOCK_MS: ${FAILED_EVENTS_MAX_BLOCK_MS}
+      FAILED_EVENTS_REQUEST_TIMEOUT_MS: ${FAILED_EVENTS_REQUEST_TIMEOUT_MS}
+      FAILED_EVENTS_DELIVERY_TIMEOUT_MS: ${FAILED_EVENTS_DELIVERY_TIMEOUT_MS}
       # Та же группа, что читают shard-backup.sh и shard-restore.sh (offset копии и восстановления)
       DEVICE_COLLECTOR_CONSUMER_GROUP: ${DEVICE_COLLECTOR_CONSUMER_GROUP:-device-collector}
       DEVICES_MAX_ATTEMPTS: ${DEVICES_MAX_ATTEMPTS}
@@ -704,9 +719,6 @@ services:
       DEVICES_SHARD_CACHE_TTL: ${DEVICES_SHARD_CACHE_TTL}
       DEVICES_DB_POOL_SIZE: ${DEVICES_DB_POOL_SIZE}
       DEVICES_DB_CONNECTION_TIMEOUT_MS: ${DEVICES_DB_CONNECTION_TIMEOUT_MS}
-      DEVICES_DLT_MAX_BLOCK_MS: ${DEVICES_DLT_MAX_BLOCK_MS}
-      DEVICES_DLT_REQUEST_TIMEOUT_MS: ${DEVICES_DLT_REQUEST_TIMEOUT_MS}
-      DEVICES_DLT_DELIVERY_TIMEOUT_MS: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS}
       DEVICES_CONSUMER_METADATA_MAX_AGE_MS: ${DEVICES_CONSUMER_METADATA_MAX_AGE_MS}
       # Только адрес Proxy: адресов шардов сервис не знает. socketTimeout - последняя граница,
       # если Proxy перестал отвечать (таймауты запросов задаёт сам шард, см. database-devices.yaml);
@@ -825,6 +837,74 @@ services:
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
+  # failed-events-processor — читает тему failed-events и кладёт каждую запись объектом в бакет MinIO (профиль не нужен).
+  # 1-3 экземпляра одной группы: без container_name, порты - диапазон. Число экземпляров - deploy.replicas или
+  # docker compose up -d --scale failed-events-processor=N (N не больше размера диапазона портов)
+  # ---------------------------------------------------------------------------
+  failed-events-processor:
+    build:
+      context: ..
+      dockerfile: services/failed-events-processor/Dockerfile
+      # Gradle внутри сборки берёт avros из Nexus хоста (как у device-collector-service)
+      args:
+        NEXUS_URL: "http://host.docker.internal:${NEXUS_PORT}"
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+    image: iot-platform/failed-events-processor:${FAILED_EVENTS_PROCESSOR_IMAGE_TAG}
+    <<: *default-restart
+    logging: *default-logging
+    deploy:
+      replicas: 1
+    depends_on:
+      schema-register:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:${KAFKA_INTERNAL_PORT}"
+      SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
+      FAILED_EVENTS_CONSUMER_GROUP: ${FAILED_EVENTS_CONSUMER_GROUP}
+      FAILED_EVENTS_MAX_POLL_INTERVAL_MS: ${FAILED_EVENTS_MAX_POLL_INTERVAL_MS}
+      FAILED_EVENTS_RETRY_INITIAL_INTERVAL: ${FAILED_EVENTS_RETRY_INITIAL_INTERVAL}
+      FAILED_EVENTS_RETRY_MAX_INTERVAL: ${FAILED_EVENTS_RETRY_MAX_INTERVAL}
+      FAILED_EVENTS_RETRY_MULTIPLIER: ${FAILED_EVENTS_RETRY_MULTIPLIER}
+      # MinIO: своя учётка с правом записи только в бакет failed-events (создаёт minio-init)
+      FAILED_EVENTS_BUCKET: ${FAILED_EVENTS_BUCKET}
+      FAILED_EVENTS_S3_ENDPOINT: ${FAILED_EVENTS_S3_ENDPOINT}
+      FAILED_EVENTS_S3_REGION: ${FAILED_EVENTS_S3_REGION}
+      FAILED_EVENTS_S3_ACCESS_KEY: ${FAILED_EVENTS_S3_ACCESS_KEY}
+      FAILED_EVENTS_S3_SECRET_KEY: ${FAILED_EVENTS_S3_SECRET_KEY}
+      FAILED_EVENTS_S3_CONNECT_TIMEOUT: ${FAILED_EVENTS_S3_CONNECT_TIMEOUT}
+      FAILED_EVENTS_S3_API_CALL_TIMEOUT: ${FAILED_EVENTS_S3_API_CALL_TIMEOUT}
+      FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT: ${FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT}
+      # Клиент Schema Registry (тайм-ауты и повторы; бюджет опроса - в .env.example)
+      FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS: ${FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS}
+      FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS: ${FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS}
+      FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES: ${FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES}
+      # Alloy поднимается профилем observability; без него трейсы просто не доставляются
+      MANAGEMENT_OTLP_ENDPOINT: "http://alloy:4320/v1/traces"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75"
+    ports:
+      # Диапазон, а не один порт: при нескольких экземплярах каждый получает свой порт хоста
+      - "${FAILED_EVENTS_PROCESSOR_PORTS}:8080"
+    healthcheck:
+      # Liveness: процесс отвечает; состояние Kafka и MinIO не проверяется (при сбое MinIO процессор повторяет запись, а не перезапускается)
+      test: [ "CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /actuator/health/liveness HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [ iot-net ]
+
+  # ---------------------------------------------------------------------------
   # Kafka UI — темы, сообщения (Avro через Schema Registry) и consumer group
   # ---------------------------------------------------------------------------
   kafka-ui:
@@ -935,8 +1015,7 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
@@ -962,19 +1041,17 @@ services:
       SCHEMA_REGISTRY_URL: "http://schema-registry:${SCHEMA_REGISTRY_PORT}"
       KAFKA_EVENTS_TOPIC: ${KAFKA_EVENTS_TOPIC}
       KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
-      KAFKA_EVENTS_DLT_TOPIC: ${KAFKA_EVENTS_DLT_TOPIC}
-      KAFKA_DEVICES_DLT_TOPIC: ${KAFKA_DEVICES_DLT_TOPIC}
+      KAFKA_FAILED_EVENTS_TOPIC: ${KAFKA_FAILED_EVENTS_TOPIC}
       SCHEMA_COMPATIBILITY: FULL_TRANSITIVE
     entrypoint: [ "/workspace/avros/scripts/container-register.sh" ]
     networks: [ iot-net ]
 
   # ---------------------------------------------------------------------------
-  # MinIO — объектное хранилище (DLT + вложения)
+  # MinIO — объектное хранилище (failed-events, Mimir, Loki, Tempo, копии); базовый стенд, без профиля
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:${MINIO_VERSION}
+    image: ${MINIO_IMAGE}:${MINIO_VERSION}
     container_name: iot-minio
-    profiles: [platform]
     <<: *default-restart
     logging: *default-logging
     command: ["server", "/data", "--console-address", ":9001"]
@@ -996,31 +1073,108 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Создание бакетов — одноразовая задача
+  # Инициализация MinIO — одноразовая задача: бакеты (failed-events с Object Lock), ILM, политики и учётки компонентов.
+  # Скрипт на sh образа MinIO (init/minio/init.sh), шаблоны - config/minio (те же файлы читает check.sh). Идемпотентна.
   # ---------------------------------------------------------------------------
   minio-init:
-    image: minio/minio:${MINIO_VERSION}
+    image: ${MINIO_IMAGE}:${MINIO_VERSION}
     container_name: iot-minio-init
-    profiles: [platform]
     restart: "no"
     logging: *default-logging
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      MINIO_BUCKETS: ${MINIO_BUCKETS}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
-        for b in $$(echo "$${MINIO_BUCKETS}" | tr ',' ' '); do
-          echo "==> creating bucket $$b"
-          mc mb --ignore-existing "local/$$b"
-        done
-        mc ls local
+      FAILED_EVENTS_BUCKET: ${FAILED_EVENTS_BUCKET}
+      MINIO_BUCKET_MIMIR: ${MINIO_BUCKET_MIMIR}
+      MINIO_BUCKET_LOKI: ${MINIO_BUCKET_LOKI}
+      MINIO_BUCKET_TEMPO: ${MINIO_BUCKET_TEMPO}
+      MINIO_BUCKET_BACKUPS: ${MINIO_BUCKET_BACKUPS}
+      MINIO_EXPIRE_FAILED_EVENTS_DAYS: ${MINIO_EXPIRE_FAILED_EVENTS_DAYS}
+      MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS: ${MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS}
+      # Срок режима GOVERNANCE по умолчанию для объектов failed-events (ADR-0019), равен сроку ILM
+      FAILED_EVENTS_LOCK_DAYS: ${FAILED_EVENTS_LOCK_DAYS}
+      MINIO_EXPIRE_BACKUPS_DAYS: ${MINIO_EXPIRE_BACKUPS_DAYS}
+      MINIO_EXPIRE_MIMIR_DAYS: ${MINIO_EXPIRE_MIMIR_DAYS}
+      MINIO_EXPIRE_LOKI_DAYS: ${MINIO_EXPIRE_LOKI_DAYS}
+      MINIO_EXPIRE_TEMPO_DAYS: ${MINIO_EXPIRE_TEMPO_DAYS}
+      FAILED_EVENTS_S3_ACCESS_KEY: ${FAILED_EVENTS_S3_ACCESS_KEY}
+      FAILED_EVENTS_S3_SECRET_KEY: ${FAILED_EVENTS_S3_SECRET_KEY}
+      MIMIR_S3_ACCESS_KEY: ${MIMIR_S3_ACCESS_KEY}
+      MIMIR_S3_SECRET_KEY: ${MIMIR_S3_SECRET_KEY}
+      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
+      TEMPO_S3_ACCESS_KEY: ${TEMPO_S3_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${TEMPO_S3_SECRET_KEY}
+      BACKUP_POSTGRES_S3_ACCESS_KEY: ${BACKUP_POSTGRES_S3_ACCESS_KEY}
+      BACKUP_POSTGRES_S3_SECRET_KEY: ${BACKUP_POSTGRES_S3_SECRET_KEY}
+      BACKUP_CLICKHOUSE_S3_ACCESS_KEY: ${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}
+      BACKUP_CLICKHOUSE_S3_SECRET_KEY: ${BACKUP_CLICKHOUSE_S3_SECRET_KEY}
+    volumes:
+      - ./init/minio/init.sh:/opt/init/init.sh:ro
+      - ./config/minio:/opt/init/config:ro
+    entrypoint: ["/bin/sh", "/opt/init/init.sh"]
+    networks: [iot-net]
+
+  # ---------------------------------------------------------------------------
+  # backup-runner — копии шардов PostgreSQL и ClickHouse в MinIO по расписанию BACKUP_SCHEDULE (cron, UTC) и по make backup.
+  # Скрипты монтируются, образ их не содержит (ADR-0017). Копия шардов PostgreSQL идёт с реплик, позиции группы
+  # device-collector читаются из Kafka; make shard-backup запускает тот же скрипт с копией в ./backups
+  # ---------------------------------------------------------------------------
+  backup-runner:
+    build:
+      context: ./config/backup-runner
+      args:
+        PG_IMAGE: postgres:${POSTGRES_SHARD_VERSION}
+        MC_IMAGE: ${MC_IMAGE}:${MC_VERSION}
+    image: iot-platform/backup-runner:${BACKUP_RUNNER_IMAGE_TAG}
+    container_name: iot-backup-runner
+    <<: *default-restart
+    logging: *default-logging
+    depends_on:
+      postgres-shard-0-replica:
+        condition: service_healthy
+      postgres-shard-1-replica:
+        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE}
+      # PostgreSQL: реплики шардов по сети, позиции группы - из Kafka
+      SHARD_DB_USER: ${SHARD_DB_USER}
+      SHARD_DB_PASSWORD: ${SHARD_DB_PASSWORD}
+      KAFKA_INTERNAL_PORT: ${KAFKA_INTERNAL_PORT}
+      KAFKA_DEVICES_TOPIC: ${KAFKA_DEVICES_TOPIC}
+      DEVICE_COLLECTOR_CONSUMER_GROUP: ${DEVICE_COLLECTOR_CONSUMER_GROUP:-device-collector}
+      # ClickHouse: запросы BACKUP/RESTORE по HTTP, ключи MinIO ClickHouse берёт у себя (named collection)
+      CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
+      # MinIO: каждая копия - своей учёткой, доступной только к своему префиксу бакета
+      MINIO_BUCKET_BACKUPS: ${MINIO_BUCKET_BACKUPS}
+      BACKUP_POSTGRES_S3_ACCESS_KEY: ${BACKUP_POSTGRES_S3_ACCESS_KEY}
+      BACKUP_POSTGRES_S3_SECRET_KEY: ${BACKUP_POSTGRES_S3_SECRET_KEY}
+      BACKUP_CLICKHOUSE_S3_ACCESS_KEY: ${BACKUP_CLICKHOUSE_S3_ACCESS_KEY}
+      BACKUP_CLICKHOUSE_S3_SECRET_KEY: ${BACKUP_CLICKHOUSE_S3_SECRET_KEY}
+    volumes:
+      - ./config/backup-runner:/opt/backup-runner:ro
+      # shard-lib.sh (общие функции копии шардов): тот же файл, что у make shard-backup и shard-restore
+      - ./config/postgres:/opt/postgres:ro
+      # make shard-backup кладёт копию сюда, shard-restore читает отсюда
+      - ../backups:/backups
+    healthcheck:
+      # crond запущен как PID 1 и расписание записано
+      test: ["CMD-SHELL", "tr '\\0' ' ' </proc/1/cmdline | grep -q 'crond -f' && test -s /etc/crontabs/root"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
@@ -1094,7 +1248,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # postgres-exporter — метрики PostgreSQL для Prometheus
+  # postgres-exporter — метрики PostgreSQL (формат Prometheus, собирает Alloy)
   # ---------------------------------------------------------------------------
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:${POSTGRES_EXPORTER_VERSION}
@@ -1128,7 +1282,7 @@ services:
   # ---------------------------------------------------------------------------
   # Экспортёры метрик шардов и их реплик: по одному postgres-exporter на каждый сервер PostgreSQL
   # (профиль observability). Под ролью exporter (pg_monitor), создаёт её shard-replication-init.
-  # Порты на хост не публикуются: метрики читает Prometheus по сети compose
+  # Порты на хост не публикуются: метрики собирает Alloy по сети compose
   # ---------------------------------------------------------------------------
   postgres-exporter-shard-0:
     <<: *shard-exporter
@@ -1179,7 +1333,7 @@ services:
       DATA_SOURCE_PASS: ${SHARD_EXPORTER_PASSWORD}
 
   # ---------------------------------------------------------------------------
-  # kafka-exporter — метрики Kafka (лаг консьюмер-групп) для Prometheus
+  # kafka-exporter — метрики Kafka (лаг консьюмер-групп; формат Prometheus, собирает Alloy)
   # ---------------------------------------------------------------------------
   kafka-exporter:
     image: danielqsj/kafka-exporter:${KAFKA_EXPORTER_VERSION}
@@ -1202,36 +1356,39 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Prometheus — сбор метрик
+  # Mimir — хранилище метрик (вместо Prometheus, ADR-0016): монолит, блоки в бакете MinIO mimir-blocks.
+  # Метрики сервисов и экспортёров приходят от Alloy (remote write), Grafana читает через источник prometheus.
+  # В образе нет shell, curl и wget: healthcheck невозможен, зависимые сервисы ждут service_started
+  # (готовность - GET /ready снаружи, make obs-check). Порт на хост не публикуется: читает Grafana по сети compose.
   # ---------------------------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
-    container_name: iot-prometheus
+  mimir:
+    image: grafana/mimir:${MIMIR_VERSION}
+    container_name: iot-mimir
     profiles: [observability]
     <<: *default-restart
     logging: *default-logging
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=7d"
-      - "--web.enable-lifecycle"
-      # Метрики сервисов платформы приходят от Alloy (ADR-0012)
-      - "--web.enable-remote-write-receiver"
-    ports:
-      - "${PROMETHEUS_PORT}:9090"
+      - "-config.file=/etc/mimir/mimir.yaml"
+      - "-config.expand-env=true"
+      - "-target=all"
+    user: "0"
+    environment:
+      MIMIR_PORT: ${MIMIR_PORT}
+      MINIO_BUCKET_MIMIR: ${MINIO_BUCKET_MIMIR}
+      MIMIR_S3_ACCESS_KEY: ${MIMIR_S3_ACCESS_KEY}
+      MIMIR_S3_SECRET_KEY: ${MIMIR_S3_SECRET_KEY}
+      MIMIR_RETENTION_PERIOD: ${MIMIR_RETENTION_PERIOD}
     volumes:
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+      - ./config/mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      # Локально - только WAL и рабочие каталоги; блоки уходят в MinIO
+      - mimir-data:/data
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Loki — хранение логов
+  # Loki — хранение логов: чанки и индекс - в бакете MinIO loki-chunks, локальный том - WAL и рабочие каталоги
   # ---------------------------------------------------------------------------
   loki:
     image: grafana/loki:${LOKI_VERSION}
@@ -1239,8 +1396,16 @@ services:
     profiles: [observability]
     <<: *default-restart
     logging: *default-logging
-    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["-config.file=/etc/loki/loki-config.yaml", "-config.expand-env=true"]
     user: "0"
+    environment:
+      MINIO_BUCKET_LOKI: ${MINIO_BUCKET_LOKI}
+      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
+      LOKI_RETENTION_PERIOD: ${LOKI_RETENTION_PERIOD}
     ports:
       - "${LOKI_PORT}:3100"
     volumes:
@@ -1255,7 +1420,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Tempo — хранение трейсов (OTLP)
+  # Tempo — хранение трейсов (OTLP): блоки - в бакете MinIO tempo-traces, локальный том - WAL
   # ---------------------------------------------------------------------------
   tempo:
     image: grafana/tempo:${TEMPO_VERSION}
@@ -1263,8 +1428,16 @@ services:
     profiles: [observability]
     <<: *default-restart
     logging: *default-logging
-    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
     user: "0"
+    environment:
+      MINIO_BUCKET_TEMPO: ${MINIO_BUCKET_TEMPO}
+      TEMPO_S3_ACCESS_KEY: ${TEMPO_S3_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${TEMPO_S3_SECRET_KEY}
+      TEMPO_BLOCK_RETENTION: ${TEMPO_BLOCK_RETENTION}
     ports:
       - "${TEMPO_HTTP_PORT}:3200"
       - "${TEMPO_OTLP_GRPC_PORT}:4317"
@@ -1294,11 +1467,13 @@ services:
         condition: service_healthy
       tempo:
         condition: service_healthy
-      prometheus:
-        condition: service_healthy
+      mimir:
+        condition: service_started
     environment:
       # Имя Compose-проекта: Alloy собирает логи только его контейнеров
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-iot-platform}
+      # Порт Mimir внутри сети compose (remote write, sys.env в config.alloy)
+      MIMIR_PORT: ${MIMIR_PORT}
       # Management-порт device-service для сбора метрик (sys.env в config.alloy)
       DEVICE_SERVICE_MANAGEMENT_PORT: ${DEVICE_SERVICE_MANAGEMENT_PORT}
     command:
@@ -1323,7 +1498,7 @@ services:
     networks: [iot-net]
 
   # ---------------------------------------------------------------------------
-  # Grafana — дашборды (Kafka, PostgreSQL) поверх Prometheus/Loki/Tempo
+  # Grafana — дашборды поверх Mimir (источник prometheus), Loki и Tempo
   # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
@@ -1332,13 +1507,15 @@ services:
     <<: *default-restart
     logging: *default-logging
     depends_on:
-      prometheus:
-        condition: service_healthy
+      mimir:
+        condition: service_started
       loki:
         condition: service_healthy
       tempo:
         condition: service_healthy
     environment:
+      # Порт Mimir внутри сети compose: подставляется в адрес источника (provisioning/datasources)
+      MIMIR_PORT: ${MIMIR_PORT}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -1375,7 +1552,7 @@ volumes:
   clickhouse-data:
   kafka-data:
   minio-data:
-  prometheus-data:
+  mimir-data:
   loki-data:
   tempo-data:
   alloy-data:

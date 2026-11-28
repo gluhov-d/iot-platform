@@ -20,7 +20,7 @@ import java.nio.ByteBuffer;
 
 /**
  * Приём DeviceInfo из devices: по одному сообщению. Offset подтверждается только после COMMIT в PostgreSQL;
- * ошибку разбирает обработчик ошибок контейнера (KafkaConfig): повторы или devices-dlt.
+ * ошибку разбирает обработчик ошибок контейнера (KafkaConfig): повторы или failed-events.
  */
 @Component
 @Slf4j

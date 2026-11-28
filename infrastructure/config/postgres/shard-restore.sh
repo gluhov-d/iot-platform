@@ -3,12 +3,18 @@
 #
 #   infrastructure/config/postgres/shard-restore.sh --yes [backups/<время>]
 #   (по умолчанию - последняя завершённая копия)
+#   infrastructure/config/postgres/shard-restore.sh --yes --from-minio [<метка>]
+#   (копия из MinIO - backups/postgres/<метка>/, по умолчанию последняя; make shard-restore FROM=minio BACKUP=<метка>)
+#   Копия из MinIO сначала скачивается во временный каталог через backup-runner, дальше путь тот же, что у локальной:
+#   SHA-256 файлов сверяется с manifest, и только потом что-либо останавливается или удаляется.
 #
 # ВНИМАНИЕ: текущие данные шардов и их реплик удаляются - контейнеры и тома создаются заново.
 #   1. SHA-256 файлов сверяется с manifest - до того, как что-либо остановлено или удалено;
 #   2. device-collector-service и ShardingSphere-Proxy останавливаются: в шарды никто не пишет;
 #   3. каждый шард: контейнеры шарда и его реплики и их тома удаляются, поднимается чистый шард,
 #      pg_restore из копии (одной транзакцией: ошибка - пустая база, а не половина данных);
+#      копия без прав (--no-privileges), поэтому право чтения device_reader выдаётся заново после shard-replication-init (роль создаёт он;
+#      миграция V3 во восстановленной базе уже применена), до реплик: они получают права вместе с pg_basebackup;
 #      число строк и версия схемы сверяются с manifest;
 #   4. shard-replication-init заново создаёт роль replicator и слоты (слоты жили в удалённых томах),
 #      реплики снимают новый pg_basebackup с восстановленных шардов и догоняют их;
@@ -16,7 +22,7 @@
 #      у раздела, где коммитов к тому моменту не было, - к началу раздела) и сверяются с Kafka: сообщения,
 #      обработанные после копии, сервис обработает снова - журнал processed_device_events отсекает повторы,
 #      реестр догоняет тему devices (пока сообщения в ней есть: тема хранит их KAFKA_DEVICES_RETENTION_MS, ADR-0011);
-#   6. Proxy запускается заново (метаданные таблиц он читает при старте): устройства из manifest читаются через него;
+#   6. Proxy запускается заново (метаданные таблиц он читает при старте): устройства из manifest читаются через него и от имени учётной записи чтения device-service (база devices_read);
 #   7. запускается device-collector-service.
 # Состояние реестра после восстановления - на момент копии плюс то, что сервис дочитает из Kafka.
 set -euo pipefail
@@ -26,14 +32,52 @@ source "$(dirname "${BASH_SOURCE[0]}")/shard-lib.sh"
 
 confirm=""
 dir=""
+from_minio=""
+tmp_dir=""
+# Временный каталог скачанной копии убирается при любом выходе (on_exit ниже его тоже убирает)
+trap '[[ -z "${tmp_dir}" ]] || rm -rf "${tmp_dir}"' EXIT
 for arg in "$@"; do
   case "${arg}" in
     --yes) confirm="yes" ;;
+    --from-minio) from_minio="yes" ;;
     -*) echo "[FAIL] unknown option ${arg}" >&2; exit 2 ;;
     *) dir="${arg}" ;;
   esac
 done
-if [[ -z "${dir}" ]]; then
+
+# Объект копии PostgreSQL из MinIO ($1 - путь после postgres/) в stdout. Ключи - из окружения backup-runner, на хост не попадают
+minio_cat() {
+  "${COMPOSE[@]}" exec -T backup-runner sh -c \
+    '. /etc/backup.env; MC_HOST_bpg="http://${BACKUP_POSTGRES_S3_ACCESS_KEY}:${BACKUP_POSTGRES_S3_SECRET_KEY}@${MINIO_ENDPOINT:-minio:9000}"; export MC_HOST_bpg; mc cat "bpg/${MINIO_BUCKET_BACKUPS}/postgres/$1"' \
+    sh "$1" < /dev/null
+}
+minio_labels() {
+  "${COMPOSE[@]}" exec -T backup-runner sh -c \
+    '. /etc/backup.env; MC_HOST_bpg="http://${BACKUP_POSTGRES_S3_ACCESS_KEY}:${BACKUP_POSTGRES_S3_SECRET_KEY}@${MINIO_ENDPOINT:-minio:9000}"; export MC_HOST_bpg; mc ls "bpg/${MINIO_BUCKET_BACKUPS}/postgres/"' \
+    < /dev/null | awk '{ print $NF }' | tr -d / | grep -E '^[0-9]{8}T[0-9]{6}Z$' | sort
+}
+
+if [[ -n "${from_minio}" ]]; then
+  [[ -n "$("${COMPOSE[@]}" ps -q --status running backup-runner)" ]] \
+    || { echo "[FAIL] backup-runner is not running: the copy cannot be taken from MinIO (make up)" >&2; exit 1; }
+  label="${dir}"
+  if [[ -z "${label}" ]]; then
+    # Завершённая копия - каталог с меткой времени (.partial в список не попадает)
+    label="$(minio_labels | tail -1)"
+    [[ -n "${label}" ]] || { echo "[FAIL] no completed PostgreSQL backups in MinIO (make backup)" >&2; exit 1; }
+  fi
+  [[ "${label}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] \
+    || { echo "[FAIL] backup label '${label}': expected <UTC-time>, e.g. 20261122T030000Z (make backup-list)" >&2; exit 1; }
+  tmp_dir="$(mktemp -d)"
+  dir="${tmp_dir}/${label}"
+  mkdir "${dir}"
+  echo "==> download backups/postgres/${label}/ from MinIO"
+  for f in manifest.txt $(printf 'shard_%s.dump ' "${SHARDS[@]}"); do
+    minio_cat "${label}/${f}" > "${dir}/${f}" \
+      || { echo "[FAIL] ${f} of backup ${label} was not downloaded from MinIO (make backup-list)" >&2; exit 1; }
+    [[ -s "${dir}/${f}" ]] || { echo "[FAIL] ${f} of backup ${label} is empty or missing in MinIO" >&2; exit 1; }
+  done
+elif [[ -z "${dir}" ]]; then
   # Незавершённые копии (*.partial) не выбираются
   dir="$(ls -1d "${BACKUP_ROOT}"/*/ 2>/dev/null | grep -v '\.partial/$' | sort | tail -1 || true)"
   [[ -n "${dir}" ]] || { echo "[FAIL] no completed backups in ${BACKUP_ROOT}" >&2; exit 1; }
@@ -113,6 +157,7 @@ current_positions="$(group_positions "${group}" "${topic}")" || exit 1
 stopped=""
 on_exit() {
   local rc=$?
+  [[ -z "${tmp_dir}" ]] || rm -rf "${tmp_dir}"
   if [[ ${rc} -ne 0 && -n "${stopped}" ]]; then
     echo "[FAIL] restore interrupted: shardingsphere-proxy and device-collector-service may be stopped," >&2
     echo "       shards or replicas may be empty. The backup is intact - repeat: make shard-restore CONFIRM=yes BACKUP=${dir}" >&2
@@ -152,6 +197,7 @@ done
 echo "==> replicas: replicator role, slots, new pg_basebackup"
 quiet "${COMPOSE[@]}" run -T --rm --no-deps shard-replication-init
 for i in "${SHARDS[@]}"; do
+  grant_reader_access "${i}" || exit 1
   quiet "${COMPOSE[@]}" up -d --wait --no-deps "postgres-shard-${i}-replica"
 done
 for i in "${SHARDS[@]}"; do
@@ -197,6 +243,14 @@ else
     [[ "${found}" == "1" ]] || { echo "[FAIL] device ${id} is not readable through Proxy (count=${found})" >&2; exit 1; }
   done
   echo "    ${#ids[@]} devices read through Proxy"
+  # Тем же путём читает device-service: база devices_read (реплики) от имени device_reader
+  echo "==> read restored devices through ShardingSphere-Proxy as the device-service reader (devices_read)"
+  proxy_read_sql="${ROOT_DIR}/infrastructure/config/shardingsphere/proxy-read-sql.sh"
+  for id in "${ids[@]}"; do
+    found="$("${proxy_read_sql}" -tA -c "SELECT count(*) FROM devices WHERE device_id = '${id}'" 2>&1)" || found="${found:-error}"
+    [[ "${found}" == "1" ]] || { echo "[FAIL] device ${id} is not readable through devices_read (${found})" >&2; exit 1; }
+  done
+  echo "    ${#ids[@]} devices read through devices_read"
 fi
 
 echo "==> start device-collector-service"

@@ -3,12 +3,14 @@ package com.github.gluhov.iotplatform.devicecollector.domain.port.out;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.FailureReason;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessingOutcome;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StorageFailureReason;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
 
 import java.time.Duration;
 
 /**
  * Прикладные метрики - в сообщениях, как в задании: сообщение получено один раз (повторы после ошибки не считаются)
- * и завершается ровно одним исходом - processed, duplicate или failed (отложено в devices-dlt).
+ * и завершается ровно одним исходом - processed, duplicate или failed (отложено в failed-events).
  * Поэтому received = processed + duplicate + failed, когда в обработке нет сообщений. Попытки, завершившиеся
  * ошибкой, - отдельный счётчик devices_processing_errors_total.
  */
@@ -20,14 +22,14 @@ public interface DeviceMetrics {
     /** APPLIED, STALE - devices_messages_processed_total{outcome}; DUPLICATE - devices_messages_duplicate_total. */
     void processed(ProcessingOutcome outcome);
 
-    /** devices_messages_failed_total{reason}: сообщение завершилось ошибкой - отложено в devices-dlt. */
+    /** devices_messages_failed_total{reason}: сообщение завершилось ошибкой - отложено в failed-events. */
     void failed(FailureReason reason);
 
-    /** devices_processing_errors_total{reason}: попытка обработки завершилась ошибкой (повтор или devices-dlt). */
+    /** devices_processing_errors_total{reason}: попытка обработки завершилась ошибкой (повтор или failed-events). */
     void processingError(FailureReason reason);
 
-    /** devices_dlt_published_total{reason}: сообщение записано в devices-dlt. */
-    void dltPublished(FailureReason reason);
+    /** failed_events_published_total{error_code, error_type}: сообщение записано в failed-events. */
+    void failedEventPublished(ErrorCode code, ErrorType type);
 
     /** devices_processing_seconds{outcome}: полное время обработки сообщения. */
     void processingTime(String outcome, Duration duration);

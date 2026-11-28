@@ -11,7 +11,7 @@ description = "device-service: управление устройствами - R
 
 val confluentVersion = "8.2.4"
 val mapstructVersion = "1.6.3"
-val avrosVersion = "1.3.0"
+val avrosVersion = "1.4.0"
 
 java {
     toolchain {

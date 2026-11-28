@@ -18,14 +18,14 @@
 
 ## Контракты и Kafka
 
-- [ ] Схемы `DeviceEvent` и `DeviceInfo` — в проекте `avros/` (см. «Реестр устройств», раздел avros); поля и типы — как
+- [ ] Схемы `DeviceEvent`, `DeviceInfo` и `FailedEvent` — в проекте `avros/` (см. «Реестр устройств», раздел avros); поля и типы — как
   в задании, namespace — `com.github.gluhov.iotplatform.events.avro`. Локальных `.avsc` в сервисе нет.
 - [ ] Входная тема `events`, выходная `devices` (`.env.example`: `KAFKA_EVENTS_TOPIC`, `KAFKA_DEVICES_TOPIC`).
 - [ ] Ключ обеих тем - `deviceId`: `DeviceEvent` отправляется с ключом `deviceId` (`check-local.sh`, `ItEventsCollectorTest`),
         `DeviceInfo` - `KafkaDeviceInfoProducer` (`KafkaDeviceInfoProducerTest.givenDevice_whenPublish_thenSendKeyedByDeviceId`).
 - [ ] `events` - `cleanup.policy=delete`, `devices` - `cleanup.policy=delete` и `retention.ms` = `KAFKA_DEVICES_RETENTION_MS`
         (ADR-0011: сжатие стирало порядок «команда -> снимок»; `kafka-init` выставляет их при каждом запуске),
-        `events-dlt` - `cleanup.policy=delete`: `make topics`.
+        `failed-events` - `cleanup.policy=delete`, `retention.ms` = `KAFKA_FAILED_EVENTS_RETENTION_MS` (14 суток), 3 раздела: `make topics`.
 - [ ] Темы создаются автоматически: контейнер `kafka-init` -> `infrastructure/init/kafka/init-topics.sh`,
         `make health` - у `kafka-init` exited, код 0.
 
@@ -40,9 +40,10 @@
 - [ ] Невалидные `eventId`/`deviceId`/`timestampMs` - ack не вызван, записи нет (`EventIngestionScenarioTest`,
   `givenBlank*`/`givenInvalidTimestamp*`).
 - [ ] Ни одно сообщение не пропускается молча: временный сбой Schema Registry повторяется, недесериализуемые и
-   невалидные сообщения откладываются в `events-dlt`; сообщение, не записанное в ClickHouse за `EVENTS_MAX_ATTEMPTS`
-   попыток, — тоже в `events-dlt`; offset подтверждается только после записи в DLT
-   (`KafkaConfig`, `KafkaErrorClassifier`); committed offset после ошибки и следующего корректного сообщения -
+   невалидные сообщения публикуются в `failed-events` (`FailedEvent` с исходными байтами); сообщение, не записанное в
+   ClickHouse за `EVENTS_MAX_ATTEMPTS` попыток, — тоже в `failed-events`; offset подтверждается только после ответа брокера
+   на публикацию, а если публикация не удалась — не подтверждается (`KafkaConfig`, `KafkaErrorClassifier`,
+   `FailedEventRecoverer`); committed offset после ошибки и следующего корректного сообщения -
    `ItKafkaErrorHandlingTest`.
 - [ ] Redis не участвует в приеме: `EventIngestionService` не зависит от Redis-портов.
 - [ ] Успешный прием создает строку в `device_events` и начальную строку `device_outbox`
@@ -105,7 +106,7 @@
 
 - [ ] `/actuator/health` и `/actuator/prometheus` отвечают (`check-local.sh` шаг 8, `curl localhost:<порт>/actuator/prometheus`, порт - `make urls`).
 - [ ] Прикладные метрики с требуемыми именами (`MetricsFacadeTest.givenAllMetricsUpdated_whenScrape_thenRequiredPrometheusNames`).
-   `outbox_candidate_created_total` - в Prometheus после relabel (в `/actuator/prometheus` - `outbox_candidate_total`,
+   `outbox_candidate_created_total` - в Mimir после relabel (в `/actuator/prometheus` - `outbox_candidate_total`,
    ограничение Prometheus Java client 1.x, см. README, раздел 16).
 - [ ] Логи - JSON с `traceId`, `eventId`, `deviceId`, `topic`, `partition`, `offset` (`dc logs events-collector-service`).
 - [ ] Ошибка обработки outbox-записи пишется внутри MDC и трейса события: в «Outbox record not processed» есть
@@ -153,6 +154,8 @@ device-collector-service, проект avros и изменения в приём
   которые затрагивают изменения: `component-events-collector.mmd`, `sequence-ingest.mmd`, `sequence-outbox-publish.mmd`.
 - [ ] Созданы для device-collector-service: компонентная `component-device-collector.mmd` и последовательности
   `dcs-success-sequence.mmd`, `dcs-duplicate-sequence.mmd`, `dcs-error-sequence.mmd`.
+- [ ] Для failed-events-processor: компонентная `component-failed-events-processor.mmd` и последовательность
+  `fep-error-to-minio-sequence.mmd`; в остальных диаграммах нет DLT: `grep -rIn -i dlt diagrams` — пусто.
 - [ ] Дизайн и этот DoD приняты преподавателем до начала работы над кодом.
 
 ## Проект avros
@@ -174,16 +177,16 @@ device-collector-service, проект avros и изменения в приём
   на совместимость со **всеми** зарегистрированными версиями. Несовместимое изменение (например, новое поле без
   значения по умолчанию) останавливает конвейер с кодом ≠ 0.
 - [ ] После публикации в Nexus конвейер регистрирует схемы в Schema Registry; у субъектов `events-value`,
-  `events-dlt-value`, `devices-value`, `devices-dlt-value` режим `FULL_TRANSITIVE`
+  `devices-value`, `failed-events-value` режим `FULL_TRANSITIVE`
   (`curl localhost:8081/config/<субъект>`); повторный запуск `make schemas-register` ничего не меняет.
-- [ ] Все три сервиса (events-collector-service, device-collector-service, device-service) подключают avros из Nexus с явной версией (`avrosVersion = "1.3.0"`): в `build.gradle.kts` нет
+- [ ] Все четыре сервиса (events-collector-service, device-collector-service, device-service, failed-events-processor) подключают avros из Nexus с явной версией (`avrosVersion = "1.4.0"`): в `build.gradle.kts` нет
   `+`, `latest`, диапазонов.
 - [ ] Продюсеры не регистрируют схемы сами: `auto.register.schemas=false`. Отправка с незарегистрированной
   схемой завершается ошибкой, а не новой версией в Schema Registry.
 
 ## Изменения в приёме событий
 
-Пункты секции «Приём событий» выше исправляются вместе с кодом (задача T074, P8): avros, `events-dlt`, отпечаток.
+Пункты секции «Приём событий» выше исправляются вместе с кодом (задача T074, P8): avros, обработка ошибок (`failed-events`), отпечаток.
 
 
 - [ ] `DeviceEvent` расширен блоком данных устройства: минимум имя, операционная система и её версия, версия
@@ -204,12 +207,13 @@ device-collector-service, проект avros и изменения в приём
     публикует;
   - стенд: два события с одинаковыми данными устройства дают одно сообщение в `devices` (`check-local.sh`, шаг 10:
     исход аудита `SKIPPED`); отпечатки - Redis-хеш `devices:fingerprint`.
-- [ ] Топик `events-dlt` создаётся автоматически (`init-topics.sh`, `KAFKA_EVENTS_DLT_TOPIC`; вместо `events.DLT`).
-- [ ] Невалидное сообщение сразу уходит в `events-dlt`. Сообщение, не записанное в ClickHouse за заданное число
-  попыток, уходит в `events-dlt`, после чего смещение подтверждается (lag группы — 0). Повторов без ограничения нет
-  (кроме недоступного Schema Registry - сбой инфраструктуры, а не сообщения). Тесты: `KafkaConfigTest`,
-  `ItKafkaErrorHandlingTest.givenStorageFailure_whenConsume_thenRetriedMaxAttemptsThenMovedToDlt`,
-  `givenInvalidEvent_whenConsume_thenMovedToDltAndOffsetCommitted`.
+- [ ] Тема `failed-events` создаётся автоматически (`init-topics.sh`, `KAFKA_FAILED_EVENTS_TOPIC`); прежние `events-dlt` и `devices-dlt` удаляются там же.
+- [ ] Невалидное сообщение сразу уходит в `failed-events`. Сообщение, не записанное в ClickHouse за заданное число
+  попыток, уходит в `failed-events`, после чего смещение подтверждается после ответа брокера (lag группы — 0); публикация
+  недоступна — смещение не подтверждается. Повторов без ограничения нет (кроме недоступного Schema Registry - сбой
+  инфраструктуры, а не сообщения). Тесты: `KafkaConfigTest`, `FailedEventRecovererTest`,
+  `ItKafkaErrorHandlingTest.givenStorageFailure_whenConsume_thenRetriedMaxAttemptsThenFailedEvent`,
+  `givenInvalidEvent_whenConsume_thenFailedEventAndOffsetCommitted`.
 - [ ] Число попыток, паузы и их рост, тайм-ауты и размеры пулов задаются переменными окружения и перечислены
   в `.env.example`: `EVENTS_MAX_ATTEMPTS`, `EVENTS_RETRY_INTERVAL`, `EVENTS_RETRY_MULTIPLIER`, `CLICKHOUSE_POOL_SIZE`,
   `CLICKHOUSE_CONNECTION_TIMEOUT_MS`, `REDIS_TIMEOUT`, `KAFKA_SEND_TIMEOUT`, `KAFKA_PRODUCER_MAX_BLOCK_MS`,
@@ -227,15 +231,16 @@ device-collector-service, проект avros и изменения в приём
 - [ ] Идемпотентность: повторное сообщение не меняет запись (`seen_count` не растёт); более старое сообщение
   не перезаписывает более новое. Подтверждается IT: `ItDeviceCollectorTest.givenSameMessageTwice_whenConsumed_thenSeenCountOne`,
   `givenOlderEventAfterNewer_whenConsumed_thenStale`.
-- [ ] Невалидные сообщения сразу уходят в `devices-dlt`; сообщения, не записанные за заданное число попыток
-  (`DEVICES_MAX_ATTEMPTS`), — в `devices-dlt`; обработка следующих сообщений продолжается
-  (`ItDeviceCollectorTest.givenInvalidMessage_whenConsumed_thenDeadLetteredAndNextProcessed`,
-  `givenUndeserializableMessage_whenConsumed_thenDeadLetteredAsIs`; `KafkaConfigTest`).
+- [ ] Невалидные сообщения сразу уходят в `failed-events`; сообщения, не записанные за заданное число попыток
+  (`DEVICES_MAX_ATTEMPTS`), — в `failed-events`; обработка следующих сообщений продолжается, а если публикация не
+  удалась — смещение не подтверждается
+  (`ItDeviceCollectorTest.givenInvalidMessage_whenConsumed_thenPublishedAndNextProcessed`,
+  `givenUndeserializableMessage_whenConsumed_thenPublishedAsIs`; `KafkaConfigTest`, `FailedEventRecovererTest`).
 - [ ] Все параметры, включая тайм-ауты (подключение, запрос, блокировка), число попыток, паузы и их рост,
   задаются переменными окружения и перечислены в `.env.example`: `DEVICES_MAX_ATTEMPTS`, `DEVICES_RETRY_INTERVAL`,
   `DEVICES_RETRY_MULTIPLIER`, `DEVICES_MAX_FUTURE_SKEW`, `DEVICES_SHARD_CACHE_TTL`, `DEVICES_DB_POOL_SIZE`,
-  `DEVICES_DB_CONNECTION_TIMEOUT_MS`, `DEVICES_DLT_MAX_BLOCK_MS`, `DEVICES_DLT_REQUEST_TIMEOUT_MS`,
-  `DEVICES_DLT_DELIVERY_TIMEOUT_MS`; тайм-ауты запросов, блокировок и соединения с шардами - на стороне Proxy
+  `DEVICES_DB_CONNECTION_TIMEOUT_MS`, `FAILED_EVENTS_PUBLISH_TIMEOUT`, `FAILED_EVENTS_MAX_BLOCK_MS`,
+  `FAILED_EVENTS_REQUEST_TIMEOUT_MS`, `FAILED_EVENTS_DELIVERY_TIMEOUT_MS`; тайм-ауты запросов, блокировок и соединения с шардами - на стороне Proxy
   (`SHARD_STATEMENT_TIMEOUT_MS`, `SHARD_LOCK_TIMEOUT_MS`, `SHARD_CONNECTION_TIMEOUT_MS`, шаблон `database-devices.yaml`),
   `connectTimeout`/`socketTimeout` - `DEVICES_DB_CONNECT_TIMEOUT_S`, `DEVICES_DB_SOCKET_TIMEOUT_S` (в `DEVICES_DB_URL`). Фиксированы только значения,
   определяющие поведение (`max-poll-records: 1`, ручной ack, `acks: all`).
@@ -265,7 +270,9 @@ device-collector-service, проект avros и изменения в приём
   версия схемы, SHA-256, позиции группы `device-collector` по каждому разделу); копия снимается с реплики, сервисы не останавливаются.
   Восстановление - `make shard-restore CONFIRM=yes` (удаляет данные шардов; без `CONFIRM=yes` отказ); после него
   позиции группы по всем разделам равны записанным в manifest (раздел без коммитов к моменту копии - сброшен
-  к началу), устройства из manifest читаются через Proxy, реплики снова `streaming`.
+  к началу), устройства из manifest читаются через Proxy, реплики снова `streaming`. Копии по расписанию в MinIO (`backups/postgres/`) делает
+  `backup-runner` тем же `shard-backup.sh`, восстановление из них — `make shard-restore FROM=minio BACKUP=<метка> CONFIRM=yes`
+  (раздел «Обработка ошибок и архив»).
 - [ ] Миграции выполняет только `db-migrator` на Flyway (`services/db-migrator`, `db/migration/devices`). Миграции
   обратно совместимы и написаны с `IF NOT EXISTS`. Мигратор применяет схему напрямую к primary каждого шарда по очереди
   (не через Proxy) и затем сверяет версии; способ описан в дизайне и в README, раздел 20.2. Повторный запуск применяет 0
@@ -283,7 +290,10 @@ device-collector-service, проект avros и изменения в приём
   - цепочка в `docker-compose.yaml`: `nexus` -> `nexus-init`, `schema-registry` -> `avros-publish` -> `schema-register` -> `db-migrator` ->
     `shardingsphere-proxy` -> `device-collector-service` (`docker compose config` показывает `depends_on`);
     `events-collector-service` ждёт `schema-register`, `kafka-init`, `clickhouse-init`; `device-service` ×2 ждёт `schema-register`,
-    `kafka-init` (завершены) и `keycloak`, `redis`, `redis-sentinel-1..3`, `shardingsphere-proxy` (`service_healthy`).
+    `kafka-init` (завершены) и `keycloak`, `redis`, `redis-sentinel-1..3`, `shardingsphere-proxy` (`service_healthy`);
+    `minio` -> `minio-init`; `failed-events-processor` ждёт `schema-register`, `kafka-init`, `minio-init` (завершены) и
+    `schema-registry`, `minio` (`service_healthy`); `backup-runner` ждёт `clickhouse-init`, `minio-init`, `kafka-init` и обе
+    реплики шардов. MinIO входит в базовый стенд, а не в профиль `platform`.
 - [ ] У всех образов явный тег, не `latest`.
 - [ ] Секретов в репозитории нет; `.env.example` содержит все переменные с безопасными значениями-заглушками.
 
@@ -291,28 +301,30 @@ device-collector-service, проект avros и изменения в приём
 
 - [ ] Метрики со всех компонентов: оба сервиса и device-service (`/actuator/prometheus`, jobs `events-collector-service`,
   `device-collector-service`, `device-service` — management-порт 8081 внутри сети Compose, на хост не публикуется);
-  их собирает Alloy (все экземпляры, DNS Docker) и передаёт в Prometheus по remote write, заданий этих сервисов в
-  `prometheus.yml` нет, состояние сбора — в интерфейсе Alloy (ADR-0012), `up` каждого экземпляра равен 1; ShardingSphere-Proxy (агент метрик из образа 5.5.3, `PROXY_AGENT_ENABLED=true`, job
+  их собирает Alloy (все экземпляры, DNS Docker) и передаёт в Mimir по remote write (Prometheus заменён Mimir, ADR-0016), состояние сбора — в интерфейсе Alloy (ADR-0012), `up` каждого экземпляра равен 1; ShardingSphere-Proxy (агент метрик из образа 5.5.3, `PROXY_AGENT_ENABLED=true`, job
   `shardingsphere-proxy`), шарды PostgreSQL и их реплики (`postgres-exporter` v0.20.1 на каждый, job `postgres-shards`;
   отставание реплики - `pg_replication_lag_seconds`, `pg_stat_replication_pg_wal_lsn_diff`), Kafka (job `kafka`).
-  Все цели профиля `observability`, которые опрашивает Prometheus (`/targets`), — `UP`; `minio`, `keycloak`, `postgres` относятся к профилю
-  `platform`.
-- [ ] Дашборды в Grafana: «events-collector-service», «device-collector-service», «device-service» (`device-service.json`), «Proxy и шарды реестра устройств»
+  Все цели профиля `observability`, которые опрашивает Alloy, — `up` (`make obs-check`); платформенный экспортёр `postgres`
+  относится к профилю `platform`, MinIO и failed-events-processor (job `failed-events-processor`) входят в базовый стенд.
+- [ ] Дашборды в Grafana: «events-collector-service», «device-collector-service», «device-service» (`device-service.json`), «failed-events-processor», «MinIO», «Proxy и шарды реестра устройств»
   (`device-shards`), «Kafka» — панели получают данные (все запросы дашбордов возвращают ряды при нагрузке).
 - [ ] Логи всех компонентов в Loki: по каждому контейнеру стенда находятся строки (`{container="iot-…"}`); в логах
   device-collector-service есть метка `shard`.
 - [ ] Один traceId проходит от события в `events` до записи в PostgreSQL через оба сервиса: в Tempo одна трасса
   со спанами events-collector-service (приём, публикация outbox, `devices send`) и device-collector-service
   (`devices process`, `transaction`, `insert devices`) - `docs/screenshots/tempo-trace-events-to-postgres.png`.
+- [ ] Один traceId проходит от события в `events` до объекта ошибки в MinIO: в Tempo одна трасса со спанами `events process`,
+  `validate`, `failed-events send` (events-collector-service), `failed-events process` и `s3.put-object` (failed-events-processor);
+  `traceId` равен полю объекта - `docs/screenshots/tempo-trace-failed-events.png`.
 
 ## Тесты реестра устройств и avros
 
 - [ ] Unit-тесты логики сервисов (`make test`, `make dcs-test`, `make ds-test`; числа — из отчётов сборки
-  `build/test-results/test`: events-collector-service — 132, device-collector-service — 142, device-service — 100;
+  `build/test-results/test`: events-collector-service — 148, device-collector-service — 157, failed-events-processor — 48, device-service — 100;
   db-migrator — числа нет, отчёта сборки в репозитории нет); порог покрытия JaCoCo выполняется (70 %, `make coverage`,
   `make dcs-coverage`; у device-service — `make ds-coverage`), сгенерированные Avro-классы из отчёта исключены.
-- [ ] Интеграционные тесты сервисов на Testcontainers (числа — из `build/test-results/integrationTest`: events-collector-service — 33,
-  `make integration-test`; device-collector-service — 20, `make dcs-it`; device-service — 44, `make ds-it`).
+- [ ] Интеграционные тесты сервисов на Testcontainers (числа — из `build/test-results/integrationTest`: events-collector-service — 38,
+  `make integration-test`; device-collector-service — 29, `make dcs-it`; failed-events-processor — 8; device-service — 49, `make ds-it`).
 - [ ] Быстрая проверка `services/device-collector-service/scripts/quick-check.sh` -> "All checks passed" - напрямую,
   через `make dcs-quick-check` и `./gradlew :services:device-collector-service:quickCheck`: ждёт сохранения устройства,
   подтверждает его на ожидаемом шарде (напрямую в PostgreSQL) и отсутствие на другом.
@@ -320,8 +332,10 @@ device-collector-service, проект avros и изменения в приём
   тест проверяет напрямую в шардах, что запись есть на ожидаемом шарде и её нет на другом
   (`ItDeviceCollectorTest.givenDeviceInfo_whenConsumed_thenStoredOnItsShard`,
   `givenManyDevices_whenConsumed_thenSpreadOverShards`).
-- [ ] Тесты отправки в DLT для обоих сервисов: невалидное сообщение и исчерпание попыток (events-collector-service —
-  `ItKafkaErrorHandlingTest`, `KafkaConfigTest`; device-collector-service — `ItDeviceCollectorTest`, `KafkaConfigTest`).
+- [ ] Тесты публикации в `failed-events` для обоих сервисов: невалидное сообщение, исчерпание попыток, публикация не удалась
+  (events-collector-service — `ItKafkaErrorHandlingTest`, `KafkaConfigTest`, `FailedEventRecovererTest`; device-collector-service —
+  `ItDeviceCollectorTest`, `KafkaConfigTest`, `FailedEventRecovererTest`); путь до объекта в MinIO — `ItFailedEventToObjectTest`
+  в обоих сервисах.
 - [ ] `./gradlew check` проходит.
 
 ## Что сдаётся
@@ -389,3 +403,14 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
 - Копии: шарды PostgreSQL и ClickHouse уходят в `backups/` по расписанию, восстановление из MinIO — `make shard-restore FROM=minio`,
   `make clickhouse-restore` («База данных», бэкап).
 - `make shard-backup` остаётся для локальной копии: тот же скрипт `shard-backup.sh` вызывает и `make shard-backup` (локальная копия), и backup-runner (копия в MinIO); второй реализации нет (ADR-0017).
+
+Дополнительная часть задания (необязательная, ADR-0019):
+
+- [ ] Команда `make failed-replay KEY=<ключ объекта>` возвращает одно сообщение в исходную тему: байты `key` и `value` без пересериализации, `traceparent` и прочие
+  заголовки сохранены, добавлен заголовок `x-replayed-from`; `make failed-replay-test` проходит (`services/failed-events-processor/scripts/replay-test.sh`).
+- [ ] Бакет `failed-events`: версии и Object Lock в режиме GOVERNANCE на `FAILED_EVENTS_LOCK_DAYS` суток по умолчанию; удаление версии учёткой процессора и
+  администратором без обхода режима отклоняется, `make minio-check` проходит.
+
+Снимки для сдачи (задача T077) лежат в `docs/screenshots/`, перечень — в README, раздел 16: панели Grafana (failed-events-processor,
+MinIO, оба сборщика), логи процессора в Loki, содержимое бакетов (`failed-events` с объектом ошибки и его метаданными, `mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups`), пример
+объекта ошибки. Сквозная трасса от события в `events` до `s3.put-object` — отдельным снимком после проверки на стенде.

@@ -4,16 +4,12 @@ import com.github.gluhov.iotplatform.eventscollector.domain.exception.EventPersi
 import com.github.gluhov.iotplatform.eventscollector.domain.exception.InvalidEventException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.slf4j.MDC;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.core.KafkaOperations;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.config.ContainerCustomizer;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 import org.springframework.kafka.support.serializer.DeserializationException;
@@ -21,19 +17,16 @@ import org.springframework.util.backoff.BackOff;
 import org.springframework.util.backoff.ExponentialBackOff;
 import org.springframework.util.backoff.FixedBackOff;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-
 /**
  * Обработка ошибок приёма из events:
  * <ul>
- *   <li>невалидное или недесериализуемое сообщение - сразу в events-dlt;</li>
+ *   <li>невалидное или недесериализуемое сообщение - сразу в failed-events;</li>
  *   <li>ошибка записи в ClickHouse и непредвиденная ошибка - app.processing.max-attempts попыток с растущей
- *       паузой, затем events-dlt: следующие сообщения раздела продолжают обрабатываться;</li>
+ *       паузой, затем failed-events: следующие сообщения раздела продолжают обрабатываться;</li>
  *   <li>Schema Registry недоступен - повторять без ограничения: это сбой не сообщения, а инфраструктуры,
- *       иначе в events-dlt ушли бы все сообщения подряд.</li>
+ *       иначе в failed-events ушли бы все сообщения подряд.</li>
  * </ul>
- * Offset отправленного в events-dlt сообщения подтверждается только после успешной записи в events-dlt;
+ * Offset сообщения, записанного в failed-events, подтверждается только после успешной публикации;
  * не удалось записать - сообщение не подтверждено и будет обработано снова.
  */
 @Configuration(proxyBeanMethods = false)
@@ -42,27 +35,18 @@ public class KafkaConfig {
     private static final long MAX_BACKOFF_MS = 10_000L;
     private static final BackOff NO_RETRIES = new FixedBackOff(0L, 0L);
 
+    // Записывает сообщение в failed-events: бин объявлен в adapter.out.kafka (FailedEventRecovererConfig)
     @Bean
-    DefaultErrorHandler kafkaErrorHandler(ProducerFactory<?, ?> producerFactory, KafkaTemplate<?, ?> kafkaTemplate,
-                                          KafkaProperties kafkaProperties, ProcessingProperties processing) {
-        Map<Class<?>, KafkaOperations<?, ?>> templates = new LinkedHashMap<>();
-        // Сообщение не десериализовалось: в events-dlt уходят исходные байты
-        templates.put(byte[].class, new KafkaTemplate<>(producerFactory.copyWithConfigurationOverride(
-                Map.of(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class))));
-        // Событие не прошло валидацию или не записалось: в events-dlt уходит DeviceEvent в Avro
-        templates.put(Object.class, kafkaTemplate);
-        String dltTopic = kafkaProperties.dltTopic();
-        // Раздел events-dlt - с тем же номером, что у исходного сообщения (число разделов у тем одинаковое)
-        DeadLetterPublishingRecoverer deadLetters = new DeadLetterPublishingRecoverer(templates,
-                (record, exception) -> new TopicPartition(dltTopic, record.partition()));
-
+    DefaultErrorHandler kafkaErrorHandler(ConsumerRecordRecoverer recoverer, KafkaProperties kafkaProperties,
+                                          ProcessingProperties processing) {
+        String failedEventsTopic = kafkaProperties.failedEventsTopic();
         DefaultErrorHandler handler = new DefaultErrorHandler((record, exception) -> {
-            // Не записалось в events-dlt - исключение, сообщение будет обработано снова: строка ниже не выполнится
-            deadLetters.accept(record, exception);
-            logMovedToDlt(record, exception, dltTopic);
+            // Не записалось в failed-events - исключение, сообщение будет обработано снова: строка ниже не выполнится
+            recoverer.accept(record, exception);
+            logMovedToFailedEvents(record, exception, failedEventsTopic);
         }, storageBackOff(processing));
         handler.addNotRetryableExceptions(InvalidEventException.class);
-        // Повторять ли ошибку десериализации, решает функция ниже: временный сбой - да, "ядовитое" сообщение - нет
+        // Повторять ли ошибку десериализации, решает функция ниже: временный сбой - да, «ядовитое» сообщение - нет
         handler.removeClassification(DeserializationException.class);
         BackOff schemaRegistryBackOff = unlimitedBackOff();
         handler.setBackOffFunction((record, exception) -> {
@@ -71,15 +55,21 @@ public class KafkaConfig {
             }
             return KafkaErrorClassifier.isDeserializationFailure(exception) ? schemaRegistryBackOff : null;
         });
-        // Offset отложенного сообщения подтверждается только после успешной записи в events-dlt
+        // Offset отложенного сообщения подтверждается только после успешной записи в failed-events
         handler.setCommitRecovered(true);
         return handler;
+    }
+
+    /** Номер доставки в заголовке kafka_deliveryAttempt: повтор после ошибки не считается новым сообщением. */
+    @Bean
+    ContainerCustomizer<Object, Object, ConcurrentMessageListenerContainer<Object, Object>> deliveryAttemptHeader() {
+        return container -> container.getContainerProperties().setDeliveryAttemptHeader(true);
     }
 
     // max-attempts попыток всего: первая и max-attempts - 1 повторов (паузы 1 с, 2 с, ...)
     static BackOff storageBackOff(ProcessingProperties processing) {
         if (processing.maxAttempts() == 1) {
-            // ExponentialBackOffWithMaxRetries(0) не останавливается: одна попытка - сразу в events-dlt
+            // ExponentialBackOffWithMaxRetries(0) не останавливается: одна попытка - сразу в failed-events
             return NO_RETRIES;
         }
         ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(processing.maxAttempts() - 1);
@@ -95,7 +85,7 @@ public class KafkaConfig {
         return backOff;
     }
 
-    /** Почему сообщение попало в events-dlt: deserialization, invalid, storage, error. */
+    /** Почему сообщение попало в failed-events: deserialization, invalid, storage, error. */
     static String reasonOf(Throwable exception) {
         if (KafkaErrorClassifier.isDeserializationFailure(exception)) {
             return "deserialization";
@@ -106,17 +96,17 @@ public class KafkaConfig {
         return causedBy(exception, EventPersistenceException.class) ? "storage" : "error";
     }
 
-    private static void logMovedToDlt(ConsumerRecord<?, ?> record, Exception exception, String dltTopic) {
+    private static void logMovedToFailedEvents(ConsumerRecord<?, ?> record, Exception exception, String failedEventsTopic) {
         Throwable root = rootCause(exception);
         String reason = reasonOf(exception);
         try (var topic = MDC.putCloseable("topic", record.topic());
              var partition = MDC.putCloseable("partition", String.valueOf(record.partition()));
              var offset = MDC.putCloseable("offset", String.valueOf(record.offset()));
-             var status = MDC.putCloseable("status", "REJECTED");
-             var dltReason = MDC.putCloseable("reason", reason);
+             var status = MDC.putCloseable("status", "FAILED_EVENT");
+             var failedReason = MDC.putCloseable("reason", reason);
              var errorClass = MDC.putCloseable("errorClass", root.getClass().getName());
              var errorMessage = MDC.putCloseable("errorMessage", String.valueOf(root.getMessage()))) {
-            log.error("Message moved to {} ({}): {}", dltTopic, reason, root.toString());
+            log.error("Message moved to {} ({}): {}", failedEventsTopic, reason, root.toString());
         }
     }
 

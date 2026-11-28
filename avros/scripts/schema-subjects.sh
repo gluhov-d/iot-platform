@@ -5,9 +5,8 @@
 # Общая часть container-publish.sh, container-register.sh и скриптов хоста: список subject у проверки перед
 # публикацией в Nexus и у регистрации один и тот же.
 #
-# schema_subjects <тема events> <тема events-dlt> <тема devices> <тема devices-dlt>
+# schema_subjects <тема events> <тема devices> <тема failed-events>
 schema_subjects() {
-  # events и events-dlt - DeviceEvent; devices и devices-dlt - DeviceInfo.
-  # В DLT-темы попадают и нечитаемые байты: они схемой не описываются
-  printf '%s-value=DeviceEvent,%s-value=DeviceEvent,%s-value=DeviceInfo,%s-value=DeviceInfo' "$1" "$2" "$3" "$4"
+  # events - DeviceEvent, devices - DeviceInfo, failed-events - FailedEvent (исходные байты лежат внутри записи)
+  printf '%s-value=DeviceEvent,%s-value=DeviceInfo,%s-value=FailedEvent' "$1" "$2" "$3"
 }

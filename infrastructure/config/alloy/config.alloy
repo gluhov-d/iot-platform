@@ -1,4 +1,4 @@
-// Сбор логов Docker-контейнеров -> Loki, метрики сервисов платформы -> Prometheus (remote write),
+// Сбор логов Docker-контейнеров -> Loki, метрики сервисов и компонентов платформы -> Mimir (remote write),
 // приём OTLP-трейсов -> Tempo.
 
 logging {
@@ -68,6 +68,28 @@ loki.process "json_logs" {
     }
   }
 
+  // JSON-логи failed-events-processor: уровень - метка, traceId и deviceId - structured metadata (как выше).
+  // Метка service - из меток контейнера Compose. Шарда и eventId у процессора нет
+  stage.match {
+    selector = "{service=\"failed-events-processor\"}"
+
+    stage.json {
+      expressions = {
+        level     = "level",
+        trace_id  = "traceId",
+        device_id = "deviceId",
+      }
+    }
+
+    stage.labels {
+      values = { level = "" }
+    }
+
+    stage.structured_metadata {
+      values = { trace_id = "", device_id = "" }
+    }
+  }
+
   forward_to = [loki.write.default.receiver]
 }
 
@@ -101,9 +123,10 @@ otelcol.exporter.otlp "tempo" {
 }
 
 // --------------------------------------------------- метрики сервисов платформы
-// events-collector-service, device-collector-service, device-service: DNS Docker возвращает все экземпляры сервиса,
+// events-collector-service, device-collector-service, device-service, failed-events-processor: DNS Docker возвращает все экземпляры сервиса,
 // поэтому при --scale каждый скрейпится отдельно. Метки как при прямом сборе Prometheus: job - имя сервиса,
-// instance - адрес экземпляра; ряд up формирует сам Alloy. Экспортёры и сторонние компоненты опрашивает Prometheus
+// instance - адрес экземпляра; ряд up формирует сам Alloy. Экспортёры и сторонние компоненты - в следующем разделе.
+// Приёмник - Mimir (ADR-0016), Grafana читает его через источник prometheus
 discovery.dns "events_collector" {
   names            = ["events-collector-service"]
   type             = "A"
@@ -127,6 +150,13 @@ discovery.dns "device_service" {
   refresh_interval = "15s"
 }
 
+discovery.dns "failed_events_processor" {
+  names            = ["failed-events-processor"]
+  type             = "A"
+  port             = 8080
+  refresh_interval = "15s"
+}
+
 prometheus.scrape "events_collector" {
   targets         = discovery.dns.events_collector.targets
   job_name        = "events-collector-service"
@@ -142,7 +172,7 @@ prometheus.scrape "device_collector" {
   metrics_path    = "/actuator/prometheus"
   scrape_interval = "5s"
   scrape_timeout  = "5s"
-  forward_to      = [prometheus.remote_write.prometheus.receiver]
+  forward_to      = [prometheus.remote_write.mimir.receiver]
 }
 
 prometheus.scrape "device_service" {
@@ -151,7 +181,16 @@ prometheus.scrape "device_service" {
   metrics_path    = "/actuator/prometheus"
   scrape_interval = "5s"
   scrape_timeout  = "5s"
-  forward_to      = [prometheus.remote_write.prometheus.receiver]
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "failed_events_processor" {
+  targets         = discovery.dns.failed_events_processor.targets
+  job_name        = "failed-events-processor"
+  metrics_path    = "/actuator/prometheus"
+  scrape_interval = "5s"
+  scrape_timeout  = "5s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
 }
 
 // Prometheus Java client 1.x запрещает имена с суффиксом _created (зарезервирован OpenMetrics), поэтому счётчик
@@ -164,11 +203,150 @@ prometheus.relabel "outbox_candidate" {
     replacement   = "outbox_candidate_created_total"
   }
 
-  forward_to = [prometheus.remote_write.prometheus.receiver]
+  forward_to = [prometheus.remote_write.mimir.receiver]
 }
 
-prometheus.remote_write "prometheus" {
+// ------------------------------------------- экспортёры и сторонние компоненты
+// Прежние задания Prometheus (он удалён, ADR-0016): те же job и instance, интервал 15 с. Недоступная цель
+// (например, postgres-exporter без профиля platform) даёт up = 0, как раньше.
+
+// ShardingSphere-Proxy: агент метрик (config/shardingsphere-agent), порт 9090 контейнера
+prometheus.scrape "shardingsphere_proxy" {
+  targets = [
+    { "__address__" = "shardingsphere-proxy:9090", "instance" = "iot-shardingsphere-proxy" },
+  ]
+  job_name        = "shardingsphere-proxy"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+// Шарды реестра устройств и их реплики: по одному postgres-exporter на сервер PostgreSQL.
+// Метки shard (shard_0, shard_1) и role (primary, replica) нужны панелям Grafana
+prometheus.scrape "postgres_shards" {
+  targets = [
+    { "__address__" = "postgres-exporter-shard-0:9187", "instance" = "iot-postgres-shard-0", "shard" = "shard_0", "role" = "primary" },
+    { "__address__" = "postgres-exporter-shard-0-replica:9187", "instance" = "iot-postgres-shard-0-replica", "shard" = "shard_0", "role" = "replica" },
+    { "__address__" = "postgres-exporter-shard-1:9187", "instance" = "iot-postgres-shard-1", "shard" = "shard_1", "role" = "primary" },
+    { "__address__" = "postgres-exporter-shard-1-replica:9187", "instance" = "iot-postgres-shard-1-replica", "shard" = "shard_1", "role" = "replica" },
+  ]
+  job_name        = "postgres-shards"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "postgres" {
+  targets = [
+    { "__address__" = "postgres-exporter:9187", "instance" = "iot-postgres" },
+  ]
+  job_name        = "postgres"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "kafka" {
+  targets = [
+    { "__address__" = "kafka-exporter:9308", "instance" = "iot-kafka" },
+  ]
+  job_name        = "kafka"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+// MinIO без токена (MINIO_PROMETHEUS_AUTH_TYPE=public). Запросы и ошибки - v2 cluster; объём и число объектов по
+// бакетам - v3 cluster/usage/buckets (метрик minio_bucket_usage_* в этой версии образа нет, research.md R16).
+// У v3 отдельное задание: два задания с одним job и instance дали бы дубликаты рядов up
+prometheus.scrape "minio" {
+  targets = [
+    { "__address__" = "minio:9000", "instance" = "iot-minio" },
+  ]
+  job_name        = "minio"
+  metrics_path    = "/minio/v2/metrics/cluster"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "minio_usage" {
+  targets = [
+    { "__address__" = "minio:9000", "instance" = "iot-minio" },
+  ]
+  job_name        = "minio-usage"
+  metrics_path    = "/minio/metrics/v3/cluster/usage/buckets"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "keycloak" {
+  targets = [
+    { "__address__" = "keycloak:9000" },
+  ]
+  job_name        = "keycloak"
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+// Сам Alloy, Loki, Tempo, Grafana и Mimir (порт Mimir - MIMIR_PORT из .env, sys.env отдаёт строку)
+prometheus.scrape "alloy" {
+  targets = [
+    { "__address__" = "alloy:12345" },
+  ]
+  job_name        = "alloy"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "loki" {
+  targets = [
+    { "__address__" = "loki:3100" },
+  ]
+  job_name        = "loki"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "tempo" {
+  targets = [
+    { "__address__" = "tempo:3200" },
+  ]
+  job_name        = "tempo"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "grafana" {
+  targets = [
+    { "__address__" = "grafana:3000" },
+  ]
+  job_name        = "grafana"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.scrape "mimir" {
+  targets = [
+    { "__address__" = "mimir:" + sys.env("MIMIR_PORT") },
+  ]
+  job_name        = "mimir"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+// ------------------------------------------------------------------ приёмник метрик
+// Mimir, монолит без мультиарендности: заголовок X-Scope-OrgID не нужен
+prometheus.remote_write "mimir" {
   endpoint {
-    url = "http://prometheus:9090/api/v1/write"
+    url = "http://mimir:" + sys.env("MIMIR_PORT") + "/api/v1/push"
   }
 }

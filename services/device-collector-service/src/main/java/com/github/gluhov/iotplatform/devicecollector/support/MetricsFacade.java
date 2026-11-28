@@ -5,6 +5,8 @@ import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessingOutc
 import com.github.gluhov.iotplatform.devicecollector.domain.model.ProcessingResult;
 import com.github.gluhov.iotplatform.devicecollector.domain.model.StorageFailureReason;
 import com.github.gluhov.iotplatform.devicecollector.domain.port.out.DeviceMetrics;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -30,7 +32,7 @@ public class MetricsFacade implements DeviceMetrics {
     private final Counter cacheError;
     private final Map<ProcessingOutcome, Counter> processed = new EnumMap<>(ProcessingOutcome.class);
     private final Map<FailureReason, Counter> failed = new EnumMap<>(FailureReason.class);
-    private final Map<FailureReason, Counter> dltPublished = new EnumMap<>(FailureReason.class);
+    private final Map<ErrorCode, Map<ErrorType, Counter>> failedEventsPublished = new EnumMap<>(ErrorCode.class);
     private final Map<FailureReason, Counter> processingErrors = new EnumMap<>(FailureReason.class);
     private final Meter.MeterProvider<Timer> processing;
     private final Meter.MeterProvider<Timer> dbWrite;
@@ -60,17 +62,25 @@ public class MetricsFacade implements DeviceMetrics {
         }
         for (FailureReason reason : FailureReason.values()) {
             failed.put(reason, Counter.builder("devices.messages.failed")
-                    .description("Messages that ended with an error: moved to devices-dlt")
-                    .tag("reason", reason.label())
-                    .register(registry));
-            dltPublished.put(reason, Counter.builder("devices.dlt.published")
-                    .description("Messages published to devices-dlt")
+                    .description("Messages that ended with an error: moved to failed-events")
                     .tag("reason", reason.label())
                     .register(registry));
             processingErrors.put(reason, Counter.builder("devices.processing.errors")
-                    .description("Processing attempts that ended with an error (retried or moved to devices-dlt)")
+                    .description("Processing attempts that ended with an error (retried or moved to failed-events)")
                     .tag("reason", reason.label())
                     .register(registry));
+        }
+        // Все пары кода и типа регистрируются сразу: в /actuator/prometheus они есть с нуля
+        for (ErrorCode code : ErrorCode.values()) {
+            Map<ErrorType, Counter> byType = new EnumMap<>(ErrorType.class);
+            for (ErrorType type : ErrorType.values()) {
+                byType.put(type, Counter.builder("failed.events.published")
+                        .description("Messages published to failed-events")
+                        .tag("error_code", code.name())
+                        .tag("error_type", type.name())
+                        .register(registry));
+            }
+            failedEventsPublished.put(code, byType);
         }
         processing = Timer.builder("devices.processing")
                 .description("Full message processing time")
@@ -113,8 +123,8 @@ public class MetricsFacade implements DeviceMetrics {
     }
 
     @Override
-    public void dltPublished(FailureReason reason) {
-        dltPublished.get(reason).increment();
+    public void failedEventPublished(ErrorCode code, ErrorType type) {
+        failedEventsPublished.get(code).get(type).increment();
     }
 
     @Override

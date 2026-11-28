@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "list-prefix",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::__BUCKET_BACKUPS__"],
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["clickhouse/", "clickhouse/*"]
+        }
+      }
+    },
+    {
+      "Sid": "bucket-location",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation"],
+      "Resource": ["arn:aws:s3:::__BUCKET_BACKUPS__"]
+    },
+    {
+      "Sid": "objects-prefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": ["arn:aws:s3:::__BUCKET_BACKUPS__/clickhouse/*"]
+    }
+  ]
+}

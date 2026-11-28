@@ -3,7 +3,7 @@
 Баз данных у новых компонентов нет: данные — сообщения Kafka (`FailedEvent`) и объекты MinIO. Схема Avro —
 [contracts/failed-event.avsc](contracts/failed-event.avsc) (JSON в tasks.md T001 переносится дословно).
 
-## FailedEvent (тема `failed-events`, subject `failed-events-value`, avros 1.4.0)
+## FailedEvent (тема `failed-events`, subject `failed-events-value`, avros 1.4.0; `headerList` — 1.5.0)
 
 Ключ сообщения — строка `<sourceTopic>-<sourcePartition>-<sourceOffset>`: равномерно по трём разделам даже при шуме одного устройства и при `null`-ключе исходного
 сообщения; с ключом объекта не совпадает (он строится из раздела и смещения записи `failed-events`). Порядок между ошибками не нужен — каждый объект независим.
@@ -19,7 +19,8 @@
 | `description` | string ≤ 2000 | минимум; `<Класс корневой причины>: <сообщение>`, без стека |
 | `traceId` | `["null","string"]` | минимум; один `traceId` от события до объекта; `null` — трассы у входящего не было |
 | `key`, `value` | `["null","bytes"]` | минимум; байты исходного сообщения до разбора (с заголовком Schema Registry) |
-| `headers` | map<bytes> | **сверх**: заголовки исходного сообщения (`traceparent` и прочие) без служебных заголовков Spring Kafka (`spring*`, `kafka_*`) и `x-raw-key`, `x-raw-value`; нужны для байт-в-байт возврата и сквозной трассы |
+| `headers` | map<bytes> | **сверх**, устарело с 1.5.0: заполняется как в 1.4.0 (последнее значение имени, без `null`) для читателей 1.4.0; новые читатели берут его, только если `headerList = null` |
+| `headerList` | `["null", array<SourceHeader>]`, default `null`; `SourceHeader {name: string, value: ["null","bytes"]}` | **сверх**, с 1.5.0: все заголовки исходного сообщения в исходном порядке, с повторяющимися именами и значениями `null`, без служебных заголовков Spring Kafka (`spring*`, `kafka_*`) и `x-raw-key`, `x-raw-value`; нужны для байт-в-байт возврата и сквозной трассы. `null` — запись писателя 1.4.0, `[]` — заголовков не было |
 | `attempts` | int, default 1 | **сверх**: 1 — постоянная ошибка без повторов, N — исчерпаны попытки; разбор «сколько раз пробовали», панель |
 | `deviceId` | `["null","string"]` | **сверх**: поиск по устройству через полгода (метаданные объекта и поле JSON); `null`, если сообщение не разобралось |
 
@@ -56,11 +57,13 @@
 
 Метаданные объекта (поиск без чтения тела): `x-amz-meta-error-code`, `-source-service`, `-source-topic`, `-trace-id` (если есть), `-device-id` (если есть).
 
-JSON-документ (все поля `FailedEvent`; время — ISO-8601 UTC; байты — base64 стандартного алфавита; отсутствие — `null`):
+JSON-документ (все поля `FailedEvent`; время — ISO-8601 UTC; байты — base64 стандартного алфавита; отсутствие — `null`). С ревью PR #7 —
+`schemaVersion: 2`: `headers` — массив `[{"name", "value"}]` в порядке `headerList` (при `headerList = null` — из `headers` 1.4.0); отдельного поля
+`headerList` в JSON нет. Объекты `schemaVersion: 1` (заголовки объектом «имя → base64») остаются в бакете до срока, читатели (`Replay.java`) понимают оба формата:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "sourceService": "events-collector-service",
   "sourceTopic": "events",
   "sourcePartition": 2,
@@ -75,24 +78,26 @@ JSON-документ (все поля `FailedEvent`; время — ISO-8601 UT
   "deviceId": "dev-42",
   "key": "ZGV2LTQy",
   "value": "AAAAAAEMZGV2LTQy…",
-  "headers": { "traceparent": "MDAtMGFm…" },
-  "archive": { "failedEventsTopic": "failed-events", "failedEventsPartition": 1, "failedEventsOffset": 7, "archivedAt": "2026-11-21T10:15:31.902Z" }
+  "headers": [ { "name": "traceparent", "value": "MDAtMGFm…" }, { "name": "tag", "value": "YQ==" }, { "name": "tag", "value": "Yg==" }, { "name": "nullable", "value": null } ],
+  "archive": { "failedEventsTopic": "failed-events", "failedEventsPartition": 1, "failedEventsOffset": 7, "recordTimestamp": "2026-11-21T10:15:31.700Z", "archivedAt": "2026-11-21T10:15:31.902Z" }
 }
 ```
 
-Восстановление байт в байт: `base64 -d` поля `value` (и `key`, `headers`) даёт исходные байты. `archive` — служебный блок процессора: координаты записи
+Восстановление байт в байт: `base64 -d` поля `value` (и `key`, значений `headers`) даёт исходные байты; порядок и повторы заголовков — порядок массива. `archive` — служебный блок процессора: координаты записи
 `failed-events` и время записи; из них строится ключ объекта.
 
-Нечитаемая запись (тот же ключ `<yyyy>/<MM>/<dd>/failed-events-<partition>-<offset>.json`, дата — время записи в `failed-events`):
+Нечитаемая запись (тот же ключ `<yyyy>/<MM>/<dd>/failed-events-<partition>-<offset>.json`, дата — время записи в `failed-events`). `key` и `value` —
+исходные байты записи `failed-events` из `x-raw-key`, `x-raw-value` (сохранены до разбора) при любой причине: мусор, 404 схемы, другой тип Avro, ключ не
+строгий UTF-8; `headers` — все заголовки записи по порядку, без служебных:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kind": "unreadable",
   "reason": "SerializationException: Unknown magic byte!",
   "failedEventsTopic": "failed-events", "failedEventsPartition": 1, "failedEventsOffset": 8,
   "recordTimestamp": "2026-11-21T10:20:00.000Z",
-  "key": "…", "value": "…", "headers": { "…": "…" }
+  "key": "…", "value": "…", "headers": [ { "name": "…", "value": "…" } ]
 }
 ```
 
@@ -100,7 +105,7 @@ JSON-документ (все поля `FailedEvent`; время — ISO-8601 UT
 
 | Бакет | Кто пишет | Учётка и права | Срок в бакете | Срок в системе |
 |---|---|---|---|---|
-| `failed-events` (lock, версии) | failed-events-processor | `Put`, `Get` на `failed-events/*`, без `ListBucket` | 180 суток | — (данные не удаляет никто, кроме ILM) |
+| `failed-events` (lock, версии) | failed-events-processor | `Put`, `Get` на `failed-events/*`, без `ListBucket` | 180 суток; прежняя версия — через 1 сутки после того, как стала прежней (не раньше конца lock), пометка удаления без версий — сразу (R27) | — (данные не удаляет никто, кроме ILM) |
 | `mimir-blocks` | Mimir | полный доступ к бакету | 380 | 365 (`MIMIR_RETENTION_PERIOD`) |
 | `loki-chunks` | Loki | полный доступ к бакету | 100 | 90 (`LOKI_RETENTION_PERIOD`) |
 | `tempo-traces` | Tempo | полный доступ к бакету | 21 | 14 (`TEMPO_BLOCK_RETENTION`) |

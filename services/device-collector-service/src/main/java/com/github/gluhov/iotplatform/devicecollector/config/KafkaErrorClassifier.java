@@ -9,7 +9,7 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.net.http.HttpTimeoutException;
 
-/** Какие ошибки приёма из Kafka повторять, а какие - сразу отправлять в devices-dlt (как в events-collector-service). */
+/** Какие ошибки приёма из Kafka повторять, а какие - сразу отправлять в failed-events (как в events-collector-service). */
 public final class KafkaErrorClassifier {
 
     private KafkaErrorClassifier() {

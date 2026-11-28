@@ -17,14 +17,14 @@
 
 **Language/Version**: Java 25, Spring Boot 4.0.3 (как у device-collector-service)
 **Primary Dependencies** (процессор): `spring-boot-starter-kafka`, `-actuator`, `-opentelemetry`; `micrometer-registry-prometheus`;
-`kafka-avro-serializer` 8.2.4; avros 1.4.0; AWS SDK for Java v2 `s3` (одна версия через BOM); Jackson 3 (`byte[]` → base64 без настроек)
+`kafka-avro-serializer` 8.2.4; avros 1.5.0 (с ревью PR #7; было 1.4.0); AWS SDK for Java v2 `s3` (одна версия через BOM); Jackson 3 (`byte[]` → base64 без настроек)
 **Storage**: MinIO `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`, одна нода; Mimir 3.2.6, Loki 3.1.1, Tempo 2.6.0 — на нём же
 **Testing**: JUnit 5, Testcontainers (Kafka 4.2, Schema Registry 8.2.4, MinIO `testcontainers-minio` 2.0.3), ArchUnit, JaCoCo ≥ 70 % строк;
 `*Test` — unit, `It*Test` — интеграционные
 **Target Platform**: Docker Compose платформы, 1–3 экземпляра процессора одной группы
 **Project Type**: сервис в монорепозитории Gradle + изменения двух сервисов и инфраструктуры стенда
 **Performance Goals**: учебный стенд; скорость процессора при всплеске замеряется один раз (R20)
-**Constraints**: не терять сообщение; смещение — после записи; тайм-ауты SDK короче `max.poll.interval.ms`; у каждого вызова тайм-аут;
+**Constraints**: не терять сообщение; смещение — после записи; тайм-ауты SDK и клиента Schema Registry короче `max.poll.interval.ms`; у каждого вызова тайм-аут;
 предположения research.md проверяются до кода
 
 ## Constitution Check
@@ -32,7 +32,7 @@
 | Принцип | Как выполняется | Статус |
 |---|---|---|
 | I. Один владелец | процессор — единственный писатель бакета `failed-events`; сборщики — единственные писатели темы | ✅ |
-| II. Контракты | `FailedEvent` — новая запись avros 1.4.0, FULL_TRANSITIVE, `default` у всех необязательных полей; DLT-subjects удалены | ✅ |
+| II. Контракты | `FailedEvent` — новая запись avros 1.4.0, `headerList` — 1.5.0 (только добавлено поле), FULL_TRANSITIVE, `default` у всех необязательных полей; DLT-subjects удалены | ✅ |
 | III. Идемпотентность | ключ из координат записи `failed-events` + `If-None-Match: *`; смещение после записи | ✅ |
 | IV. Без состояния, окружение | процессор без состояния; все параметры — `.env.example`; тайм-ауты S3 и Kafka заданы | ✅ |
 | V. Безопасность | учётка на свой бакет/префикс; секретов в репозитории нет; описание ошибки без стека | ✅ |
@@ -46,15 +46,15 @@
 specs/002-failed-events/   spec · plan · research · data-model · quickstart · tasks · analyze-report · contracts/ · checklists/
 docs/adr/0013…0019 · diagrams/{containers,component-failed-events-processor,fep-error-to-minio-sequence}.mmd
 
-avros/avro/failed-event.avsc                    # FailedEvent, ErrorCode, ErrorType (версия 1.4.0)
+avros/avro/failed-event.avsc                    # FailedEvent, ErrorCode, ErrorType, SourceHeader (версия 1.5.0)
 services/failed-events-processor/
 ├── Dockerfile · scripts/quick-check.sh
 ├── src/main/resources/failed-events-processor.yaml   # конфигурация процессора; application.yaml не создаётся (R23)
 └── src/main/java/com/github/gluhov/iotplatform/failedeventsprocessor/
-    ├── adapter/in/kafka/   FailedEventListener
+    ├── adapter/in/kafka/   FailedEventListener, UnreadableRecorder, KafkaErrorClassifier
     ├── adapter/out/s3/     S3FailedEventArchive
-    ├── config/             KafkaConfig, S3Config, свойства
-    ├── domain/model        FailedRecord, ArchiveKey · domain/port FailedEventArchive · domain/service ArchiveService, UnreadableRecorder
+    ├── config/             KafkaConfig, S3Config, свойства, RawKeepingDeserializer, StrictUtf8StringDeserializer (как у сборщиков, R24)
+    ├── domain/model        FailedRecord, ArchiveKey, UnreadableRecord, HeaderEntry · domain/port FailedEventArchive · domain/service ArchiveService
     └── support/            MetricsFacade
 services/{events,device}-collector-service/…/adapter/out/kafka/FailedEventRecoverer      # вместо DeadLetterPublishingRecoverer
 services/{events,device}-collector-service/…/config/{RawKeepingDeserializer,StrictUtf8StringDeserializer}
@@ -86,8 +86,12 @@ infrastructure/config/backup-runner/{Dockerfile,entrypoint.sh,backup-postgres.sh
 | Ситуация | Поведение |
 |---|---|
 | Публикация `FailedEvent` не удалась (тема недоступна, тайм-аут) | исключение из recoverer, смещение исходной темы не подтверждается, сообщение обработано заново |
-| Запись `failed-events` не разобрана (мусор, 404 схемы) | объект с `kind = unreadable` по ключу записи, смещение |
+| Запись `failed-events` не разобрана (мусор, 404 схемы, ключ не строгий UTF-8) | объект с `kind = unreadable` по ключу записи, исходные байты из `x-raw-key`, `x-raw-value`, смещение |
+| Значение разобрано, но это не `FailedEvent` (корректный Avro другого типа) | слушатель: нечитаемая запись — объект `unreadable` с исходными байтами, смещение |
+| В восстановитель пришла ошибка без `DeserializationException` (`ClassCastException` и другие неповторяемые по умолчанию) | объект `unreadable` с исходными байтами из `x-raw-*` |
 | Schema Registry недоступен при чтении `failed-events` | повторы без объекта, смещение не подтверждается |
+| Schema Registry принимает соединение и не отвечает | тайм-аут клиента Registry (`FAILED_EVENTS_SCHEMA_REGISTRY_*`) → временная ошибка, повторы без объекта, группа `Stable` |
+| Первый сбой записи — таймаут Registry, затем 404 схемы | классификация перечитывается на каждом сбое (R28) → объект `unreadable`, повторы прекращаются |
 | MinIO недоступен или медленный | тайм-аут вызова, повтор с растущей паузой, дальше не читает, группа `Stable` |
 | `412` на запись | объект уже есть — `outcome=duplicate`, смещение |
 | Другая ошибка S3 (`403`, `5xx`) | повтор, `failed.events.archive.errors{reason}`, смещение не подтверждается |
@@ -107,18 +111,23 @@ infrastructure/config/backup-runner/{Dockerfile,entrypoint.sh,backup-postgres.sh
 | `FAILED_EVENTS_CONSUMER_GROUP` | `failed-events-processor` | процессор, `backup-runner` не использует |
 | `FAILED_EVENTS_MAX_POLL_INTERVAL_MS` | `30000` (больше `FAILED_EVENTS_S3_API_CALL_TIMEOUT`) | процессор |
 | `FAILED_EVENTS_RETRY_INITIAL_INTERVAL`, `FAILED_EVENTS_RETRY_MAX_INTERVAL`, `FAILED_EVENTS_RETRY_MULTIPLIER` | `500ms`, `10s`, `2.0` | процессор |
+| `FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS`, `FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS`, `FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES` | `1000`, `5000`, `0` | процессор (клиент Schema Registry: `schema.registry.http.connect.timeout.ms`, `schema.registry.http.read.timeout.ms`, `schema.registry.max.retries`; R25) |
 | `FAILED_EVENTS_S3_ENDPOINT`, `FAILED_EVENTS_S3_REGION`, `FAILED_EVENTS_S3_CONNECT_TIMEOUT`, `FAILED_EVENTS_S3_API_CALL_TIMEOUT`, `FAILED_EVENTS_S3_API_CALL_ATTEMPT_TIMEOUT` | `http://minio:9000`, `us-east-1`, `2s`, `8s`, `4s` | процессор |
 | `FAILED_EVENTS_BUCKET`, `FAILED_EVENTS_S3_ACCESS_KEY`, `FAILED_EVENTS_S3_SECRET_KEY` | `failed-events`, `failed-events-processor`, — | процессор, `minio-init` |
 | `MINIO_IMAGE`, `MINIO_VERSION`, `MC_IMAGE`, `MC_VERSION` | `pgsty/minio`, `RELEASE.2026-08-04T00-00-00Z`, `pgsty/mc`, `RELEASE.2026-11-12T00-00-00Z` | MinIO, `backup-runner` |
 | `MINIO_BUCKET_MIMIR`, `MINIO_BUCKET_LOKI`, `MINIO_BUCKET_TEMPO`, `MINIO_BUCKET_BACKUPS` | `mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups` | `minio-init`, компоненты |
 | `MIMIR_S3_ACCESS_KEY/SECRET_KEY`, `LOKI_S3_…`, `TEMPO_S3_…`, `BACKUP_POSTGRES_S3_…`, `BACKUP_CLICKHOUSE_S3_…` | имя учётки, `change_me_*` | `minio-init`, свой компонент |
 | `MINIO_EXPIRE_FAILED_EVENTS_DAYS`, `MINIO_EXPIRE_BACKUPS_DAYS`, `MINIO_EXPIRE_MIMIR_DAYS`, `MINIO_EXPIRE_LOKI_DAYS`, `MINIO_EXPIRE_TEMPO_DAYS` | `180`, `30`, `380`, `100`, `21` | `minio-init` (ILM) |
+| `MINIO_EXPIRE_FAILED_EVENTS_NONCURRENT_DAYS` | `1` (суток после того, как версия стала прежней; R27) | `minio-init` (ILM `failed-events`) |
 | `MIMIR_VERSION`, `MIMIR_PORT`, `MIMIR_RETENTION_PERIOD` | `3.2.6`, `8080`, `365d` | Mimir, Alloy, Grafana |
 | `LOKI_RETENTION_PERIOD`, `TEMPO_BLOCK_RETENTION` | `2160h`, `336h` | Loki, Tempo |
 | `BACKUP_SCHEDULE`, `BACKUP_RUNNER_IMAGE_TAG` | `0 3 * * *`, `0.1.0` | `backup-runner` |
 | `FAILED_EVENTS_LOCK_DAYS` | `180` (равен сроку ILM `MINIO_EXPIRE_FAILED_EVENTS_DAYS`) | `minio-init` (необязательная фаза) |
 
-Ограничения: `FAILED_EVENTS_S3_API_CALL_TIMEOUT` < `FAILED_EVENTS_MAX_POLL_INTERVAL_MS`; срок бакета > срок системы (Mimir 365 < 380, Loki 90 < 100, Tempo 14 < 21).
+Ограничения: `FAILED_EVENTS_S3_API_CALL_TIMEOUT` < `FAILED_EVENTS_MAX_POLL_INTERVAL_MS`; бюджет одного цикла опроса процессора
+`(FAILED_EVENTS_SCHEMA_REGISTRY_MAX_RETRIES + 1) × (FAILED_EVENTS_SCHEMA_REGISTRY_CONNECT_TIMEOUT_MS + FAILED_EVENTS_SCHEMA_REGISTRY_READ_TIMEOUT_MS)`
+`+ FAILED_EVENTS_S3_API_CALL_TIMEOUT + FAILED_EVENTS_RETRY_MAX_INTERVAL` < `FAILED_EVENTS_MAX_POLL_INTERVAL_MS` (при `MAX_RETRIES = 0` ожидание между повторами
+клиента Registry не возникает; с примерами: 6 + 8 + 10 = 24 с < 30 с; R25); срок бакета > срок системы (Mimir 365 < 380, Loki 90 < 100, Tempo 14 < 21).
 Уже есть и используются: `KAFKA_TOPIC_PARTITIONS`, `MINIO_API_PORT`, `MINIO_CONSOLE_PORT`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`,
 `EVENTS_MAX_ATTEMPTS`, `DEVICES_MAX_ATTEMPTS`.
 
@@ -144,8 +153,9 @@ IT сборщика (`It*Test`) поднимает Kafka, Schema Registry и Min
 
 | Отступление | Зачем | Почему проще не подходит |
 |---|---|---|
-| Свой `FailedEventRecoverer` и обёртка-десериализатор вместо `DeadLetterPublishingRecoverer` | исходные байты и `traceId` для разобранного, но невалидного сообщения | штатный recoverer берёт байты только из `DeserializationException` (R1) |
+| Свой `FailedEventRecoverer` и обёртка-десериализатор вместо `DeadLetterPublishingRecoverer` (обёртка — и в процессоре, R24) | исходные байты и `traceId` для разобранного, но невалидного сообщения | штатный recoverer берёт байты только из `DeserializationException` (R1) |
 | Две реализации `FailedEventRecoverer` (по одной на сборщик) | сервисы независимы, общий только контракт | общий модуль связал бы релизы двух сервисов (ADR-0013) |
+| Третья копия `RawKeepingDeserializer` и `StrictUtf8StringDeserializer` (в процессоре) | исходные байты записи `failed-events` при любом пути в `unreadable` (ревью PR #7) | общий модуль трёх сервисов — то же возражение ADR-0013 |
 | Образ MinIO — форк `pgsty` | официальный образ недоступен | свой образ или замороженный bitnami (R10) |
 | Бакет `failed-events` с Object Lock с самого начала | lock нельзя включить на существующем бакете | включать позже — пересоздавать бакет с данными (R12) |
 | Свой образ `backup-runner` | Kafka-инструменты, клиенты PostgreSQL, `mc` и cron в одном контейнере | три отдельных контейнера и общий том ради одного расписания (R18) |

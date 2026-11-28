@@ -2,6 +2,9 @@ package com.github.gluhov.iotplatform.devicecollector.it;
 
 import com.github.gluhov.iotplatform.events.avro.DeviceInfo;
 import com.github.gluhov.iotplatform.events.avro.DeviceUpsertEventType;
+import com.github.gluhov.iotplatform.events.avro.ErrorCode;
+import com.github.gluhov.iotplatform.events.avro.ErrorType;
+import com.github.gluhov.iotplatform.events.avro.FailedEvent;
 import com.github.gluhov.iotplatform.events.avro.OperationType;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -88,8 +91,8 @@ class ItDeviceOperationsTest extends AbstractItTest {
     }
 
     @Test
-    @DisplayName("FR-015, строка 11: command UNKNOWN goes to devices-dlt, the next message of the partition is processed")
-    void givenUnknownOperation_whenConsumed_thenDeadLettered() throws Exception {
+    @DisplayName("FR-015, строка 11: command UNKNOWN goes to failed-events as VALIDATION_FAILED, the next message of the partition is processed")
+    void givenUnknownOperation_whenConsumed_thenPublishedAsValidationFailed() throws Exception {
         String id = deviceOnShard(1);
         RecordMetadata unknown = send(id, command(id, "cmd-1", OperationType.DELETE, T)
                 .setOperation(OperationType.UNKNOWN).build(), null);
@@ -97,8 +100,10 @@ class ItDeviceOperationsTest extends AbstractItTest {
 
         awaitCommitted(next);
         assertThat(assertOnlyOnExpectedShard(id)).isEqualTo(1);
-        ConsumerRecord<String, byte[]> dead = deadLetter(unknown).orElseThrow();
-        assertThat(header(dead, "kafka_dlt-exception-cause-fqcn")).endsWith("InvalidDeviceInfoException");
+        FailedEvent failed = failedEvent(unknown).orElseThrow();
+        assertThat(failed.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(failed.getErrorType()).isEqualTo(ErrorType.PERMANENT);
+        assertThat(failed.getAttempts()).isEqualTo(1);
     }
 
     @Test

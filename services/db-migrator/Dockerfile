@@ -13,6 +13,7 @@ COPY services/events-collector-service/build.gradle.kts services/events-collecto
 COPY services/device-collector-service/build.gradle.kts services/device-collector-service/
 COPY services/device-service-client/build.gradle.kts services/device-service-client/
 COPY services/device-service/build.gradle.kts services/device-service/
+COPY services/failed-events-processor/build.gradle.kts services/failed-events-processor/
 COPY services/db-migrator services/db-migrator
 RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon :services:db-migrator:installDist -x test

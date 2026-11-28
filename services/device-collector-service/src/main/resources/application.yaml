@@ -22,24 +22,28 @@ spring:
       # С earliest потребитель молча перешёл бы на самое раннее сохранённое сообщение и применил бы событие роутера
       # после потерянного DELETE администратора
       auto-offset-reset: none
-      # Offset подтверждается вручную: после COMMIT в PostgreSQL или после записи в devices-dlt
+      # Offset подтверждается вручную: после COMMIT в PostgreSQL или после записи в failed-events
       enable-auto-commit: false
       # Строго по одному сообщению за poll
       max-poll-records: 1
       key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
-        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
-        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        # Обёртки сохраняют исходные байты ключа и значения до разбора (x-raw-key, x-raw-value; R1, R2)
+        spring.deserializer.key.delegate.class: com.github.gluhov.iotplatform.devicecollector.config.RawKeepingDeserializer
+        spring.deserializer.value.delegate.class: com.github.gluhov.iotplatform.devicecollector.config.RawKeepingDeserializer
+        # Ключ - строгий UTF-8: невалидные байты дают DESERIALIZATION_FAILED с исходными байтами, а не замену на U+FFFD
+        x-raw.key.delegate: com.github.gluhov.iotplatform.devicecollector.config.StrictUtf8StringDeserializer
+        x-raw.value.delegate: io.confluent.kafka.serializers.KafkaAvroDeserializer
         # Раздел, добавленный к теме у работающей группы, потребитель замечает при обновлении метаданных (R16, ADR-0011)
         metadata.max.age.ms: ${DEVICES_CONSUMER_METADATA_MAX_AGE_MS}
         # SpecificRecord (сгенерированный DeviceInfo), а не GenericRecord
         specific.avro.reader: true
         # Читаем только DeviceInfo: запись другого типа (даже с настоящим schemaId из Schema Registry) не десериализуется
-        # и уходит в devices-dlt исходными байтами. Без этого её отдали бы listener как есть: ошибка приведения типа,
-        # а в devices-dlt-value зарегистрирован только DeviceInfo - запись в DLT не удалась бы и раздел встал
+        # и уходит в failed-events исходными байтами (DESERIALIZATION_FAILED). Без этого её отдали бы listener как есть:
+        # ошибка приведения типа, а не разбор сообщения
         specific.avro.value.type: com.github.gluhov.iotplatform.events.avro.DeviceInfo
-    # Продюсер нужен только для devices-dlt
+    # Продюсер нужен только для failed-events (FailedEvent)
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
@@ -49,9 +53,9 @@ spring:
         # Незарегистрированная схема - ошибка сериализации, а не молчаливая новая версия
         auto.register.schemas: false
         enable.idempotence: true
-        max.block.ms: ${DEVICES_DLT_MAX_BLOCK_MS:5000}
-        request.timeout.ms: ${DEVICES_DLT_REQUEST_TIMEOUT_MS:5000}
-        delivery.timeout.ms: ${DEVICES_DLT_DELIVERY_TIMEOUT_MS:15000}
+        max.block.ms: ${FAILED_EVENTS_MAX_BLOCK_MS:5000}
+        request.timeout.ms: ${FAILED_EVENTS_REQUEST_TIMEOUT_MS:5000}
+        delivery.timeout.ms: ${FAILED_EVENTS_DELIVERY_TIMEOUT_MS:15000}
     listener:
       type: single
       ack-mode: manual_immediate
@@ -81,9 +85,11 @@ app:
     floor-ttl: ${DEVICE_CACHE_FLOOR_TTL}
   kafka:
     devices-topic: ${KAFKA_DEVICES_TOPIC:devices}
-    dlt-topic: ${KAFKA_DEVICES_DLT_TOPIC:devices-dlt}
+    failed-events-topic: ${KAFKA_FAILED_EVENTS_TOPIC:failed-events}
+    # Сколько ждать подтверждения записи в failed-events: иначе сообщение не подтверждается и обрабатывается снова
+    failed-events-publish-timeout: ${FAILED_EVENTS_PUBLISH_TIMEOUT:15s}
   processing:
-    # Ошибка хранилища: 3 попытки с паузами 1 с и 2 с, затем devices-dlt
+    # Ошибка хранилища: 3 попытки с паузами 1 с и 2 с, затем failed-events
     max-attempts: ${DEVICES_MAX_ATTEMPTS:3}
     retry-interval: ${DEVICES_RETRY_INTERVAL:1s}
     retry-multiplier: ${DEVICES_RETRY_MULTIPLIER:2.0}

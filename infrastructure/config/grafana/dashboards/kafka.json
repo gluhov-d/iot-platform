@@ -187,10 +187,30 @@
       "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] }
     },
     {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Тема failed-events: запись, msg/s",
+      "description": "Ошибки обработки от обоих сборщиков (kafka_topic_partition_current_offset)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"failed-events\"}[5m]))", "legendFormat": "failed-events" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Тема failed-events: отставание процессора по разделам",
+      "description": "Группа failed-events-processor",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (partition) (kafka_consumergroup_lag{consumergroup=\"failed-events-processor\",topic=\"failed-events\"})", "legendFormat": "раздел {{partition}}" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
       "id": 10,
       "type": "logs",
       "title": "Логи брокера",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 20 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 28 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [{ "refId": "A", "expr": "{service=\"kafka\"}" }],
       "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true }

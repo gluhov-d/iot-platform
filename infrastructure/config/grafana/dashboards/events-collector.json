@@ -19,7 +19,7 @@
         "name": "status",
         "label": "status в логах",
         "type": "custom",
-        "query": ".*,PROCESSED,PUBLISHED,SKIPPED,FAILED,REJECTED,ERROR",
+        "query": ".*,PROCESSED,PUBLISHED,SKIPPED,FAILED,FAILED_EVENT,ERROR",
         "current": {
           "text": ".*",
           "value": ".*"
@@ -353,7 +353,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 5
       },
@@ -402,8 +402,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 6,
         "y": 5
       },
       "fieldConfig": {
@@ -451,8 +451,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 12,
         "y": 5
       },
       "fieldConfig": {
@@ -486,6 +486,67 @@
             "uid": "prometheus"
           },
           "expr": "sum(increase(outbox_publish_fail_total{job=\"events-collector-service\"}[$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "В failed-events",
+      "description": "failed_events_published_total: сообщения, записанные в тему failed-events",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(failed_events_published_total{job=\"events-collector-service\"}[$__range])) or vector(0)"
         }
       ]
     },
@@ -824,6 +885,98 @@
       ]
     },
     {
+      "id": 21,
+      "type": "timeseries",
+      "title": "failed-events по коду ошибки, ops/s",
+      "description": "Публикация ошибок событий в failed-events (error_code из FailedEvent)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (error_code) (rate(failed_events_published_total{job=\"events-collector-service\"}[1m]))",
+          "legendFormat": "{{error_code}}"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "failed-events по типу ошибки, ops/s",
+      "description": "PERMANENT - сразу; TRANSIENT - хранилище недоступно, после повторов",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (error_type) (rate(failed_events_published_total{job=\"events-collector-service\"}[1m]))",
+          "legendFormat": "{{error_type}}"
+        }
+      ]
+    },
+    {
       "id": 18,
       "type": "row",
       "title": "Логи",
@@ -832,7 +985,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 42
       },
       "panels": []
     },
@@ -848,7 +1001,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 43
       },
       "options": {
         "showTime": true,

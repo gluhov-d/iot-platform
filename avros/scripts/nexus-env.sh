@@ -16,7 +16,7 @@ fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
 env_dump="$("${COMPOSE[@]}" config --environment)" || fail "docker compose config: не удалось прочитать ${ENV_FILE}"
 env_value() { sed -n "s/^$1=//p" <<<"${env_dump}"; }
 for name in NEXUS_PORT NEXUS_PUBLISH_USER NEXUS_PUBLISH_PASSWORD SCHEMA_REGISTRY_PORT \
-            KAFKA_EVENTS_TOPIC KAFKA_EVENTS_DLT_TOPIC KAFKA_DEVICES_TOPIC KAFKA_DEVICES_DLT_TOPIC; do
+            KAFKA_EVENTS_TOPIC KAFKA_DEVICES_TOPIC KAFKA_FAILED_EVENTS_TOPIC; do
   [[ -n "$(env_value "${name}")" ]] || fail "${name} не задан в ${ENV_FILE}"
 done
 NEXUS_URL="http://localhost:$(env_value NEXUS_PORT)"
@@ -24,8 +24,8 @@ SCHEMA_REGISTRY_URL="http://localhost:$(env_value SCHEMA_REGISTRY_PORT)"
 
 # shellcheck source=schema-subjects.sh
 source "$(dirname "${BASH_SOURCE[0]}")/schema-subjects.sh"
-SCHEMA_SUBJECTS="$(schema_subjects "$(env_value KAFKA_EVENTS_TOPIC)" "$(env_value KAFKA_EVENTS_DLT_TOPIC)" \
-  "$(env_value KAFKA_DEVICES_TOPIC)" "$(env_value KAFKA_DEVICES_DLT_TOPIC)")"
+SCHEMA_SUBJECTS="$(schema_subjects "$(env_value KAFKA_EVENTS_TOPIC)" "$(env_value KAFKA_DEVICES_TOPIC)" \
+  "$(env_value KAFKA_FAILED_EVENTS_TOPIC)")"
 # Параметры сверки со Schema Registry для Gradle (проверка перед публикацией обязательна)
 REGISTRY_PROPS=("-PschemaRegistryUrl=${SCHEMA_REGISTRY_URL}" "-PschemaSubjects=${SCHEMA_SUBJECTS}")
 
