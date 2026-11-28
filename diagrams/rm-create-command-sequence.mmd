@@ -1,0 +1,37 @@
+%% router-manager: создание команды. Ответ «создано» — только после фиксации в PostgreSQL (FR-004)
+%% Ветки отказа завершаются (break): в базу доходит только проверенный запрос
+sequenceDiagram
+    autonumber
+    participant A as Администратор / API-оркестратор
+    participant KC as Keycloak
+    participant RM as router-manager (любой экземпляр)
+    participant PG as PostgreSQL iot_commands
+    participant RD as Redis master (адрес от Sentinel)
+
+    A->>KC: client credentials (router-manager-consumer)
+    KC-->>A: сервисный JWT (aud router-manager, роль commands.write)
+    A->>RM: CreateCommand(router_id, REBOOT, request_id) + Bearer JWT, срок вызова
+    RM->>RM: подпись по JWKS (кэш), iss, exp, aud, client_id без sid
+    break нет токена, подпись, срок, издатель или аудитория
+        RM-->>A: UNAUTHENTICATED — обработка закончена
+    end
+    break пользовательский токен или нет роли commands.write
+        RM-->>A: PERMISSION_DENIED
+    end
+    RM->>RM: проверка полей (router_id, тип, params.version у UPDATE_AGENT)
+    break поля невалидны
+        RM-->>A: INVALID_ARGUMENT (поле и правило)
+    end
+    RM->>PG: INSERT … status NEW ON CONFLICT (router_id, request_id) DO NOTHING RETURNING
+    break PostgreSQL недоступен или истёк срок вызова
+        RM-->>A: UNAVAILABLE / DEADLINE_EXCEEDED — команды нет,<br/>вызов можно повторить с тем же request_id
+    end
+    alt команда с этим request_id уже есть
+        RM->>PG: SELECT существующей команды
+        PG-->>RM: прежняя команда (вторая не создаётся)
+    else новая
+        PG-->>RM: команда NEW зафиксирована
+    end
+    RM->>RD: Lua: INCR router:cmd:gen:v1:{routerId}, EXPIRE, DEL router:cmd:none:v1:{routerId}
+    Note over RM,RD: Ошибка Redis ответ не меняет: источник истины — база. Запись «нет команды»<br/>истечёт сама — не позже чем через ROUTER_REQUEST_TIMEOUT + ROUTER_NEG_CACHE_TTL (17 с)
+    RM-->>A: OK, Command (command_id, status NEW, created_at)

@@ -1,0 +1,124 @@
+// Контракт router-manager. Источник истины — protos/proto/iotplatform/router/v1/router_manager.proto
+// (этот файл переносится туда задачей T001 дословно). Совместимость новых версий — buf breaking WIRE_JSON (ADR-0024).
+syntax = "proto3";
+
+package iotplatform.router.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/gluhov-d/iot-platform/services/router-manager/internal/gen/iotplatform/router/v1;routerv1";
+option java_multiple_files = true;
+option java_package = "com.github.gluhov.iotplatform.router.v1";
+
+// Методы администратора: только сервисный токен Keycloak с аудиторией router-manager (ADR-0023).
+service RouterAdminService {
+  // Сохраняет команду и только после фиксации в PostgreSQL отвечает. Повтор с тем же request_id для того же
+  // роутера возвращает уже созданную команду (идемпотентно). Роль commands.write.
+  rpc CreateCommand(CreateCommandRequest) returns (CreateCommandResponse);
+  // Текущий статус команды. Роль commands.read.
+  rpc GetCommand(GetCommandRequest) returns (GetCommandResponse);
+}
+
+// Методы роутера: подпись HMAC в метаданных x-router-id, x-router-ts, x-router-key-id, x-router-sig (ADR-0023).
+// Идентификатор роутера берётся только из проверенных метаданных, в теле его нет.
+service RouterAgentService {
+  // Опрос: самая старая команда в статусе NEW переводится в SENT и возвращается. Нет команды — штатный
+  // ответ OK без поля command (ADR-0021, ADR-0022).
+  rpc PollCommand(PollCommandRequest) returns (PollCommandResponse);
+  // Результат выполнения. Повтор и ответ на уже завершённую команду итог не меняют.
+  rpc ReportResult(ReportResultRequest) returns (ReportResultResponse);
+}
+
+enum CommandType {
+  COMMAND_TYPE_UNSPECIFIED = 0;
+  COMMAND_TYPE_REBOOT = 1;
+  // Обязателен параметр version.
+  COMMAND_TYPE_UPDATE_AGENT = 2;
+}
+
+enum CommandStatus {
+  COMMAND_STATUS_UNSPECIFIED = 0;
+  COMMAND_STATUS_NEW = 1;
+  COMMAND_STATUS_SENT = 2;
+  COMMAND_STATUS_SUCCESS = 3;
+  COMMAND_STATUS_FAILED = 4;
+}
+
+// Причина FAILED.
+enum FailureReason {
+  FAILURE_REASON_UNSPECIFIED = 0;
+  // Роутер сообщил об отказе.
+  FAILURE_REASON_ROUTER_FAILED = 1;
+  // Нет ответа дольше ROUTER_COMMAND_SENT_TIMEOUT после выдачи.
+  FAILURE_REASON_TIMEOUT = 2;
+}
+
+enum CommandOutcome {
+  COMMAND_OUTCOME_UNSPECIFIED = 0;
+  COMMAND_OUTCOME_SUCCESS = 1;
+  COMMAND_OUTCOME_FAILED = 2;
+}
+
+message Command {
+  string command_id = 1;
+  string router_id = 2;
+  CommandType type = 3;
+  map<string, string> params = 4;
+  CommandStatus status = 5;
+  FailureReason failure_reason = 6;
+  string result_message = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp sent_at = 9;
+  google.protobuf.Timestamp finished_at = 10;
+}
+
+// Команда в том виде, в каком её получает роутер.
+message RouterCommand {
+  string command_id = 1;
+  CommandType type = 2;
+  map<string, string> params = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message CreateCommandRequest {
+  string router_id = 1;
+  CommandType type = 2;
+  map<string, string> params = 3;
+  // Ключ идемпотентности вызывающего; пусто — без защиты от повтора.
+  string request_id = 4;
+}
+
+message CreateCommandResponse {
+  Command command = 1;
+}
+
+message GetCommandRequest {
+  string command_id = 1;
+}
+
+message GetCommandResponse {
+  Command command = 1;
+}
+
+message PollCommandRequest {}
+
+message PollCommandResponse {
+  // Нет поля (presence у message-поля) — команды нет.
+  RouterCommand command = 1;
+  // В статусе NEW для роутера есть ещё команды: опросить сразу, не дожидаясь интервала.
+  bool more_pending = 2;
+}
+
+message ReportResultRequest {
+  string command_id = 1;
+  CommandOutcome outcome = 2;
+  // Текст для администратора, до 1024 символов.
+  string message = 3;
+}
+
+message ReportResultResponse {
+  // Итоговый статус после вызова.
+  CommandStatus status = 1;
+  // false — итог уже был (повтор или ответ после TIMEOUT), вызов ничего не изменил.
+  bool applied = 2;
+}

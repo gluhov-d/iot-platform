@@ -1,0 +1,32 @@
+%% router-manager: зависшая команда — роутер получил команду и не ответил (FR-010, FR-011)
+sequenceDiagram
+    autonumber
+    participant R as Роутер (молчит после выдачи)
+    participant RM as router-manager (оба экземпляра)
+    participant PG as PostgreSQL iot_commands
+    participant DK as Docker API
+    participant AL as Alloy
+    participant LK as Loki
+    participant GF as Grafana (правило RouterManagerCommandStuck)
+    participant A as Администратор
+
+    R->>RM: PollCommand()
+    RM->>PG: выдача: SENT, sent_at = now()
+    RM-->>R: RouterCommand — ответа роутера не будет
+    loop каждые ROUTER_STUCK_SCAN_INTERVAL в каждом экземпляре
+        RM->>PG: UPDATE … SET status FAILED, failure_reason TIMEOUT<br/>WHERE command_id IN (SELECT … status SENT и sent_at старше<br/>now() - ROUTER_COMMAND_SENT_TIMEOUT … FOR UPDATE SKIP LOCKED) RETURNING
+        PG-->>RM: переведённые команды — каждую возвращает ровно одному экземпляру
+    end
+    RM->>RM: на каждую: лог WARN event = command_stuck<br/>(command_id, router_id, command_type, sent_at),<br/>router_manager_commands_stuck_total +1
+    AL->>DK: чтение stdout контейнеров router-manager
+    AL->>LK: строки с меткой service = router-manager
+    loop каждые 10 с
+        GF->>LK: sum by (command_id) (count_over_time(… event = command_stuck [5m]))
+    end
+    GF->>GF: отдельный экземпляр оповещения на каждый command_id, состояние Alerting
+    GF-->>A: оповещение «Команда … зависла: роутер мог не пережить команду»<br/>(contact point router-manager)
+    A->>RM: GetCommand(command_id) — FAILED, TIMEOUT,<br/>решение о новой команде — за администратором
+    opt роутер всё-таки ответил позже
+        R->>RM: ReportResult(SUCCESS)
+        RM-->>R: OK, FAILED, applied = false — итог не меняется, router_manager_late_reports_total +1
+    end

@@ -16,6 +16,8 @@
   и не переименовываются. Продюсеры не регистрируют схемы сами.
 - HTTP API — API First: файл OpenAPI в репозитории и есть контракт; DTO и клиент генерируются при сборке,
   спецификация из аннотаций кода не принимается. Несовместимое изменение — новая версия пути (`/api/v2`).
+- gRPC — `.proto` только в `protos/`, публикуются в Nexus с явной версией; новая версия совместима с прежней по правилам
+  `buf breaking` WIRE_JSON; код клиентов и серверов генерируется при сборке.
 - Изменения схемы БД — только миграциями `db-migrator`, обратно совместимые (`IF NOT EXISTS`).
 
 ### III. Обработка идемпотентна
@@ -33,8 +35,8 @@
 внутренности: стек, SQL, имена классов.
 
 ### VI. Наблюдаемость обязательна
-Метрики Micrometer (RED для сервиса, без меток с высокой кардинальностью вроде `deviceId`), логи в JSON
-с `traceId`/`spanId` в Loki, трассы OpenTelemetry в Tempo с передачей контекста через HTTP и Kafka.
+Метрики Micrometer, в Go — client_golang (RED для сервиса, без меток с высокой кардинальностью вроде `deviceId`), логи в JSON
+с `traceId`/`spanId` в Loki, трассы OpenTelemetry в Tempo с передачей контекста через HTTP, gRPC и Kafka.
 У каждого сервиса своя панель Grafana.
 
 ### VII. Тесты на настоящей инфраструктуре
@@ -44,13 +46,15 @@ Unit-тесты на логику без инфраструктуры; инте�
 
 ## Технологии и запуск
 
-- Java 25, Spring Boot 4, Gradle (Kotlin DSL), монорепозиторий.
-- Kafka 4 (KRaft) + Confluent Schema Registry, PostgreSQL за ShardingSphere-Proxy, ClickHouse, Redis через
+- Java 25, Spring Boot 4, Gradle (Kotlin DSL), монорепозиторий. Узкий сетевой сервис — Go 1.26 (gRPC, pgx), сборка и тесты
+  в контейнере `golang`; покрытие строк — тот же порог.
+- Kafka 4 (KRaft) + Confluent Schema Registry, PostgreSQL за ShardingSphere-Proxy (у router-manager — своя
+  нешардированная база напрямую, ADR-0026), ClickHouse, Redis через
   Sentinel, Keycloak, Nexus, MinIO (одна нода, S3 API: необработанные сообщения, данные наблюдаемости, копии баз),
   Mimir/Loki/Tempo/Grafana, метрики, логи и трассы собирает Alloy (ADR-0012, ADR-0016).
-- Один Docker Compose на платформу; у сервиса свой Dockerfile в два этапа (JDK → JRE), образы и зависимости —
+- Один Docker Compose на платформу; у сервиса свой Dockerfile в два этапа (JDK → JRE, у Go — `golang` → distroless), образы и зависимости —
   с фиксированными версиями, без `latest`.
-- Ошибки HTTP — Problem Details (RFC 9457) с `code` и `traceId`.
+- Ошибки HTTP — Problem Details (RFC 9457) с `code` и `traceId`; ошибки gRPC — стандартные коды без внутренностей.
 
 ## Порядок работы
 
@@ -67,4 +71,5 @@ Unit-тесты на логику без инфраструктуры; инте�
 Конституция важнее частных решений в spec и plan. Изменение — отдельным коммитом с новой версией и
 перечнем затронутых артефактов.
 
-**Version**: 1.2.0 | **Ratified**: 2026-11-11 | **Last Amended**: 2026-11-23
+**Version**: 1.3.0 | **Ratified**: 2026-11-11 | **Last Amended**: 2026-11-28 (Go и gRPC: router-manager, protos; затронуты
+`specs/003-router-manager`, AGENTS.md)

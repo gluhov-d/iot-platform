@@ -1,0 +1,62 @@
+%% Компоненты router-manager и его окружение (управление роутерами)
+flowchart LR
+    admin(["Администратор / API-оркестратор<br/>сервисный токен Keycloak<br/>(client credentials)"])
+    router(["Роутер / router-emulator<br/>ключ K_r = HMAC(K_master, router_id)<br/>опрос с интервалом, результат"])
+
+    subgraph build["Сборка: контракт protos"]
+        direction TB
+        proto["router_manager.proto<br/>protos/proto/iotplatform/router/v1<br/>buf lint STANDARD · breaking WIRE_JSON"]
+        jar["protos X.Y.Z в Nexus (maven-releases)<br/>версия не перезаписывается"]
+        gen["buf generate (protoc-gen-go, protoc-gen-go-grpc)<br/>в образе сборки, из jar версии PROTOS_VERSION<br/>internal/gen — не в Git"]
+        proto --> jar --> gen
+    end
+
+    subgraph svc["router-manager (Go, 2 экземпляра, без состояния)"]
+        direction TB
+        subgraph grpcin["adapter/in/grpc"]
+            icpt["Перехватчики: recovery → срок<br/>min(срок клиента, ROUTER_REQUEST_TIMEOUT) →<br/>проверка вызывающего"]
+            jwt["auth/jwt: keyfunc + jwt/v5<br/>RS256, iss, exp, aud = router-manager,<br/>client_id без sid, роли commands.*<br/>строгий старт: без JWKS не стартует"]
+            hmac["auth/router: x-router-id, -ts, -nonce, -key-id, -sig<br/>подпись метода, роутера, времени и тела;<br/>K_r из мастер-ключа, окно ±60 с, hmac.Equal;<br/>одноразовость: SET NX router:sig:v1 (120 с)"]
+            adminsrv["RouterAdminService<br/>CreateCommand · GetCommand"]
+            agentsrv["RouterAgentService<br/>PollCommand · ReportResult"]
+            health["grpc.health.v1 · reflection (стенд)"]
+        end
+        subgraph domain["internal/domain"]
+            model["model: Command, переходы статусов<br/>NEW → SENT → SUCCESS / FAILED, проверки полей"]
+            service["service: CommandService<br/>опрос: кэш → выдача → «нет команды» с поколением;<br/>создание: фиксация → поколение; ответ: итог не меняется"]
+            stuck["service: StuckScanner<br/>каждые ROUTER_STUCK_SCAN_INTERVAL:<br/>SENT старше ROUTER_COMMAND_SENT_TIMEOUT → FAILED (TIMEOUT),<br/>событие command_stuck на каждую"]
+            ports["port: CommandRepository, NegativeCache,<br/>Metrics, Clock"]
+        end
+        subgraph out["adapter/out"]
+            repo["postgres: pgx + otelpgx<br/>UPDATE … (SELECT … FOR UPDATE SKIP LOCKED) RETURNING<br/>роль router_manager, база iot_commands"]
+            cache["redis: FailoverClient (Sentinel) + redisotel<br/>ContextTimeoutEnabled, тайм-ауты 100 мс<br/>router:cmd:none:v1 / gen:v1 · Lua;<br/>router:sig:v1 — SET NX принятых подписей"]
+        end
+        obs["observability: slog JSON (traceId, spanId, event),<br/>OTLP-трассы, client_golang /metrics<br/>без router_id и command_id в метках"]
+        main["cmd/router-manager: serve · healthcheck<br/>SIGTERM → NOT_SERVING → GracefulStop"]
+    end
+
+    pg[("PostgreSQL 16<br/>iot_commands.router_commands")]
+    redis[("Redis платформы<br/>master от Sentinel")]
+    kc["Keycloak<br/>realm iot-platform: JWKS"]
+    alloy["Alloy → Mimir / Loki / Tempo"]
+    grafana["Grafana: панель router-manager,<br/>правило RouterManagerCommandStuck<br/>(по экземпляру на command_id)"]
+
+    admin -- "gRPC + Bearer JWT" --> icpt
+    router -- "gRPC + подпись HMAC" --> icpt
+    icpt --> jwt --> adminsrv
+    icpt --> hmac --> agentsrv
+    adminsrv --> service
+    agentsrv --> service
+    service --> model
+    service --> ports
+    stuck --> ports
+    ports -. "реализации" .-> repo
+    ports -. "реализации" .-> cache
+    repo -- "SQL, срок вызова в context" --> pg
+    cache -- "GET / Lua, срок вызова в context" --> redis
+    jwt -. "ключи JWKS" .-> kc
+    gen -. "сгенерированные типы и интерфейсы" .-> grpcin
+    obs -. "метрики, логи, трассы" .-> alloy
+    alloy -. "Loki: event = command_stuck" .-> grafana
+    main --> grpcin
+    main --> stuck

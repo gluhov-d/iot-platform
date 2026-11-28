@@ -21,3 +21,10 @@
 | [0017](0017-database-backups-to-minio.md) | Копии PostgreSQL и ClickHouse в MinIO контейнером backup-runner |
 | [0018](0018-failed-events-processor-failure-modes.md) | Поведение failed-events-processor при сбоях |
 | [0019](0019-optional-return-and-object-lock.md) | Необязательная часть: возврат объекта в топик и Object Lock |
+| [0020](0020-router-manager-replaces-command-service.md) | router-manager вместо планового Command Service |
+| [0021](0021-command-issue-once.md) | Выдача команды опросом ровно один раз |
+| [0022](0022-negative-cache-with-generation.md) | Негативный кэш с поколением роутера |
+| [0023](0023-router-authentication-hmac.md) | Проверка вызывающих: сервисный токен и подпись роутера |
+| [0024](0024-protos-project.md) | Проект protos и генерация Go-кода |
+| [0025](0025-stuck-commands-and-alert.md) | Зависшие команды и оповещение на каждую |
+| [0026](0026-router-manager-database.md) | База router-manager и миграции |

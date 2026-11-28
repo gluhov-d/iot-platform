@@ -11,6 +11,7 @@
 - [Реестр устройств (device-collector-service, avros)](#реестр-устройств-device-collector-service-avros)
 - [Управление устройствами (device-service)](#управление-устройствами-device-service)
 - [Обработка ошибок и архив (failed-events-processor, MinIO)](#обработка-ошибок-и-архив-failed-events-processor-minio)
+- [Управление роутерами (router-manager)](#управление-роутерами-router-manager)
 
 ---
 
@@ -414,3 +415,24 @@ Spec Kit, и критерии входят в spec.md; здесь они не п
 Снимки для сдачи (задача T077) лежат в `docs/screenshots/`, перечень — в README, раздел 16: панели Grafana (failed-events-processor,
 MinIO, оба сборщика), логи процессора в Loki, содержимое бакетов (`failed-events` с объектом ошибки и его метаданными, `mimir-blocks`, `loki-chunks`, `tempo-traces`, `backups`), пример
 объекта ошибки. Сквозная трасса от события в `events` до `s3.put-object` — отдельным снимком после проверки на стенде.
+
+---
+
+# Управление роутерами (router-manager)
+
+Критерии приёмки этой части — в [specs/003-router-manager/spec.md](../specs/003-router-manager/spec.md): разделы «Requirements»
+(у каждого требования — проверка), «Success Criteria» (SC-001…SC-005) и «Критерии приёмки (Definition of Done)»; здесь они не
+повторяются.
+
+Что эта часть меняет в уже сделанном (пункты секций выше правятся на месте вместе с кодом, задача T041):
+
+- Сервис `postgres` — в базовом стенде, а не в профиле `platform`; в нём база `iot_commands` router-manager со своей ролью.
+- db-migrator: второй набор миграций `router-manager` и отдельный запуск `db-migrator-router-manager`; миграции шардов не меняются.
+- Realm `iot-platform`: клиенты `router-manager`, `router-manager-consumer`, `router-manager-reader`.
+- Сборка: проект `protos` (публикация в Nexus задачей `protos-publish`), строка `COPY protos/build.gradle.kts` в Dockerfile всех
+  подпроектов Gradle.
+- Compose и Makefile: сервисы `router-manager` (два экземпляра), `router-emulator` (профиль `emulator`), цели `protos-*`, `rm-*`.
+- Redis платформы: ключи `router:cmd:none:v1:{routerId}` и `router:cmd:gen:v1:{routerId}`, `router:sig:v1:{routerId}:{sig}`.
+- Наблюдаемость: Alloy собирает метрики и логи `router-manager` и `router-emulator`; провижининг оповещений Grafana
+  (`RouterManagerCommandStuck`) и панель router-manager.
+- Плановый Command Service на схемах заменён router-manager; связи Camunda и Device Gateway с командами убраны (ADR-0020).
